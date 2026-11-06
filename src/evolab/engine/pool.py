@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import queue
 import signal
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Sequence
@@ -88,7 +90,7 @@ def _lower_priority() -> None:
             pass
 
 
-def _worker_main(worker_id: int, conn: Any) -> None:
+def _worker_main(worker_id: int, tasks: Any, results: Any) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _lower_priority()
     from evolab.spec.io import compile_env
@@ -98,11 +100,11 @@ def _worker_main(worker_id: int, conn: Any) -> None:
     parent = mp.parent_process()
     while True:
         try:
-            if not conn.poll(0.5):
+            if not tasks.poll(0.5):
                 if parent is not None and not parent.is_alive():
                     return
                 continue
-            task = conn.recv()
+            task = tasks.recv()
         except (EOFError, OSError):  # 부모가 끝났다(파이프가 닫힘)
             return
         if task is None:
@@ -123,19 +125,57 @@ def _worker_main(worker_id: int, conn: Any) -> None:
         except Exception as exc:
             msg = (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
         try:
-            conn.send(msg)
+            results.send(msg)
         except (EOFError, OSError):
             return
+
+
+_STOP = object()
+
+
+class _Link:
+    """워커 하나와 잇는 파이프 두 개(작업 보내기, 결과 받기)와 보내는 스레드.
+
+    보내기는 스레드가 한다. 윈도우 파이프는 버퍼(8KB)보다 큰 메시지를 읽는 쪽이 읽을 때까지 쓰지 못하고, 읽는
+    쪽이 죽었을 때도 쓰기가 끝나지 않는 경우가 있었다(CI에서 죽은 워커에 보내다 멈춤). 그래서 평가 루프는 보내기에서
+    기다리지 않고, 워커가 죽으면 파이프를 닫는다(닫으면 걸려 있던 쓰기가 취소되어 스레드도 끝난다).
+    """
+
+    def __init__(self, task_conn: Any, result_conn: Any) -> None:
+        self.task_conn = task_conn
+        self.result_conn = result_conn
+        self.outbox: queue.Queue[Any] = queue.Queue()
+        self.thread = threading.Thread(target=self._send_loop, name="pool-send", daemon=True)
+        self.thread.start()
+
+    def _send_loop(self) -> None:
+        while True:
+            item = self.outbox.get()
+            if item is _STOP:
+                return
+            try:
+                self.task_conn.send(item)
+            except (OSError, ValueError, EOFError, TypeError):
+                return
+
+    def send(self, item: Any) -> None:
+        self.outbox.put(item)
+
+    def close(self) -> None:
+        self.outbox.put(_STOP)
+        for c in (self.task_conn, self.result_conn):
+            try:
+                c.close()
+            except OSError:
+                pass
 
 
 class WorkerPool:
     """상주 워커 N개. workers=0이면 워커 없이 이 프로세스에서 평가한다(테스트·디버깅용, 결과는 같다).
 
-    워커마다 양방향 파이프를 하나씩 쓴다(공유 Queue를 쓰지 않는다). 공유 Queue는 보내기 스레드가
-    데이터를 다 쓸 때까지 프로세스 종료를 붙잡는데, 윈도우 파이프는 버퍼(8KB)를 넘는 메시지를 읽는
-    쪽이 읽을 때까지 쓰지 못한다. 그래서 죽은 워커의 받은편지함에 남은 작업이 부모의 종료를 영원히
-    막았다. 파이프는 이 프로세스에서 직접 보내고, 받는 쪽이 죽으면 바로 오류가 난다. 죽은 워커의
-    파이프는 버리므로 반쯤 쓰인 메시지나 늦은 결과가 다른 워커 결과에 섞이지 않는다.
+    워커마다 파이프 두 개를 쓴다(공유 Queue를 쓰지 않는다, _Link 참고). 공유 Queue는 보내기 스레드가 데이터를 다
+    쓸 때까지 프로세스 종료를 붙잡아, 죽은 워커에 보낸 작업이 부모의 종료를 영원히 막았다. 죽은 워커의 파이프는
+    버리므로 반쯤 쓰인 메시지나 늦은 결과가 다른 워커 결과에 섞이지 않는다.
     """
 
     def __init__(self, workers: int | None = None, chunks_per_worker: int = 4) -> None:
@@ -143,7 +183,7 @@ class WorkerPool:
         self.chunks_per_worker = chunks_per_worker
         self._ctx = mp.get_context("spawn")
         self._procs: list[Any] = []
-        self._conns: list[Any] = []
+        self._links: list[_Link] = []
         self._next_task = 0
         self.last_busy = 0.0
         """마지막 evaluate에서 워커들이 계산에 쓴 시간의 합(초). 워커 사용률 = last_busy / (워커 수 × 걸린 시간)."""
@@ -154,31 +194,35 @@ class WorkerPool:
 
     # ---- 프로세스 관리 ----
     def _spawn(self, w: int) -> None:
-        if w < len(self._conns):
-            self._conns[w].close()
-        ours, theirs = self._ctx.Pipe(duplex=True)
-        proc = self._ctx.Process(target=_worker_main, args=(w, theirs), daemon=True)
+        if w < len(self._links):
+            self._links[w].close()
+        task_r, task_w = self._ctx.Pipe(duplex=False)
+        res_r, res_w = self._ctx.Pipe(duplex=False)
+        proc = self._ctx.Process(target=_worker_main, args=(w, task_r, res_w), daemon=True)
         proc.start()
-        theirs.close()  # 워커 쪽 끝은 워커만 가진다: 워커가 죽으면 이 파이프가 바로 끊긴다
+        task_r.close()  # 워커 쪽 끝은 워커만 가진다
+        res_w.close()
+        link = _Link(task_w, res_r)
         if w < len(self._procs):
             self._procs[w] = proc
-            self._conns[w] = ours
+            self._links[w] = link
         else:
             self._procs.append(proc)
-            self._conns.append(ours)
+            self._links.append(link)
 
     def close(self, timeout: float = 5.0) -> None:
-        for conn in self._conns:
-            try:
-                conn.send(None)
-            except (OSError, ValueError):
-                pass
+        for link in self._links:
+            link.send(None)
         deadline = time.monotonic() + timeout
-        live = {p.sentinel: (p, c) for p, c in zip(self._procs, self._conns, strict=True)}
+        live = {p.sentinel: (p, link) for p, link in zip(self._procs, self._links, strict=True)}
         while live and time.monotonic() < deadline:
             # 일하던 워커가 보내는 결과는 받아서 버린다(안 받으면 윈도우에서 보내기가 끝나지 않는다).
-            conns = {c: s for s, (p, c) in live.items()}
-            for obj in wait(list(conns) + list(live), timeout=0.1):
+            conns = {link.result_conn: s for s, (p, link) in live.items()}
+            try:
+                ready = wait(list(conns) + list(live), timeout=0.1)
+            except OSError:
+                break
+            for obj in ready:
                 if obj in conns:
                     try:
                         obj.recv()
@@ -190,10 +234,10 @@ class WorkerPool:
             if p.is_alive():
                 p.terminate()
             p.join(timeout=timeout)
-        for c in self._conns:
-            c.close()
+        for link in self._links:
+            link.close()
         self._procs.clear()
-        self._conns.clear()
+        self._links.clear()
 
     def __enter__(self) -> WorkerPool:
         return self
@@ -255,20 +299,16 @@ class WorkerPool:
         done = 0
 
         def feed(w: int) -> None:
-            if not pending or w in running:
-                return
+            if not pending or w in running or not self._procs[w].is_alive():
+                return  # 죽은 워커에는 보내지 않는다(아래 복구가 다시 띄우고 준다)
             k = pending.pop(0)
-            try:
-                self._conns[w].send(tasks[k])
-            except (OSError, ValueError):  # 워커가 죽었다: 아래 복구가 다시 띄우고 다시 준다
-                pending.insert(0, k)
-                return
+            self._links[w].send(tasks[k])
             running[w] = k
 
         for w in range(self.workers):
             feed(w)
         while done < len(tasks):
-            busy = {self._conns[w]: w for w in running}
+            busy = {self._links[w].result_conn: w for w in running}
             for conn in wait(list(busy) + [p.sentinel for p in self._procs], timeout=POLL_S):
                 w = busy.get(conn) if not isinstance(conn, int) else None
                 if w is None:

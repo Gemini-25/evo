@@ -76,6 +76,9 @@ class Session:
     # ------------------------------------------------------------------
     def main(self) -> None:
         threading.Thread(target=self._read, name="commands", daemon=True).start()
+        self._outbox: queue.Queue[Any] = queue.Queue()
+        self._writer = threading.Thread(target=self._write, name="events", daemon=True)
+        self._writer.start()
         try:
             try:
                 self._open()
@@ -100,14 +103,22 @@ class Session:
             if isinstance(msg, dict):
                 self.cmds.put(msg)
 
+    def _write(self) -> None:
+        """결과 보내기는 스레드가 한다: 화면이 죽거나 멈추면 윈도우에서 쓰기가 끝나지 않을 수 있어서."""
+        while True:
+            msg = self._outbox.get()
+            if msg is None:
+                return
+            try:
+                self.event_conn.send(msg)
+            except (OSError, ValueError, EOFError, TypeError):
+                self.gui_gone = True
+                self.cmds.put({"type": "quit", "gone": True})
+                return
+
     def _send(self, msg: dict[str, Any]) -> None:
-        if self.gui_gone:
-            return
-        try:
-            self.event_conn.send(msg)
-        except (OSError, ValueError, EOFError):
-            self.gui_gone = True
-            self.quit = True
+        if not self.gui_gone:
+            self._outbox.put(msg)
 
     # ------------------------------------------------------------------
     def _open(self) -> None:
@@ -169,6 +180,9 @@ class Session:
         if self.pool is not None:
             self.pool.close()
         self._send({"type": "closed"})
+        self._outbox.put(None)
+        if not self.gui_gone:
+            self._writer.join(timeout=10)  # 남은 결과를 다 보낼 때까지(화면이 받고 있으면 금방 끝난다)
         for c in (self.event_conn, self.cmd_conn):
             try:
                 c.close()

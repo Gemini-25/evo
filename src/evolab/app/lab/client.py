@@ -59,6 +59,7 @@ class TrainingClient(QObject):
         self._cmd: Any = None
         self._events: Any = None
         self._inbox: queue.Queue[Any] = queue.Queue()
+        self._outbox: queue.Queue[Any] = queue.Queue()
         self._reader: threading.Thread | None = None
         self._closed_sent = True
         self._timer = QTimer(self)
@@ -84,6 +85,9 @@ class TrainingClient(QObject):
         self._inbox = queue.Queue()
         self._reader = threading.Thread(target=self._read, args=(ev_r, self._inbox), name="training-events", daemon=True)
         self._reader.start()
+        # 보내기도 스레드로: 윈도우에서 학습 프로세스가 죽거나 바쁘면 큰 메시지(환경 파일) 쓰기가 끝나지 않을 수 있다.
+        self._outbox = queue.Queue()
+        threading.Thread(target=self._write, args=(cmd_w, self._outbox), name="training-commands", daemon=True).start()
         self._closed_sent = False
         self._timer.start()
         _LIVE.add(self)
@@ -93,6 +97,7 @@ class TrainingClient(QObject):
         proc = self._proc
         if proc is None:
             return
+        self._outbox.put(_EOF)
         for c in (self._cmd, self._events):
             if c is not None:
                 try:
@@ -108,6 +113,17 @@ class TrainingClient(QObject):
         _LIVE.discard(self)
 
     @staticmethod
+    def _write(conn: Any, outbox: queue.Queue[Any]) -> None:
+        while True:
+            msg = outbox.get()
+            if msg is _EOF:
+                return
+            try:
+                conn.send(msg)
+            except (EOFError, OSError, TypeError, ValueError):
+                return
+
+    @staticmethod
     def _read(conn: Any, inbox: queue.Queue[Any]) -> None:
         while True:
             try:
@@ -120,13 +136,11 @@ class TrainingClient(QObject):
                 return
 
     def send(self, msg: dict[str, Any]) -> bool:
+        """명령을 보낸다(기다리지 않는다: 보내는 스레드가 쓴다)."""
         if self._cmd is None:
             return False
-        try:
-            self._cmd.send(msg)
-            return True
-        except (OSError, ValueError):
-            return False
+        self._outbox.put(msg)
+        return True
 
     # ------------------------------------------------------------------
     def _poll(self) -> None:
@@ -174,6 +188,7 @@ class TrainingClient(QObject):
 
     def _finish(self) -> None:
         self._timer.stop()
+        self._outbox.put(_EOF)
         for c in (self._cmd, self._events):
             if c is not None:
                 try:
