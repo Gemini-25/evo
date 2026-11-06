@@ -15,7 +15,7 @@ TAB_LAB: Final = "실험실"
 TAB_COMPARE: Final = "비교"
 TAB_RECORDS: Final = "기록"
 
-PLACEHOLDER_EDITOR: Final = "환경 에디터는 M5에서 만듭니다."
+PLACEHOLDER_EDITOR: Final = "환경 에디터는 M5a에서 만듭니다."
 PLACEHOLDER_LAB: Final = "실험실 화면은 M3에서 만듭니다."
 PLACEHOLDER_COMPARE: Final = "비교 화면은 M6에서 만듭니다."
 PLACEHOLDER_RECORDS: Final = "기록 화면은 M3에서 만듭니다."
@@ -36,6 +36,7 @@ CLI_NOT_IMPLEMENTED: Final = "'{command}' 명령은 {milestone}에서 구현합�
 
 # 자체 점검
 SELFTEST_TITLE: Final = "진화 실험실 자체 점검"
+SELFTEST_RUNNING: Final = "진행"
 SELFTEST_PASS: Final = "통과"
 SELFTEST_FAIL: Final = "실패"
 SELFTEST_SUMMARY_OK: Final = "모든 점검을 통과했습니다."
@@ -48,5 +49,6 @@ SELFTEST_CHECK_LEARNER: Final = "CMA-ES 학습 라이브러리"
 SELFTEST_CHECK_GUI: Final = "창 만들기"
 SELFTEST_ERR_MISMATCH: Final = "결과가 다릅니다: {detail}"
 SELFTEST_ERR_TIMEOUT: Final = "{seconds}초 안에 응답이 없습니다."
+SELFTEST_ERR_PROCESS_DIED: Final = "자식 프로세스가 결과 없이 끝났습니다 (종료 코드 {codes}). 창 없는 exe라면 원인이 {log}에 남습니다."
 SELFTEST_ERR_NO_PROGRESS: Final = "점수가 나아지지 않았습니다: {detail}"
 SELFTEST_ERR_TITLE: Final = "창 제목이 다릅니다: {title}"

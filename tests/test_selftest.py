@@ -1,8 +1,12 @@
 """M0: 자체 점검과 그 안의 결정성 확인."""
 
+import multiprocessing as mp
+import os
+import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from evolab import selftest
 from evolab.app import strings as S
@@ -23,6 +27,22 @@ def test_simulation_ignores_process_history() -> None:
     for s in range(20, 30):
         selftest.simulate(s)
     assert selftest.simulate(3).tobytes() == fresh.tobytes()
+
+
+def _crashing_worker(tasks: object, results: object) -> None:
+    os._exit(3)
+
+
+def test_dead_worker_is_reported_immediately() -> None:
+    # 워커가 바로 죽으면 시간 초과까지 기다리지 않고 종료 코드와 함께 실패해야 한다.
+    pool = selftest._MiniPool(mp.get_context("spawn"), 2, target=_crashing_worker)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(selftest.SelfTestError, match="3"):
+            pool.map([1, 2, 3])
+    finally:
+        pool.close()
+    assert time.monotonic() - t0 < 30
 
 
 def test_full_selftest_passes(tmp_path: Path) -> None:

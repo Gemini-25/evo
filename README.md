@@ -16,14 +16,16 @@ uv run pytest -m slow    # 느린 학습 테스트 (M2부터)
 
 ## exe 받기
 
-`windows` GitHub Actions가 푸시할 때마다 윈도우에서 테스트하고 exe를 묶습니다. 저장소의 Actions 탭에서 최근 실행을 열고 Artifacts의 `evolab-windows`를 내려받아 압축을 풀면 `evolab.exe`가 있습니다.
+`windows` GitHub Actions가 푸시할 때마다 윈도우에서 테스트하고 exe를 묶습니다. 저장소의 Actions 탭에서 최근 실행을 열고 Artifacts의 `evolab-windows`를 내려받아 압축을 풀면 exe 두 개가 있습니다.
 
-직접 묶으려면:
+- `evolab.exe`: 더블클릭해서 여는 프로그램 (창 모드)
+- `evolab-cli.exe`: 명령줄용. 출력과 종료 코드가 필요한 `selftest`, `train`, `bench`는 이쪽으로 실행합니다
 
 ```powershell
-uv run pyinstaller packaging/evolab.spec --noconfirm   # 결과: dist\evolab\evolab.exe
-dist\evolab\evolab.exe selftest                         # 점검 기록은 %LOCALAPPDATA%\evolab\logs\selftest.log
+.\evolab-cli.exe selftest   # 점검 결과를 화면에 보여 주고 %LOCALAPPDATA%\evolab\logs\selftest.log에도 남깁니다
 ```
+
+직접 묶으려면 `uv run pyinstaller packaging/evolab.spec --noconfirm` (결과: `dist\evolab\`).
 
 ## 폴더
 

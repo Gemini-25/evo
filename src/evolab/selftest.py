@@ -104,22 +104,47 @@ def simulate(seed: int, steps: int = 240) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+POLL_S = 0.5
+
+
+def _parent_alive() -> bool:
+    parent = mp.parent_process()
+    return parent is None or parent.is_alive()
+
+
 def _worker_main(tasks: Any, results: Any) -> None:
     while True:
-        item = tasks.get()
+        try:
+            item = tasks.get(timeout=POLL_S)
+        except queue.Empty:
+            # 부모(학습 프로세스)가 죽었으면 고아로 남지 않고 끝낸다.
+            if not _parent_alive():
+                return
+            continue
         if item is None:
             return
         index, seed = item
-        results.put((index, simulate(seed)))
+        try:
+            results.put(("ok", index, simulate(seed)))
+        except BaseException:
+            results.put(("error", index, traceback.format_exc()))
+
+
+def _died(codes: list[int | None]) -> str:
+    return S.SELFTEST_ERR_PROCESS_DIED.format(codes=codes, log=paths.log_dir() / "stderr.log")
+
+
+def _dead(procs: Sequence[Any]) -> list[int | None]:
+    return [p.exitcode for p in procs if not p.is_alive()]
 
 
 class _MiniPool:
     """상주 워커 몇 개. 시험 순서와 워커 배분이 달라도 결과는 같아야 한다."""
 
-    def __init__(self, ctx: Any, workers: int) -> None:
+    def __init__(self, ctx: Any, workers: int, target: Callable[[Any, Any], None] = _worker_main) -> None:
         self._tasks = ctx.Queue()
         self._results = ctx.Queue()
-        self._procs = [ctx.Process(target=_worker_main, args=(self._tasks, self._results)) for _ in range(workers)]
+        self._procs = [ctx.Process(target=target, args=(self._tasks, self._results)) for _ in range(workers)]
         for p in self._procs:
             p.start()
 
@@ -127,8 +152,19 @@ class _MiniPool:
         for index, seed in enumerate(seeds):
             self._tasks.put((index, seed))
         out: dict[int, np.ndarray] = {}
+        deadline = time.monotonic() + PROCESS_TIMEOUT_S
         while len(out) < len(seeds):
-            index, value = self._results.get(timeout=PROCESS_TIMEOUT_S)
+            try:
+                status, index, value = self._results.get(timeout=POLL_S)
+            except queue.Empty:
+                # 워커가 일찍 죽었으면 시간 초과까지 기다리지 않고 바로 알린다.
+                if dead := _dead(self._procs):
+                    raise SelfTestError(_died(dead)) from None
+                if not _parent_alive() or time.monotonic() > deadline:
+                    raise SelfTestError(S.SELFTEST_ERR_TIMEOUT.format(seconds=int(PROCESS_TIMEOUT_S))) from None
+                continue
+            if status != "ok":
+                raise SelfTestError(str(value))
             out[index] = value
         return np.stack([out[i] for i in range(len(seeds))])
 
@@ -163,6 +199,7 @@ def _trainer_main(out: Any, workers: int, seeds: Sequence[int]) -> None:
 
 
 def default_workers() -> int:
+    # 물리 코어 기준 워커 수는 M2의 워커 풀에서 정한다. 자체 점검은 논리 프로세서 기준이면 충분하다.
     return max(1, (os.cpu_count() or 2) - 1)
 
 
@@ -204,11 +241,17 @@ def _check_processes(workers: int) -> str:
     out = ctx.Queue()
     trainer = ctx.Process(target=_trainer_main, args=(out, workers, list(SELFTEST_SEEDS)))
     trainer.start()
+    deadline = time.monotonic() + PROCESS_TIMEOUT_S
     try:
-        try:
-            status, payload, pid = out.get(timeout=PROCESS_TIMEOUT_S)
-        except queue.Empty as exc:
-            raise SelfTestError(S.SELFTEST_ERR_TIMEOUT.format(seconds=int(PROCESS_TIMEOUT_S))) from exc
+        while True:
+            try:
+                status, payload, pid = out.get(timeout=POLL_S)
+                break
+            except queue.Empty:
+                if not trainer.is_alive():
+                    raise SelfTestError(_died([trainer.exitcode])) from None
+                if time.monotonic() > deadline:
+                    raise SelfTestError(S.SELFTEST_ERR_TIMEOUT.format(seconds=int(PROCESS_TIMEOUT_S))) from None
     finally:
         trainer.join(timeout=30)
         if trainer.is_alive():
@@ -302,54 +345,69 @@ def environment_info(workers: int) -> dict[str, str]:
     }
 
 
-def run_checks(workers: int, check_gui: bool) -> list[CheckResult]:
-    checks: list[tuple[str, Callable[[], str]]] = [
-        (S.SELFTEST_CHECK_IMPORTS, _check_imports),
-        (S.SELFTEST_CHECK_PHYSICS, _check_physics),
-        (S.SELFTEST_CHECK_LEARNER, _check_learner),
-        (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(workers)),
-    ]
-    if check_gui:
-        checks.append((S.SELFTEST_CHECK_GUI, _check_gui))
+class _Report:
+    """점검 기록. 줄마다 바로 파일에 쓴다. 도중에 멈추거나 죽어도 어디까지 왔는지 남게 하려고."""
 
-    results: list[CheckResult] = []
-    for name, fn in checks:
-        t0 = time.perf_counter()
-        try:
-            detail, ok = fn(), True
-        except SelfTestError as exc:
-            detail, ok = str(exc), False
-        except Exception:
-            detail, ok = traceback.format_exc(), False
-        results.append(CheckResult(name, ok, time.perf_counter() - t0, detail))
-    return results
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._file = path.open("w", encoding="utf-8")
+
+    def line(self, text: str = "") -> None:
+        self._file.write(text + "\n")
+        self._file.flush()
+        if sys.stdout is not None:
+            print(text, flush=True)
+
+    def close(self) -> None:
+        self._file.close()
 
 
-def format_report(info: dict[str, str], results: list[CheckResult]) -> str:
-    lines = [S.SELFTEST_TITLE, ""]
-    lines += [f"{k}: {v}" for k, v in info.items()]
-    lines.append("")
-    for r in results:
-        mark = S.SELFTEST_PASS if r.ok else S.SELFTEST_FAIL
-        lines.append(f"[{mark}] {r.name} ({r.seconds:.2f}s)")
-        lines += [f"    {line}" for line in r.detail.splitlines()]
-    failed = [r.name for r in results if not r.ok]
-    lines.append("")
-    lines.append(S.SELFTEST_SUMMARY_FAIL.format(names=", ".join(failed)) if failed else S.SELFTEST_SUMMARY_OK)
-    return "\n".join(lines) + "\n"
+def _run_check(name: str, fn: Callable[[], str]) -> CheckResult:
+    t0 = time.perf_counter()
+    try:
+        detail, ok = fn(), True
+    except SelfTestError as exc:
+        detail, ok = str(exc), False
+    except Exception:
+        detail, ok = traceback.format_exc(), False
+    return CheckResult(name, ok, time.perf_counter() - t0, detail)
 
 
 def run_selftest(log_path: Path | None = None, workers: int | None = None, check_gui: bool = True) -> int:
     n = workers if workers is not None else default_workers()
-    info = environment_info(n)
-    results = run_checks(n, check_gui)
-    report = format_report(info, results)
+    checks: list[tuple[str, Callable[[], str]]] = [
+        (S.SELFTEST_CHECK_IMPORTS, _check_imports),
+        (S.SELFTEST_CHECK_PHYSICS, _check_physics),
+        (S.SELFTEST_CHECK_LEARNER, _check_learner),
+        (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(n)),
+    ]
+    if check_gui:
+        checks.append((S.SELFTEST_CHECK_GUI, _check_gui))
 
-    path = log_path if log_path is not None else paths.log_dir() / "selftest.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(report, encoding="utf-8")
+    report = _Report(log_path if log_path is not None else paths.log_dir() / "selftest.log")
+    failed: list[str] = [name for name, _ in checks]
+    try:
+        report.line(S.SELFTEST_TITLE)
+        report.line()
+        for key, value in environment_info(n).items():
+            report.line(f"{key}: {value}")
+        report.line()
 
+        results: list[CheckResult] = []
+        for name, fn in checks:
+            report.line(f"[{S.SELFTEST_RUNNING}] {name}")
+            r = _run_check(name, fn)
+            results.append(r)
+            report.line(f"[{S.SELFTEST_PASS if r.ok else S.SELFTEST_FAIL}] {r.name} ({r.seconds:.2f}s)")
+            for detail_line in r.detail.splitlines():
+                report.line(f"    {detail_line}")
+
+        failed = [r.name for r in results if not r.ok]
+        report.line()
+        report.line(S.SELFTEST_SUMMARY_FAIL.format(names=", ".join(failed)) if failed else S.SELFTEST_SUMMARY_OK)
+    finally:
+        report.close()
     if sys.stdout is not None:
-        print(report, end="")
-        print(S.SELFTEST_LOG_WRITTEN.format(path=path))
-    return 0 if all(r.ok for r in results) else 1
+        print(S.SELFTEST_LOG_WRITTEN.format(path=report.path))
+    return 0 if not failed else 1

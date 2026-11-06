@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 45
     env:
       UV_PYTHON_DOWNLOADS: never
+      # uv.lock과 pyproject가 어긋나면 sync와 run 모두 실패하게 한다(잠금을 조용히 고치지 않게).
+      UV_LOCKED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +33,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync
 
       - name: Tests
         env:
@@ -44,12 +46,24 @@ jobs:
       - name: Build exe
         run: uv run pyinstaller packaging/evolab.spec --noconfirm
 
-      - name: Self-test frozen exe from a Korean path
+      - name: Copy exe folder to a Korean path
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
           New-Item -ItemType Directory -Force $dest | Out-Null
           Copy-Item -Recurse dist\evolab $dest
+
+      - name: Self-test console exe (evolab-cli.exe)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          & (Join-Path $dest "evolab\evolab-cli.exe") selftest --log (Join-Path $dest "cli 점검.log")
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Self-test windowed exe (evolab.exe, no stdout)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
           $exe = Join-Path $dest "evolab\evolab.exe"
           $log = Join-Path $dest "점검 기록.log"
           $p = Start-Process -FilePath $exe -ArgumentList @("selftest", "--log", "`"$log`"") -PassThru

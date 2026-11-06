@@ -1,6 +1,6 @@
-# PyInstaller 설정: 하나의 폴더 배포본 (dist/evolab/evolab.exe).
-# 빌드: uv run pyinstaller packaging/evolab.spec --noconfirm
 # -*- mode: python ; coding: utf-8 -*-
+# PyInstaller 설정: 하나의 폴더 배포본 (dist/evolab/evolab.exe, dist/evolab/evolab-cli.exe).
+# 빌드: uv run pyinstaller packaging/evolab.spec --noconfirm
 
 from pathlib import Path
 
@@ -52,8 +52,23 @@ exe = EXE(
     console=False,  # 더블클릭했을 때 검은 창이 뜨지 않게
 )
 
+# 명령줄용: 표준 출력과 종료 코드가 필요한 selftest / train / bench는 이쪽으로 실행한다.
+# 창 모드 exe는 셸이 기다리지 않고 출력도 없다.
+exe_cli = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="evolab-cli",
+    debug=False,
+    strip=False,
+    upx=False,
+    console=True,
+)
+
 coll = COLLECT(
     exe,
+    exe_cli,
     a.binaries,
     a.datas,
     strip=False,
