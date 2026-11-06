@@ -355,3 +355,24 @@ CLI_HELP_JUDGE_GEN: Final = "이 세대까지의 마지막 챔피언으로 판�
 CLI_HELP_VALIDATE_EVERY: Final = "학습 시험이 이만큼 쌓일 때마다 챔피언 검증 (기본 1000)"
 TRAIN_CANNOT_START: Final = "학습을 시작할 수 없습니다: {reason}"
 CLI_HELP_DIAGONAL: Final = "유전자 차원이 이 값보다 크면 대각 공분산(sep-CMA) 사용 (기본 1000)"
+
+# M3 학습 중 변경 (lead)
+TRAIN_CHANGE_NOT_ALLOWED: Final = "학습 중에는 바꿀 수 없는 설정입니다: {keys}. 새 실행으로 시작하세요."
+TRAIN_ENV_LAYOUT_CHANGED: Final = (
+    "센서·구동기·몸 수치·뇌 구조가 바뀌어 유전자 차원이 달라졌습니다. 이어서 학습할 수 없으니 새 실행으로 시작하세요."
+)
+TRAIN_ENV_COLUMNS_CHANGED: Final = "점수 블록이나 종료 조건 목록이 바뀌었습니다. 이어서 학습할 수 없으니 새 실행으로 시작하세요."
+TRAIN_CONFIG_INVALID: Final = "학습 설정 값이 잘못되었습니다: {name} = {value}"
+
+# M3 학습 프로세스 (lead)
+SESSION_CRASHED: Final = "학습 프로세스에 예상하지 못한 오류가 났습니다: {reason}"
+SESSION_SAVE_FAILED: Final = "학습을 끝내며 저장하지 못했습니다: {reason}"
+SESSION_STILL_STOPPED: Final = "정지 조건({reason})에 걸려 있습니다. 정지 조건을 바꾼 뒤 이어 하세요."
+SESSION_PAUSE_FIRST: Final = "학습을 멈춘 뒤에 바꿀 수 있습니다."
+SESSION_LOST: Final = "학습 프로세스가 갑자기 끝났습니다(종료 코드 {code}). 마지막 체크포인트에서 이어 할 수 있습니다."
+
+# M3 spectator canvas
+SPEC_NO_SCENE: Final = "학습을 시작하면 집단이 여기에 나타납니다."
+SPEC_LEGEND_CHAMPION: Final = "챔피언"
+SPEC_LEGEND_TOP: Final = "상위 10%"
+SPEC_LEGEND_REST: Final = "나머지 개체"

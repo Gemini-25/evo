@@ -13,6 +13,7 @@ import pytest
 from evolab import cli, paths
 from evolab.engine import seeds
 from evolab.engine.pool import PoolError, WorkerPool
+from evolab.engine import trainer as trainer_mod
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStore
@@ -20,7 +21,7 @@ from evolab.spec.io import compile_env, env_hash
 
 LANDER = paths.builtin_env_dir() / "lander.evoenv"
 LANDER_TEXT = LANDER.read_text(encoding="utf-8")
-TIME_COLUMNS = {"gen_seconds", "elapsed", "steps_per_second"}
+TIME_COLUMNS = set(trainer_mod.TIME_COLUMNS)
 
 
 def small_config(**over: Any) -> TrainConfig:

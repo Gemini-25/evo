@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import math
-import platform
 import signal
 import statistics
 import sys
@@ -17,10 +15,11 @@ from typing import Any
 
 import numpy as np
 
-from evolab import __version__, paths
+from evolab import paths
 from evolab.app import strings as S
 from evolab.engine import seeds
-from evolab.engine.pool import PoolError, WorkerPool, default_workers, physical_cores
+from evolab.engine.pool import PoolError, WorkerPool, default_workers
+from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStoreError
@@ -39,23 +38,6 @@ def say(text: str) -> None:
 def warn(text: str) -> None:
     if sys.stderr is not None:
         print(text, file=sys.stderr, flush=True)
-
-
-def platform_info(workers: int) -> dict[str, Any]:
-    import cma
-    import pymunk
-
-    return {
-        "python": platform.python_version(),
-        "numpy": np.__version__,
-        "pymunk": pymunk.version,
-        "cma": cma.__version__,
-        "os": platform.platform(),
-        "cpu": platform.processor() or platform.machine(),
-        "physical_cores": physical_cores(),
-        "workers": workers,
-        "frozen": bool(getattr(sys, "frozen", False)),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -143,18 +125,11 @@ def train_command(args: Any) -> int:
             from evolab.runs.store import RunStore
 
             base_dir = Path(args.out) if args.out else paths.runs_dir()
-            name = f"{dt.datetime.now():%Y-%m-%d_%H%M}_{spec.file.name}_{METHOD_NAMES.get(config.method, config.method)}"
+            config.validate()
             layout = layout_for(spec)
-            store = RunStore.create(base_dir, name, {
-                "program": "evolab", "version": __version__, "created": dt.datetime.now().isoformat(timespec="seconds"),
-                "env_name": spec.file.name, "method": config.method, "config": config.to_dict(),
-                "seed_scheme": seeds.SEED_SCHEME_VERSION, "layout": layout.to_dict(),
-                "layout_signature": layout.signature(), "platform": platform_info(workers),
-            })
-            store.add_env_version(env_text, 0)
+            store = create_run(base_dir, env_text, spec, config, workers)
             pool = WorkerPool(workers)
             trainer = Trainer(env_text, config, pool, store)
-            store.append_event("start", 0, workers=workers)
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
     except (EnvFileError, RunStoreError, ValueError, OSError) as exc:

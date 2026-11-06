@@ -1,0 +1,179 @@
+"""M3: 학습 프로세스(세션)와 화면 쪽 연결. 멈춤·한 세대·관전 대기·설정과 환경 바꾸기·결정성."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from evolab import paths
+from evolab.app.lab.client import TrainingClient
+from evolab.engine import trainer as trainer_mod
+from evolab.engine.pool import WorkerPool
+from evolab.engine.session import SessionRequest
+from evolab.engine.trainer import TrainConfig, Trainer
+from evolab.runs.store import RunStore
+
+LANDER_TEXT = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8")
+TIME = set(trainer_mod.TIME_COLUMNS)
+CONFIG = {"popsize": 6, "trials": 2, "validate_every": 24, "checkpoint_every": 2, "run_seed": 5}
+
+
+class Recorder:
+    def __init__(self, client: TrainingClient) -> None:
+        self.msgs: list[tuple[str, dict[str, Any]]] = []
+        for name in ("started", "generation", "state_changed", "applied", "rewound"):
+            getattr(client, name).connect(lambda m, n=name: self.msgs.append((n, m)))
+        client.failed.connect(lambda text, fatal: self.msgs.append(("failed", {"message": text, "fatal": fatal})))
+        client.closed.connect(lambda: self.msgs.append(("closed", {})))
+
+    def of(self, kind: str) -> list[dict[str, Any]]:
+        return [m for k, m in self.msgs if k == kind]
+
+    def states(self) -> list[str]:
+        return [m["state"] for m in self.of("state_changed")]
+
+
+def start(qtbot: Any, tmp_path: Path, **over: Any) -> tuple[TrainingClient, Recorder]:
+    client = TrainingClient()
+    rec = Recorder(client)
+    config = {**CONFIG, **over.pop("config", {})}
+    req = SessionRequest(**{"kind": "new", "env_text": LANDER_TEXT, "runs_dir": str(tmp_path), "workers": 1,
+                            "spectate": False, "config": config, **over})
+    client.start(req)
+    qtbot.waitUntil(lambda: bool(rec.of("started")) or bool(rec.of("failed")), timeout=60000)
+    assert not rec.of("failed"), rec.of("failed")
+    return client, rec
+
+
+def strip(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    return [{k: str(v) for k, v in r.items() if k not in TIME} for r in rows]
+
+
+def straight_rows(gens: int, **over: Any) -> list[dict[str, str]]:
+    config = TrainConfig.from_dict({**CONFIG, "max_generations": gens, **over})
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, config, pool)
+        rows: list[dict[str, Any]] = []
+        t.run(rows.append)
+    return strip(rows)
+
+
+def test_run_to_stop_condition_matches_plain_trainer(qtbot: Any, tmp_path: Path) -> None:
+    client, rec = start(qtbot, tmp_path, config={"max_generations": 4})
+    qtbot.waitUntil(lambda: "finished" in rec.states(), timeout=120000)
+    gens = rec.of("generation")
+    assert [g["generation"] for g in gens] == [1, 2, 3, 4]
+    assert all(g["trajectories"] is None for g in gens)
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    client.shutdown()
+    assert rec.of("closed")
+    assert strip(RunStore.open(run_dir).read_stats()) == straight_rows(4)
+    assert strip([g["row"] for g in gens]) == straight_rows(4)
+
+
+def test_spectate_waits_for_playback(qtbot: Any, tmp_path: Path) -> None:
+    client, rec = start(qtbot, tmp_path, spectate=True, config={"max_generations": 5})
+    qtbot.waitUntil(lambda: len(rec.of("generation")) >= 2, timeout=120000)
+    qtbot.wait(2500)
+    assert len(rec.of("generation")) == 2  # 1세대 재생이 끝났다는 알림 전에는 3세대로 가지 않는다
+    g1 = rec.of("generation")[0]
+    assert len(g1["trajectories"]) == 6 and all(t is not None for t in g1["trajectories"])
+    assert g1["population"].shape[0] == 6
+    client.send({"type": "played", "generation": 1})
+    qtbot.waitUntil(lambda: len(rec.of("generation")) >= 3, timeout=60000)
+    client.send({"type": "mode", "spectate": False})  # 고속 모드: 기다리지 않는다
+    qtbot.waitUntil(lambda: "finished" in rec.states(), timeout=120000)
+    assert [g["generation"] for g in rec.of("generation")] == [1, 2, 3, 4, 5]
+    assert rec.of("generation")[-1]["trajectories"] is None
+    client.shutdown()
+    assert strip([g["row"] for g in rec.of("generation")]) == straight_rows(5)
+
+
+def test_pause_change_config_and_env_then_continue(qtbot: Any, tmp_path: Path) -> None:
+    client, rec = start(qtbot, tmp_path, config={"max_generations": 30})
+    qtbot.waitUntil(lambda: len(rec.of("generation")) >= 1, timeout=120000)
+    client.send({"type": "pause"})
+    qtbot.waitUntil(lambda: "paused" in rec.states(), timeout=60000)
+    paused_at = rec.of("state_changed")[-1]["generation"]
+    # 바꿀 수 없는 설정은 거절
+    client.send({"type": "config", "changes": {"popsize": 8}})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 1, timeout=30000)
+    assert rec.of("applied")[-1]["ok"] is False
+    client.send({"type": "config", "changes": {"max_generations": paused_at + 2}})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 2, timeout=30000)
+    assert rec.of("applied")[-1]["ok"] is True
+    # 차원이 바뀌는 환경은 거절, 중력만 바꾼 환경은 받아들인다
+    data = json.loads(LANDER_TEXT)
+    data["brain"]["hidden"] = [8]
+    client.send({"type": "env", "text": json.dumps(data, ensure_ascii=False)})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 3, timeout=30000)
+    assert rec.of("applied")[-1]["ok"] is False
+    data = json.loads(LANDER_TEXT)
+    data["world"]["gravity"] = [0.0, -1.5]
+    new_text = json.dumps(data, ensure_ascii=False, indent=2)
+    client.send({"type": "env", "text": new_text})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 4, timeout=30000)
+    assert rec.of("applied")[-1]["ok"] is True, rec.of("applied")[-1]
+    client.send({"type": "run"})
+    qtbot.waitUntil(lambda: "finished" in rec.states(), timeout=120000)
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    client.shutdown()
+    store = RunStore.open(run_dir)
+    kinds = [(e["kind"], e["generation"]) for e in store.read_events()]
+    assert ("config_change", paused_at) in kinds and ("env_change", paused_at) in kinds
+    assert paused_at in store.checkpoints()  # 바꾼 지점은 보호
+    info = store.read_run_info()
+    assert info["env_versions"][-1]["from_generation"] == paused_at
+    assert [int(r["generation"]) for r in store.read_stats()] == list(range(1, paused_at + 3))
+    # 이어하기는 바뀐 환경으로: 같은 체크포인트에서 Trainer.resume으로 돌린 결과와 같다
+    with WorkerPool(0) as pool:
+        again = Trainer.resume(store, pool, paused_at)
+        assert again.env_text == new_text and again.config.max_generations == paused_at + 2
+
+
+def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
+    client, rec = start(qtbot, tmp_path, start_running=False, config={"max_generations": 3})
+    assert rec.states()[-1] == "paused"
+    client.send({"type": "step"})
+    qtbot.waitUntil(lambda: rec.states().count("paused") >= 2, timeout=120000)
+    assert [g["generation"] for g in rec.of("generation")] == [1]
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    client.shutdown()
+    # 다른 프로세스에서 이어하기
+    client2 = TrainingClient()
+    rec2 = Recorder(client2)
+    client2.start(SessionRequest(kind="resume", run_dir=str(run_dir), workers=1, spectate=False))
+    qtbot.waitUntil(lambda: "finished" in rec2.states() or bool(rec2.of("failed")), timeout=120000)
+    assert not rec2.of("failed")
+    assert rec2.of("started")[0]["generation"] == 1
+    client2.shutdown()
+    assert strip(RunStore.open(run_dir).read_stats()) == straight_rows(3)
+
+
+def test_bad_request_reports_error(qtbot: Any, tmp_path: Path) -> None:
+    client = TrainingClient()
+    rec = Recorder(client)
+    client.start(SessionRequest(kind="resume", run_dir=str(tmp_path / "없는 실행"), workers=1))
+    qtbot.waitUntil(lambda: bool(rec.of("closed")), timeout=60000)
+    assert rec.of("failed") and rec.of("failed")[0]["fatal"]
+    assert not client.active
+
+
+@pytest.mark.parametrize("how", ["shutdown", "gone"])
+def test_session_ends_cleanly(qtbot: Any, tmp_path: Path, how: str) -> None:
+    client, rec = start(qtbot, tmp_path, config={"max_generations": 1000})
+    qtbot.waitUntil(lambda: len(rec.of("generation")) >= 1, timeout=120000)
+    proc = client._proc
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    if how == "shutdown":
+        client.shutdown()
+    else:  # 화면 프로세스가 갑자기 사라진 것처럼 파이프만 닫는다
+        client._cmd.close()
+        client._events.close()
+        proc.join(timeout=60)
+    assert not proc.is_alive()
+    store = RunStore.open(run_dir)
+    assert store.checkpoints() and store.checkpoints()[-1] == len(store.read_stats())

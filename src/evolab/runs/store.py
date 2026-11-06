@@ -643,6 +643,11 @@ class RunStore:
             self._stats_header = rows[0]
         return self._stats_header
 
+    def stats_columns(self) -> list[str] | None:
+        """stats.csv의 열 이름(아직 없으면 None)."""
+        header = self._read_stats_header()
+        return list(header) if header is not None else None
+
     def append_stats(self, row: dict[str, Any]) -> None:
         """통계 한 줄. 열 이름은 첫 줄의 키, 이후 줄은 같은 키여야 한다(순서는 상관없고 첫 줄 순서로 쓴다)."""
         keys = list(row)
