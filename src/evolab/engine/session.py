@@ -45,6 +45,8 @@ class SessionRequest:
     runs_dir: str = ""
     run_dir: str = ""
     generation: int | None = None
+    info: dict[str, Any] = field(default_factory=dict)
+    """새 실행의 run.json에 더 넣을 것(예: 반복 실행 묶음 {"group": {...}}, 메모)."""
 
 
 def session_main(cmd_conn: Any, event_conn: Any, request: SessionRequest) -> None:
@@ -135,7 +137,7 @@ class Session:
             config = TrainConfig.from_dict(req.config)
             config.validate()
             self.pool = WorkerPool(workers)
-            self.store = create_run(Path(req.runs_dir), req.env_text, spec, config, workers)
+            self.store = create_run(Path(req.runs_dir), req.env_text, spec, config, workers, extra=dict(req.info))
             self.trainer = Trainer(req.env_text, config, self.pool, self.store)
         elif req.kind == "resume":
             self.store = RunStore.open(Path(req.run_dir))
