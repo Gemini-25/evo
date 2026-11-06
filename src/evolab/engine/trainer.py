@@ -207,21 +207,23 @@ class Trainer:
         self.learner.tell(X, agg)
         s.evaluations += pop * T
         rep = int(np.argmax(agg))  # 동점이면 앞쪽(결정적)
+        # 기록용 세대 번호는 '끝낸 세대 수'(1부터): 통계 줄, 챔피언 파일, 체크포인트가 같은 번호를 쓴다.
+        s.generation = gen + 1
+        label = s.generation
 
         validated: float | None = None
         bucket = s.evaluations // self.config.validate_every
         if bucket > s.validations_done:
             s.validations_done = bucket
             validated = self._validate(X, agg)
-        s.generation = gen + 1
         gen_time = self.clock() - t0
         s.elapsed += gen_time
 
-        row = self._stats_row(gen, X, agg, res, rep, validated, gen_time)
+        row = self._stats_row(label, X, agg, res, rep, validated, gen_time)
         self.last_stats = row
         if self.store is not None:
             self.store.append_stats(row)
-            self.store.save_champion(gen, "representative", X[rep], score=float(agg[rep]))
+            self.store.save_champion(label, "representative", X[rep], score=float(agg[rep]))
             if self.config.checkpoint_every and s.generation % self.config.checkpoint_every == 0:
                 self.checkpoint()
         return row

@@ -187,3 +187,18 @@ def test_cli_train_judge_bench(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert cli.main(["train", "--resume", str(runs[0]), "--max-generations", "6", "--workers", "1"]) == 0
     assert len(store.read_stats()) == 6
     assert cli.main(["bench", str(LANDER), "--workers", "1", "--generations", "1", "--popsize", "4"]) == 0
+
+
+def test_resume_after_unclean_stop_does_not_duplicate_rows(tmp_path: Path) -> None:
+    straight = run_trainer(0, 7, make_store(tmp_path, "기준"))
+    store = make_store(tmp_path, "비정상 종료")
+    run_trainer(0, 5, store)  # 체크포인트: 2, 4, 그리고 끝날 때 5
+    (store.root / "checkpoints" / "gen_000005.pkl").unlink()  # 5세대 줄은 썼지만 체크포인트 전에 꺼진 것처럼
+    with WorkerPool(0) as pool:
+        resumed = Trainer.resume(store, pool, None, max_generations=7)
+        resumed.run()
+    gens = [int(r["generation"]) for r in store.read_stats()]
+    assert gens == list(range(1, 8))
+    rows_a = strip([{k: str(v) for k, v in r.items()} for r in straight.store.read_stats()])  # type: ignore[union-attr]
+    rows_b = strip([{k: str(v) for k, v in r.items()} for r in store.read_stats()])
+    assert rows_a == rows_b

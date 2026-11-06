@@ -308,3 +308,49 @@ RUNS_CHECKPOINT_BROKEN: Final = "체크포인트 파일을 읽을 수 없습니�
 RUNS_CHAMPION_KIND_LABELS: Final = {"representative": "세대 대표", "champion": "챔피언"}
 RUNS_CHAMPION_MISSING: Final = "{generation}세대 {kind} 파일이 없습니다."
 RUNS_CHAMPION_BROKEN: Final = "챔피언 파일을 읽을 수 없습니다: {path} ({detail})"
+
+# ---- 학습 엔진 (engine/) ----
+POOL_TASK_FAILED: Final = "평가 중 오류가 났습니다. 환경 파일을 확인하세요.\n{detail}"
+POOL_WORKER_DIED: Final = "평가 워커가 거듭 비정상 종료했습니다(종료 코드 {code})."
+METHOD_NAMES: Final = {"cmaes": "CMA-ES", "ga": "유전 알고리즘", "sa": "담금질"}
+TRAIN_STOP_REASONS: Final = {
+    "max_generations": "최대 세대",
+    "max_evaluations": "최대 시험 횟수",
+    "max_time": "최대 시간",
+    "target_score": "목표 점수 도달",
+    "stagnation": "정체",
+    "requested": "사용자가 멈춤",
+}
+TRAIN_STARTED: Final = "학습 시작: {name} · {method} · 유전자 {dim}차원 · 개체 {pop} · 시험 {trials}회 · 워커 {workers}개\n실행 폴더: {path}"
+TRAIN_RESUMED: Final = "{gen}세대 체크포인트에서 이어갑니다: {path}"
+TRAIN_PROGRESS: Final = "세대 {gen} · 시험 {evals:,}회 · 최고 {best:.1f} · 평균 {mean:.1f} · 챔피언(검증) {champ} · {elapsed:.0f}초 · 초당 {sps:,.0f}스텝"
+TRAIN_FINISHED: Final = "학습 끝 ({reason}): {gen}세대, 시험 {evals:,}회, 챔피언 검증 점수 {champ:.2f} ({champ_gen}세대), {elapsed:.0f}초\n실행 폴더: {path}"
+TRAIN_STOPPING: Final = "멈추는 중입니다. 이번 세대를 마치고 체크포인트를 남깁니다(한 번 더 누르면 바로 끝냄)."
+TRAIN_ABORTED: Final = "바로 끝냈습니다. 마지막 체크포인트부터 이어갈 수 있습니다."
+TRAIN_NEED_ENV: Final = "환경 파일이나 --resume 실행 폴더를 주세요."
+JUDGE_OPEN_FAILED: Final = "실행 폴더를 열 수 없습니다: {reason}"
+JUDGE_NO_CHAMPION: Final = "아직 챔피언이 없습니다(검증 전에 멈춘 실행)."
+JUDGE_RESULT: Final = "판정({gen}세대 챔피언, 판정 시드 {n}개): 성공 {success}/{n} ({rate:.0f}%), 평균 점수 {mean:.2f}\n종료 원인: {ends}"
+BENCH_TITLE: Final = "성능 측정: {name} · 개체 {pop} × 시험 {trials}회 · 유전자 {dim}차원 (무작위 유전자, 1세대 기준)"
+BENCH_SINGLE: Final = "단일 코어: 초당 {sps:,.0f}스텝 ({us:.1f}µs/스텝), 신경망 계산 비율 {nn:.1f}%, {steps:,}스텝 {sec:.2f}초"
+BENCH_POOL: Final = "워커 {workers}개: 세대당 {sec:.2f}초 (중앙값), 초당 {sps:,.0f}스텝"
+BENCH_WORST: Final = "모든 시험이 최대 시간을 다 쓰는 최악의 세대: {steps:,}스텝 ≈ 워커 {workers}개로 {sec:.2f}초 (단일 코어 속도 기준 추정)"
+CLI_HELP_RESUME: Final = "이 실행 폴더의 마지막 체크포인트에서 이어서 학습"
+CLI_HELP_OUT: Final = "실행 폴더를 만들 곳 (기본: 문서\\진화실험실\\runs)"
+CLI_HELP_TRAIN_WORKERS: Final = "평가 워커 수 (기본: 물리 코어 수 - 1)"
+CLI_HELP_POPSIZE: Final = "개체 수"
+CLI_HELP_SIGMA: Final = "초기 시그마"
+CLI_HELP_TRIALS: Final = "개체당 시험 횟수 (기본: 환경 파일 값)"
+CLI_HELP_MAX_TIME: Final = "최대 학습 시간(초)"
+CLI_HELP_MAX_GENS: Final = "최대 세대"
+CLI_HELP_MAX_EVALS: Final = "최대 학습 시험 횟수"
+CLI_HELP_TARGET: Final = "목표 점수(챔피언 검증 점수 기준)"
+CLI_HELP_STAGNATION: Final = "이 세대 수 동안 검증 점수가 오르지 않으면 멈춤"
+CLI_HELP_BENCH_WORKERS: Final = "잴 워커 수 목록 (예: 1,2,3)"
+CLI_HELP_BENCH_GENS: Final = "워커 수마다 잴 세대 수"
+CLI_HELP_JUDGE: Final = "실행의 챔피언을 판정 시드로 평가 (완료 기준)"
+CLI_HELP_RUN_DIR: Final = "실행 폴더"
+CLI_HELP_JUDGE_SEEDS: Final = "판정 시드 개수"
+CLI_HELP_JUDGE_GEN: Final = "이 세대까지의 마지막 챔피언으로 판정 (기본: 마지막 챔피언)"
+CLI_HELP_VALIDATE_EVERY: Final = "학습 시험이 이만큼 쌓일 때마다 챔피언 검증 (기본 1000)"
+TRAIN_CANNOT_START: Final = "학습을 시작할 수 없습니다: {reason}"

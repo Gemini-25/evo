@@ -20,9 +20,12 @@
   동기화, 화면 프로세스)이 그 순간 파일을 열고 있으면 바꾸기가 PermissionError로 실패하므로 잠깐씩 다시 시도한다.
 - 사용자가 학습 중에 stats.csv를 엑셀로 열면 엑셀이 파일을 잠가 덧붙이기가 실패한다. 이때 학습을 멈추지 않고
   통계 줄을 stats.csv.pending에 따로 쌓아 두었다가, 잠금이 풀린 뒤 첫 덧붙이기 때 stats.csv에 옮긴다.
-  read_stats()는 두 파일을 합쳐 읽는다. events.jsonl도 같은 방식이다.
+  read_stats()는 두 파일을 합쳐 읽는다. events.jsonl도 같은 방식이다. 옮긴 직후 끊기거나 옆 파일을 지우지
+  못해도 같은 줄이 두 번 들어가지 않는다(RunStore._append_line 참고).
 - 전원이 나가면 덧붙이던 마지막 줄이 잘리거나 NUL 바이트로 채워질 수 있다. 읽을 때는 줄바꿈으로 끝나지 않은
-  마지막 줄을 버리고, 처음 덧붙이기 전에 그 꼬리를 잘라 낸다.
+  마지막 줄을 버리고, 처음 덧붙이기 전에(그리고 덧붙이기가 실패한 뒤에) 그 꼬리를 잘라 낸다. 그래서 통계 칸과
+  열 이름에는 줄바꿈을 받지 않는다(한 줄 = 한 세대). 덧붙이기는 매번 디스크에 내리지 않고 체크포인트를 쓰기 직전에
+  내린다: 체크포인트가 그 세대까지의 통계 줄보다 앞서 남지 않는다.
 - 폴더 이름에서 윈도우가 금지하는 글자(<>:"/\\|?*, 제어 문자), 끝의 점·공백, 예약 이름(CON, NUL, COM1 …)을
   고친다. 한글과 공백은 그대로 쓴다. 경로 길이(MAX_PATH 260)를 넘지 않게 폴더 이름은 80글자로 자른다.
 
@@ -317,7 +320,7 @@ def _log_bytes(path: Path) -> tuple[bytes, bytes, bool]:
     """(본 파일의 완전한 줄들, 옆 파일(…pending)에서 아직 옮기지 않은 줄들, 옆 파일에 이미 옮긴 줄이 남아 있는가).
 
     옮긴 뒤 옆 파일을 비우지 못한 경우(그 사이 끊김, 윈도우에서 다른 프로세스가 읽는 중)에 같은 줄이 두 번 보이지 않게
-    한다(_RunStore._append_line의 옮기는 순서 참고).
+    한다(RunStore._append_line의 옮기는 순서 참고).
     """
     main = _complete_lines(_read_bytes(path))
     side = _complete_lines(_read_bytes(path.with_name(path.name + PENDING_SUFFIX)))
@@ -670,7 +673,7 @@ class RunStore:
         self._append_line(self._stats_path(), line)
 
     def _stats_table(self) -> tuple[list[str], list[list[str]], list[list[str]], bool]:
-        """(열 이름, stats.csv의 줄들, 옆 파일에 쌓인 줄들, 옆 파일이 이미 옮긴 줄뿐인가). 열 수가 맞지 않는 줄은 버린다."""
+        """(열 이름, stats.csv의 줄들, 옆 파일에서 아직 옮기지 않은 줄들, 옆 파일에 이미 옮긴 줄이 남아 있는가). 열 수가 맞지 않는 줄은 버린다."""
         path = self._stats_path()
         main, side, merged = _log_bytes(path)
         try:

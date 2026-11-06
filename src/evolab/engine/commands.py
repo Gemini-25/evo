@@ -23,6 +23,7 @@ from evolab.engine import seeds
 from evolab.engine.pool import PoolError, WorkerPool, default_workers, physical_cores
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.policy.genome import layout_for
+from evolab.runs.store import RunStoreError
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import compile_env, env_hash, load_env
 
@@ -156,15 +157,15 @@ def train_command(args: Any) -> int:
             store.append_event("start", 0, workers=workers)
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
-    except EnvFileError as exc:
-        warn(str(exc))
+    except (EnvFileError, RunStoreError, ValueError, OSError) as exc:
+        warn(S.TRAIN_CANNOT_START.format(reason=exc))
         return 2
     try:
         with pool, _StopFlag() as flag:
             reason = trainer.run(_progress(trainer, {"last": 0.0}), lambda: flag.requested)
     except PoolError as exc:
+        # 이번 세대는 중간에 멈췄으므로 체크포인트를 새로 남기지 않는다(마지막 정상 체크포인트에서 이어간다).
         warn(str(exc))
-        trainer.checkpoint()
         return 3
     except KeyboardInterrupt:
         warn(S.TRAIN_ABORTED)
@@ -189,7 +190,7 @@ def judge_command(args: Any) -> int:
 
     try:
         store = RunStore.open(Path(args.run))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RunStoreError) as exc:
         warn(S.JUDGE_OPEN_FAILED.format(reason=exc))
         return 2
     gens = store.champion_generations("champion")
