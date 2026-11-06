@@ -1,0 +1,68 @@
+# 윈도우에서 테스트하고 exe를 묶어 자체 점검까지 돌린다.
+# 결과 exe 폴더는 실행 결과 페이지의 Artifacts에서 내려받는다.
+name: windows
+
+on:
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q
+
+      - name: Self-test (uv run, real window platform)
+        run: uv run evolab selftest --log selftest-dev.log
+
+      - name: Build exe
+        run: uv run pyinstaller packaging/evolab.spec --noconfirm
+
+      - name: Self-test frozen exe from a Korean path
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item -Recurse dist\evolab $dest
+          $exe = Join-Path $dest "evolab\evolab.exe"
+          $log = Join-Path $dest "점검 기록.log"
+          $p = Start-Process -FilePath $exe -ArgumentList @("selftest", "--log", "`"$log`"") -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(300000)) { $p.Kill($true); Write-Error "selftest timed out"; exit 1 }
+          if (Test-Path $log) { Get-Content -Encoding utf8 $log } else { Write-Error "no selftest log" }
+          "exit code: $($p.ExitCode)"
+          $size = (Get-ChildItem -Recurse dist\evolab | Measure-Object -Sum Length).Sum / 1MB
+          "dist size: {0:N0} MB" -f $size
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evolab-windows
+          path: dist/evolab
+          retention-days: 30

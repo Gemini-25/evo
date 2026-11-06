@@ -1,0 +1,39 @@
+[project]
+name = "evolab"
+version = "0.0.1"
+description = "진화 실험실: 직접 만든 2D 실험 환경에서 진화 전략이 해법을 찾아가는 과정을 보는 데스크톱 프로그램"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cma>=4.5.0",
+    "numpy>=2.5.4",
+    "pydantic>=2.14.3",
+    "pymunk>=7.3.1",
+    "pyqtgraph>=0.14.0",
+    "pyside6-essentials>=6.12.0",
+]
+
+[project.scripts]
+evolab = "evolab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evolab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 느린 학습 테스트. `uv run pytest -m slow`로 따로 실행",
+]
+addopts = "-m 'not slow'"
+qt_api = "pyside6"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
+    "pytest>=9.2.0",
+    "pytest-qt>=4.5.0",
+]
