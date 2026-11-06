@@ -11,11 +11,14 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QPointF, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
+    QCloseEvent,
     QColor,
+    QFocusEvent,
     QKeyEvent,
+    QShowEvent,
     QPainter,
     QPainterPath,
     QPen,
@@ -38,11 +41,11 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
-from evolab.app.play.record import PlayRecord, new_record
+from evolab.app.play.record import PlayRecord, align_record, new_record
 from evolab.spec import model as m
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.io import env_hash
-from evolab.world.physics2d.episode import Episode, EpisodeResult, FrameState, Trial, WorldGeometry
+from evolab.world.physics2d.episode import Episode, EpisodeBuildError, EpisodeResult, FrameState, Trial, WorldGeometry
 
 TICK_MS = 16
 MAX_STEPS_PER_TICK = 5
@@ -100,13 +103,15 @@ def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
     for i, channel in enumerate(spec.outputs):
         a = by_id.get(spec.actuator_channels[channel].owner)
         if isinstance(a, m.Thruster) and a.keys:
-            codes = [k for k in (qt_key(n) for n in a.keys) if k is not None]
-            out.append(KeyBinding(i, codes, a.label or a.id, list(a.keys)))
+            pairs = [(n, qt_key(n)) for n in a.keys]
+            mapped = [(n, k) for n, k in pairs if k is not None]
+            if mapped:
+                out.append(KeyBinding(i, [k for _, k in mapped], a.label or a.id, [n for n, _ in mapped]))
     return out
 
 
 class PlayCanvas(QWidget):
-    """세계를 그린다. 카메라는 첫 에이전트 물체를 따라간다. 휠로 확대."""
+    """세계를 그린다. 카메라는 에이전트와 목표 영역(패드 등)이 함께 보이게 맞춘다. 휠로 확대·축소."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -118,13 +123,16 @@ class PlayCanvas(QWidget):
         self.frame: FrameState | None = None
         self.follow_index = 0
         self.scale = 22.0
+        self.zoom = 1.0
         self.center = (0.0, 0.0)
+        self._targets: list[tuple[float, float]] = []
         self.hud = ""
         self._terrain_path: QPainterPath | None = None
         self._terrain_fill: QPainterPath | None = None
         self._pad_lines: list[tuple[QPointF, QPointF]] = []
         self.on_key_press = None
         self.on_key_release = None
+        self.on_focus_lost = None
 
     def set_world(self, geometry: WorldGeometry, frame: FrameState, follow: str | None) -> None:
         self.geometry_ = geometry
@@ -132,19 +140,31 @@ class PlayCanvas(QWidget):
         moving = [b for b in geometry.bodies if b.moving]
         ids = [b.id for b in moving]
         self.follow_index = ids.index(follow) if follow in ids else 0
+        self._targets = [pt for r in geometry.regions if r.kind in ("pad", "goal") for pt in r.points]
         self._prepare_static()
         if frame.poses.shape[0]:
-            x, y, _ = frame.poses[self.follow_index]
-            self.center = (float(x), float(y))
+            self.center, self.scale = self._camera_goal(frame)
         self.update()
+
+    def _camera_goal(self, frame: FrameState) -> tuple[tuple[float, float], float]:
+        """따라갈 물체와 목표 영역이 함께 들어오는 중심과 배율(px/m)."""
+        x, y, _ = frame.poses[self.follow_index]
+        xs = [float(x)] + [p[0] for p in self._targets]
+        ys = [float(y)] + [p[1] for p in self._targets]
+        x0, x1, y0, y1 = min(xs) - 6.0, max(xs) + 6.0, min(ys) - 4.0, max(ys) + 4.0
+        w, h = max(self.width(), 100), max(self.height(), 100)
+        fit = min(w / (x1 - x0), h / (y1 - y0))
+        scale = min(30.0, max(4.0, fit)) * self.zoom
+        return ((x0 + x1) / 2.0, (y0 + y1) / 2.0), scale
 
     def set_frame(self, frame: FrameState, hud: str) -> None:
         self.frame = frame
         self.hud = hud
         if frame.poses.shape[0]:
-            x, y, _ = frame.poses[self.follow_index]
+            (gx, gy), gs = self._camera_goal(frame)
             cx, cy = self.center
-            self.center = (cx + (float(x) - cx) * 0.15, cy + (float(y) - cy) * 0.15)
+            self.center = (cx + (gx - cx) * 0.15, cy + (gy - cy) * 0.15)
+            self.scale += (gs - self.scale) * 0.1
         self.update()
 
     def _prepare_static(self) -> None:
@@ -277,7 +297,8 @@ class PlayCanvas(QWidget):
     # ---- 입력 ----
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale = min(200.0, max(2.0, self.scale * factor))
+        self.zoom = min(8.0, max(0.25, self.zoom * factor))
+        self.scale = min(200.0, max(1.0, self.scale * factor))
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
@@ -292,6 +313,12 @@ class PlayCanvas(QWidget):
             return
         if self.on_key_release is not None:
             self.on_key_release(event_key(event))
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        # 키를 누른 채 다른 창으로 가면 떼는 이벤트가 오지 않는다. 눌린 키를 모두 놓은 것으로 본다.
+        if self.on_focus_lost is not None:
+            self.on_focus_lost()
+        super().focusOutEvent(event)
 
 
 class PlayWindow(QWidget):
@@ -314,6 +341,7 @@ class PlayWindow(QWidget):
         self.canvas = PlayCanvas()
         self.canvas.on_key_press = self._key_press
         self.canvas.on_key_release = self._key_release
+        self.canvas.on_focus_lost = self.pressed.clear
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.seed_label = QLabel()
@@ -354,7 +382,9 @@ class PlayWindow(QWidget):
         row.addWidget(button(S.PLAY_NEW_SEED, self.new_seed))
         side.addLayout(row)
         row2 = QHBoxLayout()
-        row2.addWidget(button(S.PLAY_SAVE_RECORD, self.save_record))
+        self.save_button = button(S.PLAY_SAVE_RECORD, self.save_record)
+        self.save_button.setEnabled(False)  # 끝난 기록만 저장한다(결과가 있어야 재생 검증이 된다)
+        row2.addWidget(self.save_button)
         row2.addWidget(button(S.PLAY_LOAD_RECORD, self.load_record))
         side.addLayout(row2)
         side.addWidget(help_label)
@@ -373,17 +403,29 @@ class PlayWindow(QWidget):
         self.clock = QElapsedTimer()
         self._steps_since_clock = 0
 
-        self.start(seed if seed is not None else random.SystemRandom().randrange(1 << 31))
+        # 첫 시작이 실패하면(EpisodeBuildError) 그대로 올려 보내 창을 여는 쪽이 알린다.
+        self._start_episode(seed if seed is not None else random.SystemRandom().randrange(1 << 31), None)
         self.timer.start()
 
     # ---- 진행 ----
-    def start(self, seed: int, replaying: PlayRecord | None = None) -> None:
+    def start(self, seed: int, replaying: PlayRecord | None = None) -> bool:
+        """새 에피소드. 이 시드로 조립할 수 없으면 알리고 지금 상태를 그대로 둔다."""
+        try:
+            self._start_episode(seed, replaying)
+        except EpisodeBuildError as exc:
+            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, S.PLAY_BUILD_FAILED.format(seed=seed, reason=exc))
+            return False
+        return True
+
+    def _start_episode(self, seed: int, replaying: PlayRecord | None) -> None:
+        episode = Episode(self.spec, None, Trial(seed))  # 실패하면 아무 상태도 바꾸지 않는다
         self.seed = seed
         self.replaying = replaying
-        self.episode = Episode(self.spec, None, Trial(seed))
+        self.episode = episode
         self.record = new_record(self.spec, seed)
         self.last_result = None
         self.paused = False
+        self.save_button.setEnabled(False)
         geom = self.episode.geometry()
         agent = next((b.id for b in self.spec.file.bodies if b.owner == "agent"), None)
         self.canvas.channel_names = self.episode.actuator_channels()
@@ -412,12 +454,12 @@ class PlayWindow(QWidget):
         if ep is None:
             return
         if not self.paused and not ep.done:
-            due = int(self.clock.elapsed() / 1000.0 / ep.dt) - self._steps_since_clock
-            due = max(0, min(MAX_STEPS_PER_TICK, due))
-            if due == MAX_STEPS_PER_TICK:  # 너무 밀리면 따라잡지 않고 시계를 맞춘다
-                self.clock.restart()
-                self._steps_since_clock = 0
-            for _ in range(due):
+            target = int(self.clock.elapsed() / 1000.0 / ep.dt)
+            due = target - self._steps_since_clock
+            if due > MAX_STEPS_PER_TICK:  # 너무 밀리면(창 끌기 등) 밀린 몫은 버리고 시계는 그대로 둔다
+                self._steps_since_clock = target - MAX_STEPS_PER_TICK
+                due = MAX_STEPS_PER_TICK
+            for _ in range(max(0, due)):
                 if self.replaying is not None:
                     k = ep.steps
                     action = self.replaying.actions[k] if k < len(self.replaying.actions) else [0.0] * len(self.spec.outputs)
@@ -444,6 +486,7 @@ class PlayWindow(QWidget):
         self.record.score = res.score
         self.record.outcome = res.outcome
         self.record.steps = res.steps
+        self.save_button.setEnabled(True)
         if self.replaying is not None and self.replaying.score is not None:
             if res.score == self.replaying.score and res.steps == self.replaying.steps:
                 QMessageBox.information(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_SAME.format(score=res.score))
@@ -473,22 +516,20 @@ class PlayWindow(QWidget):
             return
         ep = self.episode
         assert ep is not None
+        # 진행 중에도 학습과 같은 계산(result)으로 보여 준다. 점수 수식이 있으면 블록 가중치는 쓰이지 않는다.
+        res = self.last_result if (ep.done and self.last_result is not None) else ep.result()
         if ep.done and self.last_result is not None:
-            res = self.last_result
-            values, weighted = res.blocks, res.weighted
-            total = res.score
             self.status.setText(S.PLAY_DONE.format(label=res.end_label, score=res.score))
         else:
-            values = ep.block_values()
-            weighted = {b.id: b.weight * values[b.id] for b in self.spec.file.scoring.blocks}
-            total = sum(weighted.values())
             self.status.setText(S.PLAY_RUNNING)
+        formula = self.spec.formula is not None
         blocks = self.spec.file.scoring.blocks
         self.blocks.setRowCount(len(blocks) + 1)
         for r, b in enumerate(blocks):
             self._set(self.blocks, r, 0, b.label or b.id)
-            self._set(self.blocks, r, 1, f"{values[b.id]:.3f}")
-            self._set(self.blocks, r, 2, f"{weighted.get(b.id, 0.0):+.2f}")
+            self._set(self.blocks, r, 1, f"{res.blocks[b.id]:.3f}")
+            self._set(self.blocks, r, 2, S.PLAY_NO_WEIGHT if formula else f"{res.weighted.get(b.id, 0.0):+.2f}")
+        total = res.score
         self._set(self.blocks, len(blocks), 0, S.PLAY_TOTAL)
         self._set(self.blocks, len(blocks), 1, "")
         self._set(self.blocks, len(blocks), 2, f"{total:+.2f}")
@@ -527,31 +568,60 @@ class PlayWindow(QWidget):
     def _key_release(self, key: int) -> None:
         self.pressed.discard(key)
 
-    def focusOutEvent(self, event: object) -> None:  # noqa: N802
-        self.pressed.clear()
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            self.pressed.clear()
+        super().changeEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.timer.stop()  # 닫힌 창이 뒤에서 계속 시뮬레이션하지 않게
+        super().closeEvent(event)
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        if not self.timer.isActive():
+            self.clock.restart()
+            self._steps_since_clock = 0
+            self.timer.start()
+        super().showEvent(event)
 
     # ---- 기록 ----
     def save_record(self) -> None:
-        if self.record is None:
+        if self.record is None or self.record.score is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, S.PLAY_SAVE_RECORD, f"play_{self.seed}.evoplay", S.PLAY_RECORD_FILTER)
+        default = records_dir() / f"play_{self.seed}.evoplay"
+        path, _ = QFileDialog.getSaveFileName(self, S.PLAY_SAVE_RECORD, str(default), S.PLAY_RECORD_FILTER)
         if not path:
             return
-        self.record.save(path)
-        self.status.setText(S.PLAY_SAVED.format(path=path))
+        try:
+            self.record.save(path)
+        except OSError as exc:
+            QMessageBox.warning(self, S.PLAY_SAVE_RECORD, S.PLAY_SAVE_FAILED.format(reason=exc.strerror or exc))
+            return
+        QMessageBox.information(self, S.PLAY_SAVE_RECORD, S.PLAY_SAVED.format(path=path))
 
     def load_record(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, S.PLAY_LOAD_RECORD, "", S.PLAY_RECORD_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, S.PLAY_LOAD_RECORD, str(records_dir()), S.PLAY_RECORD_FILTER)
         if not path:
             return
         self.play_record(Path(path))
 
     def play_record(self, path: Path) -> None:
         try:
-            rec = PlayRecord.load(path)
-        except (OSError, ValueError, KeyError) as exc:
+            rec = align_record(self.spec, PlayRecord.load(path))
+        except (OSError, ValueError) as exc:
             QMessageBox.warning(self, S.PLAY_REPLAY_TITLE, S.PLAY_RECORD_BAD.format(reason=exc))
             return
         if rec.env_hash != env_hash(self.spec.file):
             QMessageBox.warning(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_ENV_DIFF)
         self.start(rec.seed, replaying=rec)
+
+
+def records_dir() -> Path:
+    """입력 기록 기본 폴더: 문서\\진화실험실\\records (OneDrive로 옮겨진 문서 폴더도 따라간다)."""
+    docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    path = (Path(docs) if docs else Path.home()) / S.DATA_DIR_NAME / "records"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return Path.home()
+    return path

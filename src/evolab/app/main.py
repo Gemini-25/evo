@@ -50,16 +50,22 @@ class MainWindow(QMainWindow):
         from evolab.app.play.window import PlayWindow
         from evolab.spec.compiled import EnvFileError
         from evolab.spec.io import load_env
+        from evolab.world.physics2d.episode import EpisodeBuildError
 
         try:
             spec = load_env(path)
-        except EnvFileError as exc:
+            window = PlayWindow(spec)
+        except (EnvFileError, EpisodeBuildError) as exc:
             QMessageBox.warning(self, S.PLAY_OPEN_FAILED, str(exc))
             return None
-        window = PlayWindow(spec)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._play_windows.append(window)
+        window.destroyed.connect(lambda _=None, w=window: self._forget(w))
         window.show()
-        self._play_windows = [w for w in self._play_windows if w.isVisible()] + [window]
         return window
+
+    def _forget(self, window: QWidget) -> None:
+        self._play_windows = [w for w in self._play_windows if w is not window]
 
 
 def create_application(argv: list[str] | None = None) -> QApplication:

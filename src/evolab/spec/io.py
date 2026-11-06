@@ -40,11 +40,20 @@ def migrate(data: dict[str, Any]) -> dict[str, Any]:
 
 def parse_env(data: dict[str, Any] | str | bytes) -> m.EnvFile:
     """JSON 글자열이나 사전을 검증된 모델로 바꾼다(구조 검사만, 참조와 수식은 compile_env)."""
-    if isinstance(data, (str, bytes)):
+    if isinstance(data, bytes):
         try:
-            data = json.loads(data)
+            data = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise EnvFileError([Issue("error", "", S.SPEC_NOT_UTF8)]) from None
+    if isinstance(data, str):
+        try:
+            data = json.loads(data, parse_constant=_reject_constant)
         except json.JSONDecodeError as exc:
             raise EnvFileError([Issue("error", "", S.SPEC_BAD_JSON.format(line=exc.lineno, col=exc.colno))]) from None
+        except ValueError as exc:  # NaN / Infinity
+            raise EnvFileError([Issue("error", "", S.SPEC_JSON_NAN.format(value=exc))]) from None
+        except RecursionError:
+            raise EnvFileError([Issue("error", "", S.SPEC_TOO_DEEP)]) from None
     if not isinstance(data, dict):
         raise EnvFileError([Issue("error", "", S.SPEC_NOT_OBJECT)])
     data = migrate(dict(data))
@@ -52,6 +61,12 @@ def parse_env(data: dict[str, Any] | str | bytes) -> m.EnvFile:
         return m.EnvFile.model_validate(data)
     except ValidationError as exc:
         raise EnvFileError(translate_validation_error(exc)) from None
+    except RecursionError:
+        raise EnvFileError([Issue("error", "", S.SPEC_TOO_DEEP)]) from None
+
+
+def _reject_constant(name: str) -> float:
+    raise ValueError(name)
 
 
 def compile_env(data: dict[str, Any] | str | bytes | m.EnvFile) -> EnvSpec:
@@ -63,10 +78,10 @@ def compile_env(data: dict[str, Any] | str | bytes | m.EnvFile) -> EnvSpec:
 def load_env(path: str | Path) -> EnvSpec:
     p = Path(path)
     try:
-        text = p.read_text(encoding="utf-8-sig")
+        raw = p.read_bytes()
     except OSError as exc:
         raise EnvFileError([Issue("error", "", S.SPEC_READ_FAILED.format(path=p, reason=exc.strerror or exc))]) from None
-    return compile_env(text)
+    return compile_env(raw)
 
 
 def dump_env(env: m.EnvFile) -> str:
@@ -110,6 +125,7 @@ _MESSAGES: dict[str, str] = {
     "int_from_float": S.SPEC_ERR_INT,
     "float_parsing": S.SPEC_ERR_NUMBER,
     "float_type": S.SPEC_ERR_NUMBER,
+    "finite_number": S.SPEC_ERR_FINITE,
     "bool_parsing": S.SPEC_ERR_BOOL,
     "bool_type": S.SPEC_ERR_BOOL,
     "string_type": S.SPEC_ERR_STRING,
@@ -122,6 +138,8 @@ _MESSAGES: dict[str, str] = {
 
 # 합집합 타입의 갈래 이름. 경로에서 빼고 한 칸의 오류로 합친다.
 _UNION_BRANCHES = ("float", "constrained-str", "str", "int", "bool", "list", "tuple", "none")
+# 판별 필드(kind)로 고르는 목록 칸. pydantic은 이 칸들의 오류 경로에 kind 값을 끼워 넣는다.
+_TAGGED_LISTS = frozenset({"shapes", "actuators", "sensors", "generators", "blocks"})
 
 
 def _kind_tags() -> frozenset[str]:
@@ -137,37 +155,43 @@ def _kind_tags() -> frozenset[str]:
 _KIND_TAGS = _kind_tags()
 
 
-def _format_loc(loc: tuple[int | str, ...]) -> tuple[str, bool]:
+def _format_loc(loc: tuple[int | str, ...]) -> tuple[str, str | None]:
+    """(경로, 합집합 갈래 종류). 갈래 종류는 'num'(숫자·수식 칸), 'names'(이름 목록이거나 all) 또는 None."""
     parts: list[str] = []
-    in_union = False
+    branch: str | None = None
     prev: int | str | None = None
+    prev2: int | str | None = None
     for item in loc:
         if isinstance(item, int):
             parts.append(f"[{item}]")
         elif item in _UNION_BRANCHES or item.startswith(("function-", "list[", "tuple[", "literal[", "union[")):
-            in_union = True
-        elif item in _KIND_TAGS and (isinstance(prev, int) or prev == "shape"):
+            if branch is None:
+                branch = "names" if item.startswith(("list[", "literal[")) else "num"
+        elif item in _KIND_TAGS and (
+            (isinstance(prev, int) and prev2 in _TAGGED_LISTS) or prev == "shape"
+        ):
             pass
         else:
             parts.append(("." if parts else "") + item)
-        prev = item
-    return "".join(parts), in_union
+        prev2, prev = prev, item
+    return "".join(parts), branch
 
 
 def translate_validation_error(exc: ValidationError) -> list[Issue]:
     issues: list[Issue] = []
     seen: set[str] = set()
     for err in exc.errors(include_url=False):
-        where, in_union = _format_loc(tuple(err["loc"]))
-        if in_union:
+        where, branch = _format_loc(tuple(err["loc"]))
+        if branch is not None and err["type"] != "finite_number":
             if where in seen:
                 continue
-            message = S.SPEC_ERR_NUM_OR_FORMULA
+            message = S.SPEC_ERR_NUM_OR_FORMULA if branch == "num" else S.SPEC_ERR_NAMES_OR_ALL
         else:
             template = _MESSAGES.get(err["type"], S.SPEC_ERR_GENERIC)
             ctx = err.get("ctx") or {}
+            expected = str(ctx.get("expected") or ctx.get("expected_tags") or "").replace(" or ", ", ")
             message = template.format(
-                expected=ctx.get("expected", ""),
+                expected=expected,
                 limit=ctx.get("gt", ctx.get("ge", ctx.get("lt", ctx.get("le", "")))),
                 min=ctx.get("min_length", ""),
                 max=ctx.get("max_length", ""),

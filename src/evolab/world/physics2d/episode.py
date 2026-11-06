@@ -118,6 +118,13 @@ class EpisodeBuildError(ValueError):
     """환경을 조립할 수 없다(수식 결과가 잘못된 모양 등). 결정적인 오류다."""
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    """범위로 자른다. NaN이면 lo(min/max 조합은 NaN을 그대로 통과시킨다)."""
+    if not x >= lo:
+        return lo
+    return hi if x > hi else x
+
+
 # ---------------------------------------------------------------------------
 # 만들기 단계 도우미
 # ---------------------------------------------------------------------------
@@ -240,7 +247,7 @@ class Episode:
         self._regions: dict[str, _Region] = {}
         self._region_geoms: list[RegionGeom] = []
         self._agent_ids: list[str] = []
-        self._drag: list[tuple[pymunk.Body, float]] = []
+        self._drag: list[tuple[pymunk.Body, float, pymunk.Vec2d]] = []
         self._start_pos: dict[str, geo.Point] = {}
 
         self._build_generators()
@@ -248,7 +255,7 @@ class Episode:
         self._build_env["agent"] = {**self.randoms, **self.gen_values, **self.params}
 
         w = env.world
-        lim = lambda x: min(max(x, -FIELD_LIMIT), FIELD_LIMIT)  # noqa: E731
+        lim = lambda x: _clamp(x, -FIELD_LIMIT, FIELD_LIMIT)  # noqa: E731
         self.gravity = (lim(self._num(w.gravity[0], "world")), lim(self._num(w.gravity[1], "world")))
         self.wind = (lim(self._num(w.wind[0], "world")), lim(self._num(w.wind[1], "world")))
         b = w.bounds
@@ -319,9 +326,10 @@ class Episode:
 
         self._apply_actuators()
         wx, wy = self.wind
-        for body, drag in self._drag:
+        for body, k, cog in self._drag:
             vx, vy = body.velocity
-            body.apply_force_at_world_point((drag * (wx - vx), drag * (wy - vy)), body.position)
+            fx, fy = geo.rotate((k * (wx - vx), k * (wy - vy)), -body.angle)
+            body.apply_force_at_local_point((fx, fy), cog)  # 무게중심에 걸어 가짜 토크가 없게
         self.space.step(self.dt)
         self._cache.clear()
         self.steps += 1
@@ -393,10 +401,10 @@ class Episode:
 
     def _num(self, value: float | str, stage: sy.BuildStage) -> float:
         if isinstance(value, (int, float)):
-            return float(value)
-        compiled = self.spec.formulas[(value, stage)]
-        x = finite(float(compiled(self._build_env[stage])))
-        return min(max(x, -NUM_LIMIT), NUM_LIMIT)
+            x = float(value)
+        else:
+            x = float(self.spec.formulas[(value, stage)](self._build_env[stage]))
+        return _clamp(finite(x), -NUM_LIMIT, NUM_LIMIT)
 
     def _vec(self, v: Sequence[float | str], stage: sy.BuildStage) -> geo.Point:
         return (self._num(v[0], stage), self._num(v[1], stage))
@@ -456,7 +464,7 @@ class Episode:
         except ValueError as exc:
             raise EpisodeBuildError(f"generators.{g.id}: {exc}") from None
         body = pymunk.Body(body_type=pymunk.Body.STATIC)
-        friction = min(max(num(g.friction), 0.0), 1e3)
+        friction = _clamp(num(g.friction), 0.0, 1e3)
         shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
         tags: list[list[str]] = []
         xs, ys = hm.xs, hm.ys
@@ -504,14 +512,16 @@ class Episode:
     def _make_shapes(self, body: pymunk.Body, b: m.Body, stage: sy.BuildStage) -> list[tuple[pymunk.Shape, ShapeGeom]]:
         mat = b.material
         # Chipmunk는 음수 마찰·탄성에서 프로세스를 강제 종료하므로 여기서 범위를 잡는다.
-        density = min(max(self._num(mat.density, stage), 1e-6), 1e9)
-        friction = min(max(self._num(mat.friction, stage), 0.0), 1e3)
-        elasticity = min(max(self._num(mat.elasticity, stage), 0.0), 1.0)
+        density = _clamp(self._num(mat.density, stage), 1e-6, 1e9)
+        friction = _clamp(self._num(mat.friction, stage), 0.0, 1e3)
+        elasticity = _clamp(self._num(mat.elasticity, stage), 0.0, 1.0)
         out: list[tuple[pymunk.Shape, ShapeGeom]] = []
 
         def poly(points: list[geo.Point]) -> None:
-            if abs(geo.signed_area(points)) < 1e-9:
+            if abs(geo.signed_area(points)) < 1e-9 or not geo.is_simple(points):
                 raise EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body=b.id))
+            if geo.signed_area(points) < 0:  # pymunk의 볼록 분해는 반시계 방향만 받는다
+                points = points[::-1]
             if geo.is_convex(points):
                 pieces = [points]
             else:
@@ -519,25 +529,27 @@ class Episode:
                     pieces = [[(p.x, p.y) for p in piece] for piece in convex_decomposition(points + [points[0]], 0.01)]
                 except Exception:  # pymunk가 자기 교차 다각형에서 실패할 수 있다
                     raise EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body=b.id)) from None
+            if len(pieces) > 64:
+                raise EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body=b.id))
             for piece in pieces:
                 out.append((pymunk.Poly(body, piece), ShapeGeom("poly", piece)))
 
         for s in b.shapes:
             if isinstance(s, m.Box):
                 w, h = self._num(s.w, stage), self._num(s.h, stage)
-                if not (w > 0 and h > 0):
+                if not (0 < w <= 1e5 and 0 < h <= 1e5):
                     raise EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body=b.id))
                 poly(geo.box_points(w, h, self._vec(s.offset, stage), self._num(s.angle, stage)))
             elif isinstance(s, m.Circle):
                 r = self._num(s.r, stage)
-                if not r > 0:
+                if not 0 < r <= 1e5:
                     raise EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body=b.id))
                 off = self._vec(s.offset, stage)
                 out.append((pymunk.Circle(body, r, off), ShapeGeom("circle", [off], r)))
             elif isinstance(s, m.Poly):
                 poly([self._vec(p, stage) for p in s.points])
             elif isinstance(s, m.Radial):
-                radii = [max(0.01, self._num(r, stage)) for r in s.radii]
+                radii = [_clamp(self._num(r, stage), 0.01, 1e5) for r in s.radii]
                 pts = geo.radial_points(radii, self._num(s.angle, stage))
                 for i in range(len(pts)):
                     tri = [(0.0, 0.0), pts[i], pts[(i + 1) % len(pts)]]
@@ -573,9 +585,10 @@ class Episode:
                     (pp, pa) = pose(j.a)
                 else:
                     pp, pa = (0.0, 0.0), 0.0
-                angle = pa + self._num(j.rest_angle, "agent")
-                anchor_world = geo.transform(self._vec(j.anchor_a, "agent"), pp, pa)
-                ab = geo.rotate(self._vec(j.anchor_b, "agent"), angle)
+                js = sy.joint_stage(self.env, j)
+                angle = pa + self._num(j.rest_angle, js)
+                anchor_world = geo.transform(self._vec(j.anchor_a, js), pp, pa)
+                ab = geo.rotate(self._vec(j.anchor_b, js), angle)
                 result = ((anchor_world[0] - ab[0], anchor_world[1] - ab[1]), angle)
             else:
                 result = (self._vec(b.pos, stage), self._num(b.angle, stage))
@@ -603,10 +616,6 @@ class Episode:
                 wp = geo.transform(lp, spawn, spawn_angle)
                 body.position = wp
                 body.angle = la + spawn_angle
-                if b.type == "dynamic":
-                    rx, ry = wp[0] - spawn[0], wp[1] - spawn[1]
-                    body.velocity = (spawn_v[0] - spawn_w * ry, spawn_v[1] + spawn_w * rx)
-                    body.angular_velocity = spawn_w
                 self._agent_ids.append(b.id)
             else:
                 body.position = lp
@@ -616,38 +625,54 @@ class Episode:
                 for s, _ in shapes:
                     s.filter = pymunk.ShapeFilter(group=AGENT_GROUP)
             self._add_body(b.id, body, shapes, list(b.tags), b.owner)
-            drag = min(max(self._num(b.drag, stage), 0.0), 1e6)
+            if b.owner == "agent" and b.type == "dynamic":
+                # 강체 전체가 함께 도는 시작: 속도는 무게중심 속도이므로 무게중심 위치로 계산한다.
+                c = body.local_to_world(body.center_of_gravity)
+                rx, ry = c.x - spawn[0], c.y - spawn[1]
+                body.velocity = (spawn_v[0] - spawn_w * ry, spawn_v[1] + spawn_w * rx)
+                body.angular_velocity = spawn_w
+            drag = _clamp(self._num(b.drag, stage), 0.0, 1e6)
             if drag != 0.0 and b.type == "dynamic":
-                self._drag.append((body, drag))
+                # 선형 항력을 한 스텝 동안 정확히 적분한 계수: v가 바람 속도를 넘어서 진동·발산하지 않는다.
+                k = body.mass * (1.0 - math.exp(-drag * self.dt / body.mass)) / self.dt
+                self._drag.append((body, k, body.center_of_gravity))
             self._start_pos[b.id] = (body.position.x, body.position.y)
         self._body_id = {v: k for k, v in self.bodies.items()}
 
     def _build_joints(self) -> None:
         for j in self.env.joints:
-            a, b = self.bodies[j.a], self.bodies[j.b]
-            aa, ab = self._vec(j.anchor_a, "agent"), self._vec(j.anchor_b, "agent")
-            cons: list[pymunk.Constraint] = []
-            if j.kind in ("pivot", "rot_spring", "weld"):
-                cons.append(pymunk.PivotJoint(a, b, aa, ab))
-            if j.kind == "weld":
-                cons.append(pymunk.GearJoint(a, b, b.angle - a.angle, 1.0))
-            stiffness = min(max(self._num(j.stiffness, "agent"), 0.0), 1e9)
-            damping = min(max(self._num(j.damping, "agent"), 0.0), 1e9)
-            if j.kind == "rot_spring":
-                # Chipmunk의 회전 스프링은 쉬는 각도를 (a 각도 - b 각도)로 잰다. 각도 제한(RotaryLimitJoint)은
-                # (b - a)로 잰다. 환경 파일은 둘 다 (b - a) 기준이므로 스프링에는 부호를 바꿔 넘긴다.
-                cons.append(pymunk.DampedRotarySpring(a, b, -self._num(j.rest_angle, "agent"), stiffness, damping))
-            if j.kind == "spring":
-                wa, wb = a.local_to_world(aa), b.local_to_world(ab)
-                rest = self._num(j.rest_length, "agent") if j.rest_length is not None else (wa - wb).length
-                cons.append(pymunk.DampedSpring(a, b, aa, ab, max(rest, 0.0), stiffness, damping))
-            if j.limit is not None and j.kind in ("pivot", "rot_spring"):
-                lo, hi = self._num(j.limit[0], "agent"), self._num(j.limit[1], "agent")
-                cons.append(pymunk.RotaryLimitJoint(a, b, min(lo, hi), max(lo, hi)))
-            for c in cons:
-                c.collide_bodies = j.collide
-            self.space.add(*cons)
+            try:
+                self._build_joint(j)
+            except AssertionError:  # pymunk: 양쪽 모두 정적 물체 등
+                raise EpisodeBuildError(S.SPEC_JOINT_NO_DYNAMIC.format(id=j.id)) from None
         self._joints = {j.id: j for j in self.env.joints}
+
+    def _build_joint(self, j: m.Joint) -> None:
+        st = sy.joint_stage(self.env, j)  # 세계 물체끼리의 관절은 세계 단계(p.* 없음)
+        num = lambda v: self._num(v, st)  # noqa: E731
+        a, b = self.bodies[j.a], self.bodies[j.b]
+        aa, ab = self._vec(j.anchor_a, st), self._vec(j.anchor_b, st)
+        cons: list[pymunk.Constraint] = []
+        if j.kind in ("pivot", "rot_spring", "weld"):
+            cons.append(pymunk.PivotJoint(a, b, aa, ab))
+        if j.kind == "weld":
+            cons.append(pymunk.GearJoint(a, b, b.angle - a.angle, 1.0))
+        stiffness = _clamp(num(j.stiffness), 0.0, 1e9)
+        damping = _clamp(num(j.damping), 0.0, 1e9)
+        if j.kind == "rot_spring":
+            # Chipmunk의 회전 스프링은 쉬는 각도를 (a 각도 - b 각도)로 잰다. 각도 제한(RotaryLimitJoint)은
+            # (b - a)로 잰다. 환경 파일은 둘 다 (b - a) 기준이므로 스프링에는 부호를 바꿔 넘긴다.
+            cons.append(pymunk.DampedRotarySpring(a, b, -num(j.rest_angle), stiffness, damping))
+        if j.kind == "spring":
+            wa, wb = a.local_to_world(aa), b.local_to_world(ab)
+            rest = num(j.rest_length) if j.rest_length is not None else (wa - wb).length
+            cons.append(pymunk.DampedSpring(a, b, aa, ab, _clamp(rest, 0.0, 1e5), stiffness, damping))
+        if j.limit is not None and j.kind in ("pivot", "rot_spring"):
+            lo, hi = num(j.limit[0]), num(j.limit[1])
+            cons.append(pymunk.RotaryLimitJoint(a, b, min(lo, hi), max(lo, hi)))
+        for c in cons:
+            c.collide_bodies = j.collide
+        self.space.add(*cons)
 
     def _build_actuators(self) -> None:
         channels = list(self.spec.actuator_channels.values())

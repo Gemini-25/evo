@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from evolab.app import strings as S
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.io import env_hash
 from evolab.world.physics2d.episode import Episode, EpisodeResult, Trial
@@ -47,20 +48,32 @@ class PlayRecord:
 
     @classmethod
     def from_json(cls, text: str) -> PlayRecord:
-        data = json.loads(text)
-        if data.get("format") != FORMAT:
-            raise ValueError(FORMAT)
-        result = data.get("result") or {}
-        return cls(
-            env_name=str(data["env_name"]),
-            env_hash=str(data["env_hash"]),
-            seed=int(data["seed"]),
-            outputs=[str(x) for x in data["outputs"]],
-            actions=[[float(v) for v in row] for row in data["actions"]],
-            score=result.get("score"),
-            outcome=result.get("outcome"),
-            steps=result.get("steps"),
-        )
+        """형식이 틀리면 한국어 설명이 담긴 ValueError."""
+        try:
+            data = json.loads(text)
+            if not isinstance(data, dict) or data.get("format") != FORMAT:
+                raise ValueError(S.PLAY_RECORD_NOT_RECORD)
+            result = data.get("result") or {}
+            outputs = [str(x) for x in data["outputs"]]
+            actions = [[float(v) for v in row] for row in data["actions"]]
+            if any(len(row) != len(outputs) for row in actions):
+                raise ValueError(S.PLAY_RECORD_ROW_SIZE)
+            score = result.get("score")
+            steps = result.get("steps")
+            return cls(
+                env_name=str(data["env_name"]),
+                env_hash=str(data["env_hash"]),
+                seed=int(data["seed"]),
+                outputs=outputs,
+                actions=actions,
+                score=float(score) if score is not None else None,
+                outcome=result.get("outcome"),
+                steps=int(steps) if steps is not None else None,
+            )
+        except ValueError:
+            raise
+        except (TypeError, KeyError, AttributeError, OverflowError) as exc:
+            raise ValueError(S.PLAY_RECORD_BROKEN.format(detail=type(exc).__name__)) from None
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(self.to_json(), encoding="utf-8")
@@ -74,8 +87,22 @@ def new_record(spec: EnvSpec, seed: int) -> PlayRecord:
     return PlayRecord(spec.file.name, env_hash(spec.file), seed, list(spec.outputs), [])
 
 
+def align_record(spec: EnvSpec, record: PlayRecord) -> PlayRecord:
+    """기록의 출력 채널을 이 환경의 출력 순서로 맞춘다. 채널 이름이 다르면 ValueError."""
+    if record.outputs == spec.outputs:
+        return record
+    if sorted(record.outputs) != sorted(spec.outputs):
+        raise ValueError(S.PLAY_REPLAY_OUTPUTS_DIFF.format(recorded=", ".join(record.outputs), now=", ".join(spec.outputs)))
+    index = [record.outputs.index(n) for n in spec.outputs]
+    return PlayRecord(
+        record.env_name, record.env_hash, record.seed, list(spec.outputs),
+        [[row[i] for i in index] for row in record.actions], record.score, record.outcome, record.steps,
+    )
+
+
 def replay(spec: EnvSpec, record: PlayRecord) -> EpisodeResult:
     """기록된 입력으로 화면 없이 다시 돌린다. 기록이 끝나도 안 끝났으면 출력 0으로 끝까지 돌린다."""
+    record = align_record(spec, record)
     episode = Episode(spec, None, Trial(record.seed))
     zero = np.zeros(len(spec.outputs))
     for row in record.actions:
@@ -88,8 +115,13 @@ def replay(spec: EnvSpec, record: PlayRecord) -> EpisodeResult:
 
 
 def verify_record(spec: EnvSpec, path: str | Path) -> tuple[bool, EpisodeResult, PlayRecord]:
-    """화면 없이 기록을 다시 돌려 기록된 결과(점수와 스텝 수)와 비트 단위로 비교한다."""
+    """화면 없이 기록을 다시 돌려 기록된 결과(점수와 스텝 수)와 비트 단위로 비교한다.
+
+    파일을 읽을 수 없거나, 형식이 틀리거나, 결과가 없는 기록(끝나기 전에 저장)이면 ValueError 또는 OSError.
+    """
     rec = PlayRecord.load(path)
+    if rec.score is None or rec.steps is None:
+        raise ValueError(S.PLAY_RECORD_NO_RESULT)
     res = replay(spec, rec)
-    same = rec.score is not None and res.score == rec.score and res.steps == rec.steps
+    same = res.score == rec.score and res.steps == rec.steps
     return same, res, rec

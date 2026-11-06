@@ -71,6 +71,30 @@ def is_convex(points: Sequence[Point]) -> bool:
     return sign != 0
 
 
+def _segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
+    """선분 ab와 cd가 끝점이 아닌 곳에서 만나는가(끝점끼리 닿는 것은 제외)."""
+
+    def orient(p: Point, q: Point, r: Point) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    d1, d2 = orient(c, d, a), orient(c, d, b)
+    d3, d4 = orient(a, b, c), orient(a, b, d)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and 0.0 not in (d1, d2, d3, d4)
+
+
+def is_simple(points: Sequence[Point]) -> bool:
+    """이웃하지 않은 변끼리 교차하지 않는 다각형인가(별 모양처럼 꼬인 다각형은 False)."""
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue  # 첫 변과 마지막 변은 이웃
+            if _segments_cross(a, b, points[j], points[(j + 1) % n]):
+                return False
+    return True
+
+
 def point_in_polygon(p: Point, poly: Sequence[Point]) -> bool:
     x, y = p
     inside = False

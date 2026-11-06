@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import keyword
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
@@ -22,10 +23,22 @@ BODY_STATE: tuple[str, ...] = ("x", "y", "vx", "vy", "speed", "angle", "omega")
 BUILTIN_EVENTS: tuple[str, ...] = ("timeout", "out_of_bounds")
 END_FLAGS: tuple[str, ...] = ("success", "failure", "neutral")
 RESERVED: frozenset[str] = frozenset(
-    {"time", "pi", "p", "r", "gen", "tag", "True", "False", "and", "or", "not", "if", "else", "contact", "inside", "dist"}
+    {"time", "pi", "p", "r", "gen", "tag", "None", "contact", "inside", "dist"}
+    | set(keyword.kwlist)
     | set(BUILTIN_EVENTS)
     | set(END_FLAGS)
 )
+
+# 직접 조종 키 이름(Qt 키 이름에서 Key_를 뺀 것). R, N, Space는 직접 조종 창 제어용이라 구동기에 쓸 수 없다.
+CONTROL_KEYS: frozenset[str] = frozenset({"R", "N", "Space"})
+KEY_NAMES: frozenset[str] = frozenset(
+    {chr(c) for c in range(ord("A"), ord("Z") + 1)}
+    | {str(d) for d in range(10)}
+    | {f"F{i}" for i in range(1, 13)}
+    | {"Up", "Down", "Left", "Right", "Shift", "Control", "Alt", "Return", "Enter", "Tab", "Backspace",
+       "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Comma", "Period", "Slash", "Semicolon",
+       "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Apostrophe", "QuoteLeft"}
+) - CONTROL_KEYS
 
 BuildStage = Literal["generator", "world", "agent"]
 
@@ -129,16 +142,48 @@ def checkpoint_ids(env: m.EnvFile) -> list[str]:
     return out
 
 
-def all_tags(env: m.EnvFile) -> list[str]:
-    tags: list[str] = []
-    for b in env.bodies:
-        tags += b.tags
-    for r in env.regions:
-        tags += r.tags
+def body_tags(env: m.EnvFile) -> dict[str, list[str]]:
+    """물체 id -> 모양 태그. 접촉은 모양 사이에서만 생기므로 contact()와 접촉 센서는 이 태그만 쓴다."""
+    out = {b.id: list(b.tags) for b in env.bodies}
     for g in env.generators:
-        for t in generator_bodies(g).values():
-            tags += t
-    return sorted(set(tags))
+        out.update(generator_bodies(g))
+    return out
+
+
+def all_tags(env: m.EnvFile) -> list[str]:
+    """물체에 붙은 태그 전부(영역 태그는 빼고)."""
+    tags: set[str] = set()
+    for t in body_tags(env).values():
+        tags.update(t)
+    return sorted(tags)
+
+
+def owner_of(env: m.EnvFile, body_id: str) -> str:
+    """'agent' 또는 'world'. 생성기 물체는 world."""
+    for b in env.bodies:
+        if b.id == body_id:
+            return b.owner
+    return "world"
+
+
+def is_dynamic(env: m.EnvFile, body_id: str) -> bool:
+    return any(b.id == body_id and b.type == "dynamic" for b in env.bodies)
+
+
+def joint_stage(env: m.EnvFile, joint: m.Joint) -> BuildStage:
+    """양쪽이 모두 세계 물체(생성기 물체 포함)인 관절은 세계 단계(p.*를 못 씀). 그래야 모든 개체가 같은 세계를 쓴다."""
+    if owner_of(env, joint.a) == "world" and owner_of(env, joint.b) == "world":
+        return "world"
+    return "agent"
+
+
+def agent_only_selector(env: m.EnvFile, selector: str) -> bool:
+    """접촉 대상이 에이전트 물체뿐인가. 에이전트 물체끼리는 서로 닿지 않으므로 그런 접촉 조건은 늘 거짓이다."""
+    tags = body_tags(env)
+    if selector.startswith("tag."):
+        owners = {owner_of(env, b) for b, t in tags.items() if selector[4:] in t}
+        return owners == {"agent"}
+    return owner_of(env, selector) == "agent"
 
 
 def tanks(env: m.EnvFile) -> list[m.FuelTank]:
@@ -276,7 +321,9 @@ class QueryResolver:
     """수식 컴파일 때 contact / inside / dist 호출을 채널 이름으로 바꾼다. 쓰인 질의를 모아 둔다."""
 
     def __init__(self, env: m.EnvFile) -> None:
+        self._env = env
         self._bodies = set(body_ids(env))
+        self._dynamic = {b.id for b in env.bodies if b.type == "dynamic"}
         self._regions = set(region_ids(env))
         self._tags = set(all_tags(env))
         self.queries: dict[str, Query] = {}
@@ -297,10 +344,12 @@ class QueryResolver:
             ok = b in self._regions
             want = S.SPEC_QUERY_WANT_REGION
         else:
-            ok = b in self._regions or b in self._bodies
+            ok = b in self._regions or b in self._dynamic
             want = S.SPEC_QUERY_WANT_REGION_OR_BODY
         if not ok:
             raise ExprError(S.SPEC_QUERY_BAD_SECOND.format(func=func, name=b, want=want))
+        if func == "contact" and owner_of(self._env, a) == "agent" and agent_only_selector(self._env, b):
+            raise ExprError(S.SPEC_AGENT_SELF_CONTACT.format(a=a, b=b))
         q = Query(func, a, b)  # type: ignore[arg-type]
         self.queries[q.channel] = q
         return q.channel, (NUM_STEP if func == "dist" else BOOL_STEP)

@@ -6,10 +6,11 @@ EnvSpec은 검사를 통과한 환경 파일 하나와, 거기서 미리 만들�
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel
 
@@ -99,28 +100,50 @@ def check_env(env: m.EnvFile) -> list[Issue]:
 # ---------------------------------------------------------------------------
 
 
-def iter_formulas(value: Any, path: str) -> Iterator[tuple[str, str]]:
-    """모델 안에서 '='로 시작하는 문자열 칸을 모두 (경로, 원문)으로 돌려준다."""
+def _admits_formula(annotation: Any) -> bool:
+    """칸의 타입이 수식(Formula)을 받는가. Num, Vec2, list[Vec2] 등 안쪽까지 본다."""
+    if annotation is m.Formula:
+        return True
+    return any(_admits_formula(a) for a in get_args(annotation))
+
+
+@functools.cache
+def _formula_fields(cls: type[BaseModel]) -> frozenset[str]:
+    return frozenset(name for name, f in cls.model_fields.items() if _admits_formula(f.annotation))
+
+
+def iter_formulas(value: Any, path: str, formula_ok: bool = False) -> Iterator[tuple[str, str]]:
+    """모델 안에서 수식을 받는 숫자 칸에 들어 있는 '=' 수식을 (경로, 원문)으로 돌려준다.
+
+    이름(label), 설명, 사건 조건처럼 수식 칸이 아닌 글자 칸은 '='로 시작해도 수식으로 보지 않는다.
+    """
     if isinstance(value, BaseModel):
+        allowed = _formula_fields(type(value))
         for name in type(value).model_fields:
-            yield from iter_formulas(getattr(value, name), f"{path}.{name}" if path else name)
+            yield from iter_formulas(getattr(value, name), f"{path}.{name}" if path else name, name in allowed)
     elif isinstance(value, (list, tuple)):
         for i, v in enumerate(value):
-            yield from iter_formulas(v, f"{path}[{i}]")
+            yield from iter_formulas(v, f"{path}[{i}]", formula_ok)
     elif isinstance(value, dict):
         for k, v in value.items():
-            yield from iter_formulas(v, f"{path}.{k}")
-    elif isinstance(value, str) and is_formula(value):
+            yield from iter_formulas(v, f"{path}.{k}", formula_ok)
+    elif formula_ok and isinstance(value, str) and is_formula(value):
         yield path, value
 
 
+def _index(path: str, prefix: str) -> int:
+    return int(path[len(prefix) : path.index("]")])
+
+
 def _stage_of(env: m.EnvFile, path: str) -> sy.BuildStage:
+    """칸이 계산되는 만들기 단계. 런타임(Episode)도 같은 규칙으로 계산한다."""
     if path.startswith("generators"):
         return "generator"
     if path.startswith("bodies["):
-        index = int(path[len("bodies[") : path.index("]")])
-        return "agent" if env.bodies[index].owner == "agent" else "world"
-    if path.startswith(("joints", "actuators", "sensors", "agent", "scoring")):
+        return "agent" if env.bodies[_index(path, "bodies[")].owner == "agent" else "world"
+    if path.startswith("joints["):
+        return sy.joint_stage(env, env.joints[_index(path, "joints[")])
+    if path.startswith(("actuators", "sensors", "agent", "scoring")):
         return "agent"
     return "world"
 
@@ -200,6 +223,14 @@ class _Compiler:
             dup = {i for i in ids if ids.count(i) > 1}
             for i in sorted(dup):
                 self.error(group, S.SPEC_ID_DUPLICATE.format(id=i, other=group))
+            for i in ids:
+                if i in sy.RESERVED:
+                    self.error(group, S.SPEC_ID_RESERVED.format(id=i))
+        all_ids = [i for _, i in sy.component_ids(self.env)] + [p.id for p in self.env.params] + [
+            v.id for v in self.env.randomize
+        ]
+        for i in sorted({i for i in all_ids if "__" in i}):
+            self.error("", S.SPEC_ID_DUNDER.format(id=i))
 
     def _check_params(self) -> None:
         for i, p in enumerate(self.env.params):
@@ -250,18 +281,25 @@ class _Compiler:
             if ref not in bodies:
                 self.error(where, S.SPEC_REF_BODY.format(ref=ref))
 
+        dynamic = {b.id for b in env.bodies if b.type == "dynamic"}
+        agent_dynamic = {b.id for b in env.bodies if b.type == "dynamic" and b.owner == "agent"}
+
         def target_ref(where: str, ref: str, allow_body: bool) -> None:
-            if ref in regions or (allow_body and ref in bodies):
+            # 정적 물체(지형 등)는 위치가 원점이라 거리 대상으로 쓰면 뜻이 없다. 영역을 쓰게 한다.
+            if ref in regions or (allow_body and ref in dynamic):
                 return
             self.error(where, S.SPEC_REF_REGION.format(ref=ref))
 
-        def hit_ref(where: str, ref: str) -> None:
+        def hit_ref(where: str, ref: str, who: str | None = None) -> None:
             if ref in bodies or (ref.startswith("tag.") and ref[4:] in tags):
+                if who is not None and sy.owner_of(env, who) == "agent" and sy.agent_only_selector(env, ref):
+                    self.error(where, S.SPEC_AGENT_SELF_CONTACT.format(a=who, b=ref))
                 return
             self.error(where, S.SPEC_REF_BODY_OR_TAG.format(ref=ref))
 
         if env.actuators and not agent_bodies:
             self.error("bodies", S.SPEC_NO_AGENT_BODY)
+        own = {b.id: b for b in env.bodies}
         for i, b in enumerate(env.bodies):
             where = f"bodies[{i}]"
             if b.owner == "agent" and b.type != "dynamic":
@@ -272,6 +310,9 @@ class _Compiler:
                     self.error(f"{where}.place_by", S.SPEC_REF_JOINT.format(ref=b.place_by))
                 elif j.b != b.id:
                     self.error(f"{where}.place_by", S.SPEC_PLACE_BY_CHILD.format(joint=j.id, body=b.id))
+                elif j.a not in own or own[j.a].owner != b.owner:
+                    # 부모와 자식의 좌표계(에이전트 좌표 / 세계 좌표)가 같아야 앵커가 맞는다.
+                    self.error(f"{where}.place_by", S.SPEC_PLACE_BY_OWNER.format(joint=j.id, body=b.id))
         if self._place_cycle():
             self.error("bodies", S.SPEC_PLACE_CYCLE)
         for i, j in enumerate(env.joints):
@@ -279,10 +320,21 @@ class _Compiler:
             body_ref(f"joints[{i}].b", j.b)
             if j.a == j.b:
                 self.error(f"joints[{i}]", S.SPEC_JOINT_SAME_BODY.format(id=j.id))
+            elif j.a in bodies and j.b in bodies and not (sy.is_dynamic(env, j.a) or sy.is_dynamic(env, j.b)):
+                self.error(f"joints[{i}]", S.SPEC_JOINT_NO_DYNAMIC.format(id=j.id))
+            if j.collide and sy.owner_of(env, j.a) == "agent" and sy.owner_of(env, j.b) == "agent":
+                self.warn(f"joints[{i}].collide", S.SPEC_AGENT_COLLIDE.format(id=j.id))
         for i, a in enumerate(env.actuators):
             where = f"actuators[{i}]"
             if isinstance(a, (m.Thruster, m.Vehicle)):
                 body_ref(f"{where}.body", a.body)
+                if a.body in bodies and a.body not in agent_dynamic:
+                    self.error(f"{where}.body", S.SPEC_ACTUATOR_BODY.format(ref=a.body))
+            for k, key in enumerate(_keys_of(a)):
+                if key in sy.CONTROL_KEYS:
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_RESERVED.format(key=key))
+                elif key not in sy.KEY_NAMES:
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_UNKNOWN.format(key=key))
             if isinstance(a, m.Thruster) and a.tank is not None and a.tank not in tanks:
                 self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=a.tank))
             if isinstance(a, m.Motor) and a.joint not in joints:
@@ -295,7 +347,7 @@ class _Compiler:
                 target_ref(f"{where}.target", s.target, allow_body=True)
             if isinstance(s, m.ContactSensor):
                 for k, ref in enumerate(s.with_):
-                    hit_ref(f"{where}.with[{k}]", ref)
+                    hit_ref(f"{where}.with[{k}]", ref, s.body)
             if isinstance(s, m.Rays):
                 for k, ref in enumerate(s.hits):
                     hit_ref(f"{where}.hits[{k}]", ref)
@@ -315,7 +367,7 @@ class _Compiler:
                 target_ref(f"{where}.target", b.target, allow_body=True)
             if isinstance(b, m.ContactTimeBlock):
                 for k, ref in enumerate(b.with_):
-                    hit_ref(f"{where}.with[{k}]", ref)
+                    hit_ref(f"{where}.with[{k}]", ref, b.body)
             if isinstance(b, m.FuelBlock) and b.tank not in tanks:
                 self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=b.tank))
             if isinstance(b, (m.EnergyBlock, m.SmoothnessBlock)) and b.actuators != "all":
@@ -369,8 +421,6 @@ class _Compiler:
         out: dict[tuple[str, sy.BuildStage], Compiled] = {}
         tables = {st: sy.build_symbols(self.env, st) for st in ("generator", "world", "agent")}
         for path, source in iter_formulas(self.env, ""):
-            if path.startswith(("editor", "events", "scoring")):
-                continue
             stage = _stage_of(self.env, path)
             key = (source, stage)
             if key in out:
@@ -435,6 +485,16 @@ class _Compiler:
         if not any(t.event == "timeout" for t in ends):
             ends.append(m.End(event="timeout", outcome="neutral", label=S.END_TIMEOUT))
         return ends
+
+
+def _keys_of(a: m.Actuator) -> list[str]:
+    if isinstance(a, m.Thruster):
+        return list(a.keys)
+    if isinstance(a, m.Vehicle):
+        return [*a.keys_forward, *a.keys_back, *a.keys_left, *a.keys_right]
+    if isinstance(a, m.Motor):
+        return [*a.keys_pos, *a.keys_neg]
+    return []
 
 
 def finite(x: float) -> float:

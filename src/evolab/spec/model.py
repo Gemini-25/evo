@@ -20,7 +20,7 @@ CURRENT_VERSION = 1
 
 Id = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*$", max_length=40)]
 Ref = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_.\uac00-\ud7a3]*$", max_length=80)]
-Formula = Annotated[str, StringConstraints(pattern=r"^\s*=", max_length=1000)]
+Formula = Annotated[str, StringConstraints(pattern=r"^=", max_length=1000)]
 Expr = Annotated[str, StringConstraints(min_length=1, max_length=1000)]
 Num = Union[float, Formula]
 Vec2 = tuple[Num, Num]
@@ -28,7 +28,8 @@ Label = Annotated[str, StringConstraints(max_length=80)]
 
 
 class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    # NaN과 무한대는 받지 않는다(Chipmunk가 음수·NaN 마찰 같은 값에서 프로세스를 강제 종료한다).
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, allow_inf_nan=False)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +236,7 @@ class BodyState(_Model):
     fields: list[StateField] = Field(min_length=1)
     frame: Literal["world", "body"] = "world"
     """속도를 세계 좌표로 볼지 물체 좌표로 볼지. 각도는 늘 -pi..pi로 감싼다."""
-    scale: dict[StateField, float] = {}
+    scale: dict[StateField, Annotated[float, Field(gt=0.0)]] = {}
 
 
 class Target(_Model):

@@ -120,7 +120,7 @@
   "events": [
     {"id": "landed", "label": "패드 위 착지", "when": "contact(leg_l, tag.pad) and contact(leg_r, tag.pad) and hull.speed < 0.5", "hold": 1.0},
     {"id": "crash", "label": "충돌", "when": "contact(hull, tag.terrain)"},
-    {"id": "off_pad", "label": "패드 밖 착지", "when": "contact(leg_l, tag.terrain) and contact(leg_r, tag.terrain) and hull.speed < 0.5", "hold": 1.0}
+    {"id": "off_pad", "label": "패드 밖 착지", "when": "contact(leg_l, tag.terrain) and contact(leg_r, tag.terrain) and hull.speed < 0.5 and not (contact(leg_l, tag.pad) and contact(leg_r, tag.pad))", "hold": 1.0}
   ],
   "termination": [
     {"event": "landed", "outcome": "success", "label": "성공"},

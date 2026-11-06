@@ -85,7 +85,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _play(env_path: Path, seed: int | None, replay_path: Path | None, verify_path: Path | None) -> int:
     from evolab.spec.compiled import EnvFileError
-    from evolab.spec.io import load_env
+    from evolab.spec.io import env_hash, load_env
+    from evolab.world.physics2d.episode import EpisodeBuildError
 
     try:
         spec = load_env(env_path)
@@ -94,9 +95,16 @@ def _play(env_path: Path, seed: int | None, replay_path: Path | None, verify_pat
         return 2
 
     if verify_path is not None:
+        # 종료 코드: 0 같음, 1 다름, 2 기록이나 환경을 쓸 수 없음
         from evolab.app.play.record import verify_record
 
-        same, result, record = verify_record(spec, verify_path)
+        try:
+            same, result, record = verify_record(spec, verify_path)
+        except (OSError, ValueError, EpisodeBuildError) as exc:
+            _print_err(S.PLAY_RECORD_BAD.format(reason=exc))
+            return 2
+        if record.env_hash != env_hash(spec.file):
+            _print_err(S.PLAY_REPLAY_ENV_DIFF)
         message = (S.CLI_VERIFY_SAME if same else S.CLI_VERIFY_DIFF).format(
             recorded=record.score, replayed=result.score, steps=result.steps
         )
@@ -108,7 +116,11 @@ def _play(env_path: Path, seed: int | None, replay_path: Path | None, verify_pat
     from evolab.app.play.window import PlayWindow
 
     app = create_application()
-    window = PlayWindow(spec, seed)
+    try:
+        window = PlayWindow(spec, seed)
+    except EpisodeBuildError as exc:
+        _print_err(S.PLAY_BUILD_FAILED.format(seed=seed, reason=exc))
+        return 2
     if replay_path is not None:
         window.play_record(replay_path)
     window.show()
