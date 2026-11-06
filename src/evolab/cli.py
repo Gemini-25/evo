@@ -19,12 +19,33 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     train = sub.add_parser("train", help=S.CLI_HELP_TRAIN)
-    train.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
-    train.add_argument("--method", default="cmaes", choices=["cmaes", "ga", "sa"], help=S.CLI_HELP_METHOD)
-    train.add_argument("--seed", type=int, default=1, help=S.CLI_HELP_SEED)
+    train.add_argument("env", type=Path, nargs="?", default=None, help=S.CLI_HELP_ENV_FILE)
+    train.add_argument("--method", default=None, choices=["cmaes"], help=S.CLI_HELP_METHOD)
+    train.add_argument("--seed", type=int, default=None, help=S.CLI_HELP_SEED)
+    train.add_argument("--resume", type=Path, default=None, help=S.CLI_HELP_RESUME)
+    train.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)
+    train.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
+    train.add_argument("--popsize", type=int, default=None, help=S.CLI_HELP_POPSIZE)
+    train.add_argument("--sigma", type=float, default=None, help=S.CLI_HELP_SIGMA)
+    train.add_argument("--trials", type=int, default=None, help=S.CLI_HELP_TRIALS)
+    train.add_argument("--max-time", type=float, default=None, help=S.CLI_HELP_MAX_TIME)
+    train.add_argument("--max-generations", type=int, default=None, help=S.CLI_HELP_MAX_GENS)
+    train.add_argument("--max-evaluations", type=int, default=None, help=S.CLI_HELP_MAX_EVALS)
+    train.add_argument("--target", type=float, default=None, help=S.CLI_HELP_TARGET)
+    train.add_argument("--stagnation", type=int, default=None, help=S.CLI_HELP_STAGNATION)
+    train.add_argument("--validate-every", type=int, default=None, help=S.CLI_HELP_VALIDATE_EVERY)
 
     bench = sub.add_parser("bench", help=S.CLI_HELP_BENCH)
     bench.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
+    bench.add_argument("--workers", default=None, help=S.CLI_HELP_BENCH_WORKERS)
+    bench.add_argument("--generations", type=int, default=3, help=S.CLI_HELP_BENCH_GENS)
+    bench.add_argument("--popsize", type=int, default=32, help=S.CLI_HELP_POPSIZE)
+
+    judge = sub.add_parser("judge", help=S.CLI_HELP_JUDGE)
+    judge.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
+    judge.add_argument("--seeds", type=int, default=100, help=S.CLI_HELP_JUDGE_SEEDS)
+    judge.add_argument("--generation", type=int, default=None, help=S.CLI_HELP_JUDGE_GEN)
+    judge.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
 
     play = sub.add_parser("play", help=S.CLI_HELP_PLAY)
     play.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
@@ -39,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_NOT_YET: dict[str, str] = {"train": "M2", "bench": "M2"}
+_NOT_YET: dict[str, str] = {}
 
 
 def _configure_streams() -> None:
@@ -62,6 +83,9 @@ def _configure_streams() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from evolab.startup import limit_blas_threads
+
+    limit_blas_threads()  # numpy를 불러오기 전에
     _configure_streams()
     args = _build_parser().parse_args(argv)
 
@@ -77,6 +101,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "play":
         return _play(args.env, args.seed, args.replay, args.verify)
+
+    if args.command in ("train", "bench", "judge"):
+        from evolab.engine import commands
+
+        return {"train": commands.train_command, "bench": commands.bench_command, "judge": commands.judge_command}[
+            args.command
+        ](args)
 
     milestone = _NOT_YET[args.command]
     _print_err(S.CLI_NOT_IMPLEMENTED.format(command=args.command, milestone=milestone))

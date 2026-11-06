@@ -40,11 +40,3 @@ def test_cli_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
         cli.main(["--help"])
     assert exc.value.code == 0
     assert "selftest" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(("command", "milestone"), [("train", "M2"), ("bench", "M2")])
-def test_cli_unimplemented_commands_say_when(
-    command: str, milestone: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert cli.main([command, "environments/lander.evoenv"]) == 2
-    assert S.CLI_NOT_IMPLEMENTED.format(command=command, milestone=milestone) in capsys.readouterr().err

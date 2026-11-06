@@ -263,3 +263,8 @@ PLAY_RECORD_ROW_SIZE: Final = "입력 기록의 행 길이가 출력 채널 수�
 PLAY_RECORD_BROKEN: Final = "입력 기록 파일의 내용이 잘못되었습니다 ({detail})."
 PLAY_RECORD_NO_RESULT: Final = "끝나기 전에 저장한 기록이라 비교할 결과가 없습니다."
 PLAY_REPLAY_OUTPUTS_DIFF: Final = "기록의 출력 채널({recorded})이 이 환경({now})과 달라 재생할 수 없습니다."
+
+# ---- 신경망·유전자 (policy/) ----
+POLICY_BRAIN_SIZE: Final = "뇌 파라미터가 {got}개인데 이 신경망({shape})에는 {want}개가 필요합니다."
+POLICY_GENOME_SIZE: Final = "유전자 길이가 {got}인데 이 환경에는 {want}이 필요합니다(몸 수치 {body}개 + 뇌 파라미터 {brain}개)."
+POLICY_LAYOUT_BROKEN: Final = "유전자 구조 정보가 잘못되었습니다 ({detail})."

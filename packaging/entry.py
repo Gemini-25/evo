@@ -8,9 +8,10 @@ freeze_support()는 다른 무엇보다 먼저 불러야 한다. 묶인 exe에�
 import multiprocessing
 
 if __name__ == "__main__":
-    from evolab.startup import ensure_std_streams
+    from evolab.startup import ensure_std_streams, limit_blas_threads
 
     ensure_std_streams()
+    limit_blas_threads()
     multiprocessing.freeze_support()
     from evolab.cli import main
 

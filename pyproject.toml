@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "cma>=4.5.0",
     "numpy>=2.5.4",
+    "psutil>=7.2.2",
     "pydantic>=2.14.3",
     "pymunk>=7.3.1",
     "pyqtgraph>=0.14.0",

@@ -37,3 +37,27 @@ def builtin_env_dir() -> Path:
     if bundle is not None:
         return Path(bundle) / "environments"
     return Path(__file__).resolve().parents[2] / "environments"
+
+
+def documents_dir() -> Path:
+    """문서 폴더. 윈도우에서 OneDrive로 옮겨진 문서 폴더도 따라간다(Qt QStandardPaths)."""
+    try:
+        from PySide6.QtCore import QStandardPaths
+
+        docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        if docs:
+            return Path(docs)
+    except Exception:  # Qt를 못 불러오는 환경
+        pass
+    return Path.home() / "Documents"
+
+
+def data_dir() -> Path:
+    """사용자 데이터 폴더: 문서\\진화실험실"""
+    from evolab.app import strings as S
+
+    return documents_dir() / S.DATA_DIR_NAME
+
+
+def runs_dir() -> Path:
+    return data_dir() / "runs"
