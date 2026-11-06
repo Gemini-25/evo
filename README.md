@@ -16,6 +16,17 @@ uv run pytest            # 빠른 테스트
 uv run pytest -m slow    # 느린 학습 테스트 (M2부터)
 ```
 
+## 화면 없이 학습
+
+```powershell
+uv run evolab train environments/lander.evoenv --seed 1 --max-time 900   # 15분 학습, 문서\진화실험실\runs 아래에 실행 폴더
+uv run evolab train --resume <실행 폴더> --max-time 1800                  # 마지막 체크포인트에서 이어서 (총 30분까지)
+uv run evolab judge <실행 폴더>                                           # 챔피언을 판정 시드 100개로 평가 (완료 기준)
+uv run evolab bench environments/lander.evoenv                           # 성능 측정
+```
+
+학습 중 Ctrl+C를 한 번 누르면 이번 세대를 마치고 체크포인트를 남긴 뒤 멈춥니다. exe에서는 `evolab-cli.exe train ...`으로 같은 명령을 씁니다.
+
 ## 직접 조종 (착륙선)
 
 - 위쪽 화살표 또는 W: 주 추진기

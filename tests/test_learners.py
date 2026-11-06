@@ -16,15 +16,16 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pytest
 
 from evolab.learners.base import ALL_INVALID_SCORE, Learner, sanitize_scores
-from evolab.learners.cmaes import IPOP_MAX_DOUBLINGS, CMAES, CMAESConfig
+from evolab.learners.cmaes import CMAES, IPOP_MAX_DOUBLINGS, CMAESConfig
 
 Objective = Callable[[np.ndarray], np.ndarray]  # (N, dim) -> (N,) 점수, 높을수록 좋음
 
@@ -444,7 +445,7 @@ def test_reading_does_not_change_trajectory() -> None:
             if read:
                 learner.best()
                 learner.stats()
-                learner._es.result  # pycma 쪽 읽기도 (안에서 stop()을 부름)
+                _ = learner._es.result  # pycma 쪽 읽기도 (안에서 stop()을 부름)
             learner.tell(X, np.round(sphere(X), 2))
             if read:
                 learner.state_dict()
