@@ -39,6 +39,19 @@ def builtin_env_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "environments"
 
 
+def bundle_dir(name: str) -> Path:
+    """배포본에 함께 들어가는 폴더(assets, licenses). exe로 묶이면 _MEIPASS 아래, 개발 중에는 저장소 안."""
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle is not None:
+        return Path(bundle) / name
+    root = Path(__file__).resolve().parents[2]
+    return root / ("src/evolab/assets" if name == "assets" else name)
+
+
+def icon_path() -> Path:
+    return bundle_dir("assets") / "icon.png"
+
+
 def documents_dir() -> Path:
     """문서 폴더. 윈도우에서 OneDrive로 옮겨진 문서 폴더도 따라간다(Qt QStandardPaths)."""
     try:
@@ -61,3 +74,26 @@ def data_dir() -> Path:
 
 def runs_dir() -> Path:
     return data_dir() / "runs"
+
+
+def user_env_dir() -> Path:
+    """사용자 환경 파일 폴더: 문서\\진화실험실\\environments"""
+    return data_dir() / "environments"
+
+
+def install_examples(target: Path | None = None) -> list[Path]:
+    """첫 실행 때 내장 예제를 사용자 환경 폴더로 복사한다. 이미 있는 파일은 건드리지 않는다(사용자가 고쳤을 수 있다).
+
+    복사한 파일 목록을 돌려준다.
+    """
+    import shutil
+
+    dest = target if target is not None else user_env_dir()
+    dest.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    for src in sorted(builtin_env_dir().glob("*.evoenv")):
+        out = dest / src.name
+        if not out.exists():
+            shutil.copyfile(src, out)
+            copied.append(out)
+    return copied

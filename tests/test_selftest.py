@@ -52,4 +52,4 @@ def test_full_selftest_passes(tmp_path: Path) -> None:
     report = log.read_text(encoding="utf-8")
     assert code == 0, report
     assert S.SELFTEST_SUMMARY_OK in report
-    assert report.count(f"[{S.SELFTEST_PASS}]") == 6
+    assert report.count(f"[{S.SELFTEST_PASS}]") == 7

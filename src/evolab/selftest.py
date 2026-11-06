@@ -322,6 +322,27 @@ def _check_builtin_env() -> str:
     return f"{path.name}: inputs={len(spec.inputs)}, outputs={len(spec.outputs)}, checksum={_checksum(np.frombuffer(a[1]))}"
 
 
+def _check_bundle_files() -> str:
+    """내장 예제 3개(착륙선, 트랙 자동차, 언덕차)를 모두 컴파일하고, exe면 아이콘과 라이선스 고지가 있는지 본다."""
+    import sys
+
+    from evolab.spec.io import load_env
+
+    names = sorted(p.name for p in paths.builtin_env_dir().glob("*.evoenv"))
+    for name in names:
+        load_env(paths.builtin_env_dir() / name)
+    need = {"lander.evoenv", "track_car.evoenv", "hill_car.evoenv"}
+    if not need <= set(names):
+        raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=", ".join(sorted(need - set(names)))))
+    parts = [f"examples={','.join(names)}"]
+    if getattr(sys, "frozen", False):
+        for what in (paths.icon_path(), paths.bundle_dir("licenses") / "THIRD_PARTY_NOTICES.txt"):
+            if not what.is_file():
+                raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=what))
+        parts.append("icon, licenses ok")
+    return "; ".join(parts)
+
+
 def _check_gui() -> str:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -402,6 +423,7 @@ def run_selftest(log_path: Path | None = None, workers: int | None = None, check
         (S.SELFTEST_CHECK_LEARNER, _check_learner),
         (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(n)),
         (S.SELFTEST_CHECK_ENV, _check_builtin_env),
+        (S.SELFTEST_CHECK_BUNDLE, _check_bundle_files),
     ]
     if check_gui:
         checks.append((S.SELFTEST_CHECK_GUI, _check_gui))

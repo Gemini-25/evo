@@ -61,6 +61,24 @@ jobs:
           & (Join-Path $dest "evolab\evolab-cli.exe") selftest --log (Join-Path $dest "cli 점검.log")
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: Train, judge and reproduce with the console exe (Korean path)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $cli = Join-Path $dest "evolab\evolab-cli.exe"
+          $envfile = Join-Path $dest "evolab\_internal\environments\lander.evoenv"
+          $runs = Join-Path $dest "실행 기록"
+          & $cli train $envfile --popsize 8 --trials 2 --max-generations 3 --workers 2 --out $runs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $run = (Get-ChildItem $runs | Select-Object -First 1).FullName
+          & $cli judge $run --seeds 4 --workers 2
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $zip = Join-Path $dest "재현 묶음.zip"
+          & $cli bundle $run --out $zip
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $cli reproduce $zip --out (Join-Path $dest "다시 돌림") --workers 1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Self-test windowed exe (evolab.exe, no stdout)
         shell: pwsh
         run: |

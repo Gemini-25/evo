@@ -25,6 +25,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(S.APP_TITLE)
         self.resize(1280, 800)
+        if paths.icon_path().exists():
+            from PySide6.QtGui import QIcon
+
+            self.setWindowIcon(QIcon(str(paths.icon_path())))
 
         from evolab.app.lab.view import LabView
         from evolab.app.records.view import RecordsView
@@ -54,6 +58,9 @@ class MainWindow(QMainWindow):
         act.triggered.connect(lambda: self.open_play(paths.builtin_env_dir() / "lander.evoenv"))
         act_open = menu.addAction(S.MENU_PLAY_OPEN)
         act_open.triggered.connect(self._choose_and_play)
+        help_menu = self.menuBar().addMenu(S.MENU_HELP)
+        help_menu.addAction(S.MENU_ABOUT).triggered.connect(self.show_about)
+        help_menu.addAction(S.MENU_OPEN_DATA).triggered.connect(self._open_data_dir)
 
     def _choose_and_play(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, S.MENU_PLAY_OPEN, str(paths.builtin_env_dir()), S.ENV_FILE_FILTER)
@@ -78,6 +85,38 @@ class MainWindow(QMainWindow):
         window.destroyed.connect(lambda _=None, w=window: self._forget(w))
         window.show()
         return window
+
+    def about_text(self) -> str:
+        notices = paths.bundle_dir("licenses") / "THIRD_PARTY_NOTICES.txt"
+        try:
+            body = notices.read_text(encoding="utf-8")
+        except OSError:
+            body = S.ABOUT_NO_NOTICES
+        return S.ABOUT_TEXT.format(name=S.APP_NAME, version=__version__, notices=body)
+
+    def show_about(self) -> None:
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(S.MENU_ABOUT)
+        text = QPlainTextEdit(self.about_text())
+        text.setReadOnly(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        lic = paths.bundle_dir("licenses")
+        if lic.is_dir():
+            btn = buttons.addButton(S.ABOUT_OPEN_LICENSES, QDialogButtonBox.ButtonRole.ActionRole)
+            btn.clicked.connect(lambda: _open_folder(lic))
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(text)
+        lay.addWidget(buttons)
+        dlg.resize(640, 480)
+        dlg.exec()
+
+    def _open_data_dir(self) -> None:
+        folder = paths.data_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        _open_folder(folder)
 
     def _forget(self, window: QWidget) -> None:
         self._play_windows = [w for w in self._play_windows if w is not window]
@@ -114,6 +153,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+def _open_folder(folder: Path) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+
 def create_application(argv: list[str] | None = None) -> QApplication:
     app = QApplication.instance()
     if isinstance(app, QApplication):
@@ -122,11 +168,19 @@ def create_application(argv: list[str] | None = None) -> QApplication:
     app.setApplicationName("evolab")
     app.setApplicationDisplayName(S.APP_NAME)
     app.setApplicationVersion(__version__)
+    if paths.icon_path().exists():
+        from PySide6.QtGui import QIcon
+
+        app.setWindowIcon(QIcon(str(paths.icon_path())))
     return app
 
 
 def run_gui() -> int:
     app = create_application()
+    try:
+        paths.install_examples()  # 첫 실행: 내장 예제를 문서\진화실험실\environments로(있으면 그대로)
+    except OSError:
+        pass
     window = MainWindow()
     window.show()
     return app.exec()

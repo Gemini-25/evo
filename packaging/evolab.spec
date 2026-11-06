@@ -6,6 +6,15 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parent
 
+# 라이선스 고지를 모은다(설치된 의존성의 라이선스 파일 + 요약). 배포본의 licenses 폴더가 된다.
+import sys as _sys
+
+_sys.path.insert(0, str(ROOT / "packaging"))
+from collect_licenses import collect  # noqa: E402
+
+LICENSES = collect(ROOT / "build" / "licenses")
+ICON = str(ROOT / "packaging" / "icons" / "evolab.ico")
+
 # 쓰지 않는 큰 모듈은 빼서 배포본 크기를 줄인다.
 EXCLUDES = [
     "tkinter",
@@ -31,7 +40,11 @@ a = Analysis(
     [str(ROOT / "packaging" / "entry.py")],
     pathex=[str(ROOT / "src")],
     binaries=[],
-    datas=[(str(ROOT / "environments"), "environments")],
+    datas=[
+        (str(ROOT / "environments"), "environments"),
+        (str(ROOT / "src" / "evolab" / "assets"), "assets"),
+        (str(LICENSES), "licenses"),
+    ],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
@@ -50,6 +63,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,  # 더블클릭했을 때 검은 창이 뜨지 않게
+    icon=ICON,
 )
 
 # 명령줄용: 표준 출력과 종료 코드가 필요한 selftest / train / bench는 이쪽으로 실행한다.
@@ -64,6 +78,7 @@ exe_cli = EXE(
     strip=False,
     upx=False,
     console=True,
+    icon=ICON,
 )
 
 coll = COLLECT(
