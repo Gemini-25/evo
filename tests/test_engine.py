@@ -202,3 +202,52 @@ def test_resume_after_unclean_stop_does_not_duplicate_rows(tmp_path: Path) -> No
     rows_a = strip([{k: str(v) for k, v in r.items()} for r in straight.store.read_stats()])  # type: ignore[union-attr]
     rows_b = strip([{k: str(v) for k, v in r.items()} for r in store.read_stats()])
     assert rows_a == rows_b
+
+
+DEAD_WORKER_SCRIPT = '''
+import sys
+import numpy as np
+from evolab import paths
+from evolab.engine import seeds
+from evolab.engine.pool import WorkerPool
+from evolab.policy.genome import layout_for
+from evolab.spec.io import compile_env
+
+if __name__ == "__main__":
+    text = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8")
+    layout = layout_for(compile_env(text))
+    genomes = 0.5 * np.random.default_rng(0).standard_normal((200, layout.dim))
+    pairs = [(i, t) for i in range(200) for t in seeds.train_trials(1, 0, 1)]
+    with WorkerPool(2, chunks_per_worker=1) as pool:
+        pool._procs[0].kill()
+        pool._procs[0].join()
+        res = pool.evaluate("v", text, layout, genomes, pairs)
+    print("evaluated", len(res.scores))
+'''
+
+
+def test_process_exits_after_a_dead_worker_was_sent_a_large_task(tmp_path: Path) -> None:
+    """죽은 워커에게 보낸 큰 작업(파이프 버퍼보다 큼)이 프로세스 종료를 막지 않는다.
+
+    예전에는 공유 Queue의 보내기 스레드가 아무도 읽지 않는 파이프에 쓰다 멈춰, 테스트는 다 통과했는데
+    pytest 프로세스가 끝나지 않았다(윈도우 CI가 45분 제한에 걸림).
+    """
+    script = tmp_path / "dead_worker.py"
+    script.write_text(DEAD_WORKER_SCRIPT, encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "evaluated 200" in proc.stdout
+
+
+def test_pool_error_does_not_leave_workers_behind(batch: Any) -> None:
+    layout, genomes, pairs = batch
+    data = json.loads(LANDER_TEXT)
+    data["randomize"].append({"id": "hw", "dist": "uniform", "low": -3, "high": -1})
+    data["bodies"][0]["shapes"][0]["w"] = "=r.hw"
+    bad = json.dumps(data, ensure_ascii=False)
+    pool = WorkerPool(3)
+    procs = list(pool._procs)
+    with pytest.raises(PoolError):
+        pool.evaluate("bad", bad, layout, genomes, pairs)
+    pool.close()
+    assert not any(p.is_alive() for p in procs)

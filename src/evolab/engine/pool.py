@@ -5,7 +5,7 @@
 - 워커는 환경 사본 내용(디스크의 사용자 파일이 아님)을 받아 버전별로 한 번만 컴파일해 둔다.
 - 워커 프로세스가 죽으면 새 워커를 띄워 같은 작업을 다시 평가한다(시험 결과는 순수 함수라 결정성이 유지된다).
 - 환경 오류(조립 실패 등)는 결정적인 오류이므로 PoolError로 올린다.
-- 부모가 죽으면 워커도 스스로 끝난다. 워커는 Ctrl+C를 무시한다(부모가 정리한다).
+- 워커마다 파이프 하나(공유 Queue 없음, WorkerPool 설명 참고). 부모가 죽으면 워커도 스스로 끝난다. 워커는 Ctrl+C를 무시한다(부모가 정리한다).
 
 결과는 작업을 어떻게 나눴는지와 무관하다: 쌍마다 독립이고, 요청한 순서로 다시 맞춘다.
 """
@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
-import queue
 import signal
 import sys
 import time
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
+from multiprocessing.connection import wait
 from typing import Any
 
 import numpy as np
@@ -85,7 +85,7 @@ def _lower_priority() -> None:
             pass
 
 
-def _worker_main(worker_id: int, inbox: Any, outbox: Any) -> None:
+def _worker_main(worker_id: int, conn: Any) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _lower_priority()
     from evolab.spec.io import compile_env
@@ -95,11 +95,13 @@ def _worker_main(worker_id: int, inbox: Any, outbox: Any) -> None:
     parent = mp.parent_process()
     while True:
         try:
-            task = inbox.get(timeout=0.5)
-        except queue.Empty:
-            if parent is not None and not parent.is_alive():
-                return
-            continue
+            if not conn.poll(0.5):
+                if parent is not None and not parent.is_alive():
+                    return
+                continue
+            task = conn.recv()
+        except (EOFError, OSError):  # 부모가 끝났다(파이프가 닫힘)
+            return
         if task is None:
             return
         try:
@@ -113,54 +115,79 @@ def _worker_main(worker_id: int, inbox: Any, outbox: Any) -> None:
                 layout = GenomeLayout.from_dict(task.layout)
                 layouts[key] = layout
             pairs = [(g, Trial(seed, track)) for g, seed, track in task.pairs]
-            result = evaluate(spec, layout, task.genomes, pairs)
-            outbox.put((worker_id, task.id, "ok", result))
+            msg: tuple[int, str, Any] = (task.id, "ok", evaluate(spec, layout, task.genomes, pairs))
         except Exception as exc:
-            outbox.put((worker_id, task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
+            msg = (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+        try:
+            conn.send(msg)
+        except (EOFError, OSError):
+            return
 
 
 class WorkerPool:
-    """상주 워커 N개. workers=0이면 워커 없이 이 프로세스에서 평가한다(테스트·디버깅용, 결과는 같다)."""
+    """상주 워커 N개. workers=0이면 워커 없이 이 프로세스에서 평가한다(테스트·디버깅용, 결과는 같다).
+
+    워커마다 양방향 파이프를 하나씩 쓴다(공유 Queue를 쓰지 않는다). 공유 Queue는 보내기 스레드가
+    데이터를 다 쓸 때까지 프로세스 종료를 붙잡는데, 윈도우 파이프는 버퍼(8KB)를 넘는 메시지를 읽는
+    쪽이 읽을 때까지 쓰지 못한다. 그래서 죽은 워커의 받은편지함에 남은 작업이 부모의 종료를 영원히
+    막았다. 파이프는 이 프로세스에서 직접 보내고, 받는 쪽이 죽으면 바로 오류가 난다. 죽은 워커의
+    파이프는 버리므로 반쯤 쓰인 메시지나 늦은 결과가 다른 워커 결과에 섞이지 않는다.
+    """
 
     def __init__(self, workers: int | None = None, chunks_per_worker: int = 4) -> None:
         self.workers = default_workers() if workers is None else max(0, workers)
         self.chunks_per_worker = chunks_per_worker
         self._ctx = mp.get_context("spawn")
         self._procs: list[Any] = []
-        self._inboxes: list[Any] = []
-        self._outbox: Any = None
+        self._conns: list[Any] = []
         self._next_task = 0
         if self.workers:
             limit_blas_threads()
-            self._outbox = self._ctx.Queue()
             for w in range(self.workers):
                 self._spawn(w)
 
     # ---- 프로세스 관리 ----
     def _spawn(self, w: int) -> None:
-        inbox = self._ctx.Queue()
-        proc = self._ctx.Process(target=_worker_main, args=(w, inbox, self._outbox), daemon=False)
+        if w < len(self._conns):
+            self._conns[w].close()
+        ours, theirs = self._ctx.Pipe(duplex=True)
+        proc = self._ctx.Process(target=_worker_main, args=(w, theirs), daemon=True)
         proc.start()
+        theirs.close()  # 워커 쪽 끝은 워커만 가진다: 워커가 죽으면 이 파이프가 바로 끊긴다
         if w < len(self._procs):
             self._procs[w] = proc
-            self._inboxes[w] = inbox
+            self._conns[w] = ours
         else:
             self._procs.append(proc)
-            self._inboxes.append(inbox)
+            self._conns.append(ours)
 
-    def close(self) -> None:
-        for inbox in self._inboxes:
+    def close(self, timeout: float = 5.0) -> None:
+        for conn in self._conns:
             try:
-                inbox.put(None)
+                conn.send(None)
             except (OSError, ValueError):
                 pass
+        deadline = time.monotonic() + timeout
+        live = {p.sentinel: (p, c) for p, c in zip(self._procs, self._conns, strict=True)}
+        while live and time.monotonic() < deadline:
+            # 일하던 워커가 보내는 결과는 받아서 버린다(안 받으면 윈도우에서 보내기가 끝나지 않는다).
+            conns = {c: s for s, (p, c) in live.items()}
+            for obj in wait(list(conns) + list(live), timeout=0.1):
+                if obj in conns:
+                    try:
+                        obj.recv()
+                    except (EOFError, OSError):
+                        pass
+                else:
+                    live.pop(obj, None)
         for p in self._procs:
-            p.join(timeout=5)
             if p.is_alive():
                 p.terminate()
-                p.join(timeout=5)
+            p.join(timeout=timeout)
+        for c in self._conns:
+            c.close()
         self._procs.clear()
-        self._inboxes.clear()
+        self._conns.clear()
 
     def __enter__(self) -> WorkerPool:
         return self
@@ -208,40 +235,50 @@ class WorkerPool:
     def _run(self, tasks: list[Task]) -> list[EvalResult]:
         pending = list(range(len(tasks)))
         results: list[EvalResult | None] = [None] * len(tasks)
-        by_id = {t.id: k for k, t in enumerate(tasks)}
         running: dict[int, int] = {}  # 워커 -> 작업 위치
         retries: dict[int, int] = {}
         done = 0
 
         def feed(w: int) -> None:
-            if pending:
-                k = pending.pop(0)
-                running[w] = k
-                self._inboxes[w].put(tasks[k])
+            if not pending or w in running:
+                return
+            k = pending.pop(0)
+            try:
+                self._conns[w].send(tasks[k])
+            except (OSError, ValueError):  # 워커가 죽었다: 아래 복구가 다시 띄우고 다시 준다
+                pending.insert(0, k)
+                return
+            running[w] = k
 
         for w in range(self.workers):
             feed(w)
         while done < len(tasks):
-            try:
-                w, task_id, status, payload = self._outbox.get(timeout=POLL_S)
-            except queue.Empty:
-                self._recover(running, pending, retries, tasks, feed)
-                continue
-            k = by_id.get(task_id)
-            if k is None or running.get(w) != k:
-                continue  # 다시 띄우기 전에 죽은 워커가 남긴 늦은 결과
-            del running[w]
-            if status != "ok":
-                raise PoolError(S.POOL_TASK_FAILED.format(detail=payload))
-            results[k] = payload
-            done += 1
-            feed(w)
+            busy = {self._conns[w]: w for w in running}
+            for conn in wait(list(busy) + [p.sentinel for p in self._procs], timeout=POLL_S):
+                w = busy.get(conn) if not isinstance(conn, int) else None
+                if w is None:
+                    continue  # 프로세스 종료 신호: 아래 복구에서 처리
+                try:
+                    task_id, status, payload = conn.recv()
+                except (EOFError, OSError):
+                    continue  # 결과를 다 보내기 전에 죽었다
+                k = running.get(w)
+                if k is None or tasks[k].id != task_id:
+                    continue
+                del running[w]
+                if status != "ok":
+                    raise PoolError(S.POOL_TASK_FAILED.format(detail=payload))
+                results[k] = payload
+                done += 1
+                feed(w)
+            self._recover(running, pending, retries, feed)
         return [r for r in results if r is not None]
 
-    def _recover(self, running: dict[int, int], pending: list[int], retries: dict[int, int],
-                 tasks: list[Task], feed: Any) -> None:
+    def _recover(self, running: dict[int, int], pending: list[int], retries: dict[int, int], feed: Any) -> None:
         for w, proc in enumerate(self._procs):
             if proc.is_alive():
+                if w not in running:
+                    feed(w)
                 continue
             code = proc.exitcode
             k = running.pop(w, None)
@@ -250,6 +287,7 @@ class WorkerPool:
                 if retries[k] > MAX_RETRIES:
                     raise PoolError(S.POOL_WORKER_DIED.format(code=code))
                 pending.insert(0, k)
+            proc.join(timeout=1)
             self._spawn(w)
             feed(w)
 

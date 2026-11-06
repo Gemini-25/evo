@@ -36,6 +36,7 @@ jobs:
         run: uv sync
 
       - name: Tests
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -q
