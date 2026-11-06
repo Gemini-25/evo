@@ -208,6 +208,7 @@ class CMAES:
 
     # ------------------------------------------------------------------ 상태
     def state_dict(self) -> dict[str, Any]:
+        """세대 경계(tell 뒤, 다음 ask 전)에서만 부른다. pycma 객체는 피클한 bytes로 담겨 이후 진행과 무관한 사본이다."""
         if self._pending is not None:
             raise RuntimeError(S.LEARNER_ERR_STATE_PENDING)
         return {
@@ -227,13 +228,19 @@ class CMAES:
         }
 
     def load_state_dict(self, d: dict[str, Any]) -> None:
+        """저장된 상태로 바꾼다. 설정(개체 수, 시그마 등)도 저장된 값이 생성자 값보다 우선한다.
+        설정을 바꿔 이어 가려면 CMAES(이전 best(), 새 설정)로 새로 만든다. 유전자 차원이 다르면 ValueError.
+        """
         if d.get("name") != self.name:
             raise ValueError(S.LEARNER_ERR_STATE_KIND.format(got=d.get("name"), want=self.name))
         if d.get("format") != STATE_FORMAT:
             raise ValueError(S.LEARNER_ERR_STATE_FORMAT.format(got=d.get("format")))
         if int(d["dim"]) != self._dim:
             raise ValueError(S.LEARNER_ERR_STATE_DIM.format(got=d["dim"], want=self._dim))
-        config = CMAESConfig(**d["config"])
+        try:
+            config = CMAESConfig(**d["config"])
+        except TypeError as e:  # 모르는 설정 이름
+            raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
         try:
             with _quiet_cma():
                 es = pickle.loads(d["es"])
