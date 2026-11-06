@@ -25,12 +25,11 @@ def _sources() -> list[Path]:
 
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """문서 문자열: 값으로 쓰이지 않고 문장으로만 놓인 문자열(모듈·클래스·함수 첫 줄, 필드 아래 설명)."""
     ids: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = node.body
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-                ids.add(id(body[0].value))
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            ids.add(id(node.value))
     return ids
 
 
@@ -104,16 +103,15 @@ def numpy_random_violations(source: str) -> list[str]:
 def test_user_visible_text_only_in_strings_py() -> None:
     offenders: list[str] = []
     for path in _sources():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
         docstrings = _docstring_nodes(tree)
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and id(node) not in docstrings
-                and HANGUL.search(node.value)
-            ):
-                offenders.append(f"{path.relative_to(SRC)}:{node.lineno}: {node.value[:40]!r}")
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+                # 원문 기준: 글자 그대로 적힌 한글만 잡는다("\uac00" 같은 이스케이프는 코드용이라 허용).
+                text = ast.get_source_segment(source, node) or ""
+                if HANGUL.search(text):
+                    offenders.append(f"{path.relative_to(SRC)}:{node.lineno}: {text[:40]!r}")
     assert not offenders, "strings.py 밖의 한글 문자열:\n" + "\n".join(offenders)
 
 

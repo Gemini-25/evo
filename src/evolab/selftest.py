@@ -302,6 +302,26 @@ def _check_learner() -> str:
     return f"sphere {start:.3g} -> {best:.3g}, resume identical"
 
 
+def _check_builtin_env() -> str:
+    """exe 안에서도 내장 예제를 찾고, 같은 시드로 두 번 돌린 결과가 같은지 본다."""
+    from evolab.spec.io import load_env
+    from evolab.world.physics2d.episode import Episode, Trial
+
+    path = paths.builtin_env_dir() / "lander.evoenv"
+    spec = load_env(path)
+
+    def run() -> tuple[float, bytes]:
+        ep = Episode(spec, None, Trial(12345))
+        for _ in range(120):
+            ep.step([0.6, 0.0, 0.1])
+        return ep.result().score, ep.snapshot().poses.tobytes()
+
+    a, b = run(), run()
+    if a != b:
+        raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail="lander replay"))
+    return f"{path.name}: inputs={len(spec.inputs)}, outputs={len(spec.outputs)}, checksum={_checksum(np.frombuffer(a[1]))}"
+
+
 def _check_gui() -> str:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -381,6 +401,7 @@ def run_selftest(log_path: Path | None = None, workers: int | None = None, check
         (S.SELFTEST_CHECK_PHYSICS, _check_physics),
         (S.SELFTEST_CHECK_LEARNER, _check_learner),
         (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(n)),
+        (S.SELFTEST_CHECK_ENV, _check_builtin_env),
     ]
     if check_gui:
         checks.append((S.SELFTEST_CHECK_GUI, _check_gui))

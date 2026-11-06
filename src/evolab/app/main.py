@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QTabWidget, QWidget
 
-from evolab import __version__
+from evolab import __version__, paths
 from evolab.app import strings as S
 
 
@@ -31,6 +32,34 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(_placeholder(S.PLACEHOLDER_COMPARE), S.TAB_COMPARE)
         self.tabs.addTab(_placeholder(S.PLACEHOLDER_RECORDS), S.TAB_RECORDS)
         self.setCentralWidget(self.tabs)
+        self._play_windows: list[QWidget] = []
+
+        menu = self.menuBar().addMenu(S.MENU_PLAY)
+        act = menu.addAction(S.MENU_PLAY_LANDER)
+        act.triggered.connect(lambda: self.open_play(paths.builtin_env_dir() / "lander.evoenv"))
+        act_open = menu.addAction(S.MENU_PLAY_OPEN)
+        act_open.triggered.connect(self._choose_and_play)
+
+    def _choose_and_play(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, S.MENU_PLAY_OPEN, str(paths.builtin_env_dir()), S.ENV_FILE_FILTER)
+        if path:
+            self.open_play(Path(path))
+
+    def open_play(self, path: Path) -> QWidget | None:
+        """환경 파일을 읽어 직접 조종 창을 연다. 파일에 오류가 있으면 알려 주고 None."""
+        from evolab.app.play.window import PlayWindow
+        from evolab.spec.compiled import EnvFileError
+        from evolab.spec.io import load_env
+
+        try:
+            spec = load_env(path)
+        except EnvFileError as exc:
+            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, str(exc))
+            return None
+        window = PlayWindow(spec)
+        window.show()
+        self._play_windows = [w for w in self._play_windows if w.isVisible()] + [window]
+        return window
 
 
 def create_application(argv: list[str] | None = None) -> QApplication:

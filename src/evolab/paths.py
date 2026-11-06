@@ -29,3 +29,11 @@ def user_state_dir() -> Path:
 
 def log_dir() -> Path:
     return user_state_dir() / "logs"
+
+
+def builtin_env_dir() -> Path:
+    """내장 예제 환경 파일 폴더. exe로 묶이면 배포본 안의 environments 폴더."""
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle is not None:
+        return Path(bundle) / "environments"
+    return Path(__file__).resolve().parents[2] / "environments"

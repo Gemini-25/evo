@@ -42,7 +42,7 @@ def test_cli_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
     assert "selftest" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(("command", "milestone"), [("train", "M2"), ("bench", "M2"), ("play", "M1")])
+@pytest.mark.parametrize(("command", "milestone"), [("train", "M2"), ("bench", "M2")])
 def test_cli_unimplemented_commands_say_when(
     command: str, milestone: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

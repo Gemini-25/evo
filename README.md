@@ -8,11 +8,21 @@
 
 ```powershell
 uv sync                  # 의존성 설치
-uv run evolab            # 프로그램 창 열기
-uv run evolab selftest   # 설치 상태 점검 (프로세스, 물리, 학습 라이브러리, 창)
+uv run evolab            # 프로그램 창 열기 (메뉴 "직접 조종"에서 착륙선을 몰아 볼 수 있음)
+uv run evolab play environments/lander.evoenv            # 착륙선 직접 조종 창
+uv run evolab play environments/lander.evoenv --verify 기록.evoplay   # 입력 기록을 다시 돌려 결과 비교
+uv run evolab selftest   # 설치 상태 점검 (프로세스, 물리, 학습 라이브러리, 내장 예제, 창)
 uv run pytest            # 빠른 테스트
 uv run pytest -m slow    # 느린 학습 테스트 (M2부터)
 ```
+
+## 직접 조종 (착륙선)
+
+- 위쪽 화살표 또는 W: 주 추진기
+- 왼쪽 화살표 또는 A / 오른쪽 화살표 또는 D: 측면 추진기 (그쪽으로 밀림)
+- R 다시 시작, N 새 시드, Space 일시정지, 마우스 휠 확대
+- 두 다리를 패드(초록 선) 위에 대고 속력 0.5m/s 미만으로 1초 버티면 성공입니다.
+- "입력 기록 저장"으로 남긴 기록은 "입력 기록 재생"이나 `--verify`로 다시 돌려 같은 결과가 나오는지 확인할 수 있습니다.
 
 ## exe 받기
 

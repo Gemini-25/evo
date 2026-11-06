@@ -28,6 +28,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     play = sub.add_parser("play", help=S.CLI_HELP_PLAY)
     play.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
+    play.add_argument("--seed", type=int, default=None, help=S.CLI_HELP_PLAY_SEED)
+    play.add_argument("--replay", type=Path, default=None, help=S.CLI_HELP_PLAY_REPLAY)
+    play.add_argument("--verify", type=Path, default=None, help=S.CLI_HELP_PLAY_VERIFY)
 
     selftest = sub.add_parser("selftest", help=S.CLI_HELP_SELFTEST)
     selftest.add_argument("--log", type=Path, default=None, help=S.CLI_HELP_LOG)
@@ -36,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_NOT_YET: dict[str, str] = {"train": "M2", "bench": "M2", "play": "M1"}
+_NOT_YET: dict[str, str] = {"train": "M2", "bench": "M2"}
 
 
 def _configure_streams() -> None:
@@ -72,9 +75,44 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return run_selftest(log_path=args.log, workers=args.workers, check_gui=not args.no_gui)
 
+    if args.command == "play":
+        return _play(args.env, args.seed, args.replay, args.verify)
+
     milestone = _NOT_YET[args.command]
     _print_err(S.CLI_NOT_IMPLEMENTED.format(command=args.command, milestone=milestone))
     return 2
+
+
+def _play(env_path: Path, seed: int | None, replay_path: Path | None, verify_path: Path | None) -> int:
+    from evolab.spec.compiled import EnvFileError
+    from evolab.spec.io import load_env
+
+    try:
+        spec = load_env(env_path)
+    except EnvFileError as exc:
+        _print_err(str(exc))
+        return 2
+
+    if verify_path is not None:
+        from evolab.app.play.record import verify_record
+
+        same, result, record = verify_record(spec, verify_path)
+        message = (S.CLI_VERIFY_SAME if same else S.CLI_VERIFY_DIFF).format(
+            recorded=record.score, replayed=result.score, steps=result.steps
+        )
+        if sys.stdout is not None:
+            print(message)
+        return 0 if same else 1
+
+    from evolab.app.main import create_application
+    from evolab.app.play.window import PlayWindow
+
+    app = create_application()
+    window = PlayWindow(spec, seed)
+    if replay_path is not None:
+        window.play_record(replay_path)
+    window.show()
+    return app.exec()
 
 
 def _print_err(message: str) -> None:
