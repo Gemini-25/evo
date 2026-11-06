@@ -578,3 +578,17 @@ TRACK_ERR_WALLS_CROSS: Final = "트랙의 서로 다른 부분이 너무 가까�
 TRACK_ERR_SET_COUNT: Final = "학습 트랙 수는 0 이상의 정수여야 합니다 (받은 값: {value})."
 TRACK_ERR_SET_INDEX: Final = "학습 트랙 번호는 0 이상의 정수여야 합니다 (받은 값: {value})."
 TRACK_ERR_DATA: Final = "트랙 자료가 잘못되었습니다: 중심선·벽은 같은 수(3개 이상)의 유한한 (x, y) 점이고, 호 길이와 체크포인트·출발 위치가 수여야 합니다."
+
+# M5a 에디터 문서 (lead)
+ED_NEW_NAME: Final = "새 환경"
+ED_UNTITLED: Final = "이름 없음"
+ED_DEFAULT_TIMEOUT_LABEL: Final = "시간 초과"
+ED_UNDO_SET: Final = "값 바꾸기"
+ED_UNDO_ADD: Final = "부품 추가"
+ED_UNDO_REMOVE: Final = "부품 지우기"
+ED_UNDO_RENAME: Final = "이름 바꾸기"
+ED_UNDO_PASTE: Final = "붙여넣기"
+ED_UNDO_EVOLVE_ON: Final = "진화 대상으로"
+ED_UNDO_EVOLVE_OFF: Final = "진화 대상 끄기"
+ED_CHECK_UNATTACHED: Final = "에이전트 물체 '{id}'이(가) 관절로 다른 물체에 붙어 있지 않습니다."
+ED_CHECK_OVERLAP: Final = "물체 '{a}'와(과) '{b}'이(가) 시작할 때 겹쳐 있습니다."
