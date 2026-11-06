@@ -41,7 +41,9 @@ class MainWindow(QMainWindow):
         self.records.open_requested.connect(self._open_run)
         self.records.resume_requested.connect(self._resume_run)
         self.records.clone_requested.connect(self._clone_run)
-        self.lab.run_started.connect(lambda _p: self.records.refresh())
+        # 학습 중인 실행은 기록 화면에서 지우거나 최신 체크포인트에서 이어 할 수 없다.
+        self.lab.run_started.connect(lambda p: (self.records.set_busy_runs([p]), self.records.refresh()))
+        self.lab.client.closed.connect(lambda: (self.records.set_busy_runs([]), self.records.refresh()))
         builtin = paths.builtin_env_dir() / "lander.evoenv"
         if builtin.exists():
             self.lab.load_env(builtin)
