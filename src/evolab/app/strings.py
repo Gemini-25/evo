@@ -405,7 +405,6 @@ DASH_TREND_MEAN: Final = "평균"
 DASH_TREND_MIN: Final = "최저"
 DASH_TREND_BAND: Final = "25~75% 구간"
 DASH_MY_BEST: Final = "내 최고 기록"
-DASH_STAGNATION: Final = "정체({n}세대 넘게 그대로)"
 DASH_HEATMAP_FRACTION: Final = "개체 비율"
 DASH_HEATMAP_HINT: Final = "색이 진할수록 그 점수대에 개체가 많습니다."
 DASH_HEATMAP_HOVER: Final = "{gen}세대 · 점수 {lo}~{hi} · 개체 {pct:.0f}%"
@@ -542,3 +541,12 @@ REC_STATS_BROKEN: Final = "통계 파일을 읽을 수 없습니다: {path} ({de
 
 # M3 주 창 (lead)
 MAIN_LAB_BUSY: Final = "실험실에서 학습이 진행 중입니다. '학습 끝내기'를 누른 뒤 다시 하세요."
+
+# M4 환경 검사 (lead)
+SPEC_REF_CHECKPOINTS: Final = "체크포인트 '{ref}'이(가) 없습니다."
+SPEC_TRACK_CENTERLINE: Final = "직접 그린 트랙에는 중심선 꼭짓점이 3개 이상 있어야 합니다."
+SPEC_TRACK_ONE_SET: Final = "자동 생성 트랙(학습 트랙 세트)은 환경 하나에 하나만 둘 수 있습니다."
+RT_TOO_MANY_RAY_TARGETS: Final = "레이 센서의 감지 대상 조합이 너무 많습니다(30가지까지)."
+
+# M3 통계 대시보드 (2)
+DASH_STAGNATION_LEGEND: Final = "정체({n}세대 이상 그대로)"

@@ -26,12 +26,25 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(S.APP_TITLE)
         self.resize(1280, 800)
 
+        from evolab.app.lab.view import LabView
+        from evolab.app.records.view import RecordsView
+
         self.tabs = QTabWidget()
+        self.lab = LabView()
+        self.records = RecordsView()
         self.tabs.addTab(_placeholder(S.PLACEHOLDER_EDITOR), S.TAB_EDITOR)
-        self.tabs.addTab(_placeholder(S.PLACEHOLDER_LAB), S.TAB_LAB)
+        self.tabs.addTab(self.lab, S.TAB_LAB)
         self.tabs.addTab(_placeholder(S.PLACEHOLDER_COMPARE), S.TAB_COMPARE)
-        self.tabs.addTab(_placeholder(S.PLACEHOLDER_RECORDS), S.TAB_RECORDS)
+        self.tabs.addTab(self.records, S.TAB_RECORDS)
+        self.tabs.setCurrentWidget(self.lab)
         self.setCentralWidget(self.tabs)
+        self.records.open_requested.connect(self._open_run)
+        self.records.resume_requested.connect(self._resume_run)
+        self.records.clone_requested.connect(self._clone_run)
+        self.lab.run_started.connect(lambda _p: self.records.refresh())
+        builtin = paths.builtin_env_dir() / "lander.evoenv"
+        if builtin.exists():
+            self.lab.load_env(builtin)
         self._play_windows: list[QWidget] = []
 
         menu = self.menuBar().addMenu(S.MENU_PLAY)
@@ -66,6 +79,37 @@ class MainWindow(QMainWindow):
 
     def _forget(self, window: QWidget) -> None:
         self._play_windows = [w for w in self._play_windows if w is not window]
+
+    def _busy(self) -> bool:
+        if self.lab.client.active:
+            QMessageBox.information(self, S.APP_NAME, S.MAIN_LAB_BUSY)
+            return True
+        return False
+
+    def _open_run(self, run: Path) -> None:
+        if not self._busy() and self.lab.open_run(run):
+            self.tabs.setCurrentWidget(self.lab)
+
+    def _resume_run(self, run: Path, generation: int) -> None:
+        if not self._busy() and self.lab.resume_run(run, generation):
+            self.tabs.setCurrentWidget(self.lab)
+
+    def _clone_run(self, run: Path) -> None:
+        from evolab.runs.catalog import clone_settings
+
+        if self._busy():
+            return
+        try:
+            info = clone_settings(run)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, S.APP_NAME, str(exc))
+            return
+        if self.lab.use_env_text(info["env_text"], info.get("env_name", ""), info.get("config") or {}):
+            self.tabs.setCurrentWidget(self.lab)
+
+    def closeEvent(self, event: object) -> None:  # noqa: N802
+        self.lab.shutdown()
+        super().closeEvent(event)  # type: ignore[arg-type]
 
 
 def create_application(argv: list[str] | None = None) -> QApplication:

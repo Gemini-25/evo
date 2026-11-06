@@ -355,6 +355,8 @@ class SpectatorCanvas(QWidget):
         champion: 강조색과 지나온 궤적, 추진기 불꽃으로 그릴 개체. labels: 개체 옆에 붙일 이름표.
         """
         if self.world is None:
+            if not trajectories:
+                return  # 비우기는 장면 전에도 된다
             raise RuntimeError("set_scene must be called before set_population")
         n = len(trajectories)
         if ranks is not None:
@@ -391,6 +393,8 @@ class SpectatorCanvas(QWidget):
     def set_overlay(self, items: list[tuple[Trajectory, list[BodyGeom], QColor, str]]) -> None:
         """따로 강조할 개체들(자기 색, 범례 이름, 지나온 궤적, 불꽃). 빈 목록이면 지운다."""
         if self.world is None:
+            if not items:
+                return  # 비우기는 장면 전에도 된다
             raise RuntimeError("set_scene must be called before set_overlay")
         out: list[_Agent] = []
         for k, (tr, bodies, color, label) in enumerate(items):

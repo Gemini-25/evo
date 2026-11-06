@@ -283,3 +283,21 @@ def test_recording_trajectories_does_not_change_results(batch: Any) -> None:
         assert tr.poses.shape[1] == len(ep.moving_bodies)
     assert rec.weighted is not None and rec.weighted.shape == rec.blocks.shape
     assert np.allclose(rec.weighted.sum(axis=1), rec.scores)
+
+
+def test_gui_replay_matches_worker_score_and_trajectory(batch: Any) -> None:
+    from evolab.engine.replay import replay
+
+    layout, genomes, pairs = batch
+    spec = compile_env(LANDER_TEXT)
+    record = [True] * len(pairs)
+    with WorkerPool(2) as pool:
+        res = pool.evaluate("v", LANDER_TEXT, layout, genomes, pairs, record=record)
+    for k in (0, 4, len(pairs) - 1):
+        g, trial = pairs[k]
+        r = replay(spec, layout, genomes[g], trial, trace=True)
+        assert r.result.score == res.scores[k]
+        assert r.trajectory.poses.tobytes() == res.trajectories[k].poses.tobytes()
+        assert r.observations is not None and r.observations.shape == (r.result.steps, layout.brain.n_in)
+        assert [a.shape[1] for a in r.activations] == [fo for _, fo in layout.brain.shapes]
+        assert len(r.agent) == r.trajectory.poses.shape[1]

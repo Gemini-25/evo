@@ -95,10 +95,11 @@ class BatchBrain:
         """신경망 수."""
         return int(self.weights[0].shape[0])
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
+    def forward(self, x: np.ndarray, trace: list[np.ndarray] | None = None) -> np.ndarray:
         """x: (N, n_in) 실수 배열 -> (N, n_out) float64, 범위 -1..1.
 
         층마다 h = matmul(h[:, None, :], W)[:, 0, :] + b, 은닉층은 activation, 마지막 층은 tanh.
+        trace를 주면 층마다 활성화 값의 사본을 덧붙인다(화면의 뉴런 표시용, 계산은 같다).
         """
         h = np.ascontiguousarray(x, dtype=np.float64)
         if h.shape != (self.n, self.layout.n_in):
@@ -112,6 +113,8 @@ class BatchBrain:
                 np.maximum(h, 0.0, out=h)
             else:
                 np.tanh(h, out=h)
+            if trace is not None:
+                trace.append(h.copy())
         return h
 
     def select(self, rows: np.ndarray) -> BatchBrain:
