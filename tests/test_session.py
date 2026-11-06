@@ -36,8 +36,25 @@ class Recorder:
         return [m["state"] for m in self.of("state_changed")]
 
 
-def start(qtbot: Any, tmp_path: Path, **over: Any) -> tuple[TrainingClient, Recorder]:
+_CLIENTS: list[TrainingClient] = []
+
+
+@pytest.fixture(autouse=True)
+def _cleanup() -> Any:
+    """테스트가 실패해도 학습 프로세스를 남기지 않는다(남으면 pytest가 끝날 때 기다리며 멈춘다)."""
+    yield
+    while _CLIENTS:
+        _CLIENTS.pop().abandon(timeout=60)
+
+
+def new_client() -> TrainingClient:
     client = TrainingClient()
+    _CLIENTS.append(client)
+    return client
+
+
+def start(qtbot: Any, tmp_path: Path, **over: Any) -> tuple[TrainingClient, Recorder]:
+    client = new_client()
     rec = Recorder(client)
     config = {**CONFIG, **over.pop("config", {})}
     req = SessionRequest(**{"kind": "new", "env_text": LANDER_TEXT, "runs_dir": str(tmp_path), "workers": 1,
@@ -136,6 +153,7 @@ def test_pause_change_config_and_env_then_continue(qtbot: Any, tmp_path: Path) -
 
 def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
     client, rec = start(qtbot, tmp_path, start_running=False, config={"max_generations": 3})
+    qtbot.waitUntil(lambda: bool(rec.states()), timeout=30000)  # 시작 알림 바로 뒤에 상태 알림이 온다
     assert rec.states()[-1] == "paused"
     client.send({"type": "step"})
     qtbot.waitUntil(lambda: rec.states().count("paused") >= 2, timeout=120000)
@@ -143,7 +161,7 @@ def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
     run_dir = Path(rec.of("started")[0]["run_dir"])
     client.shutdown()
     # 다른 프로세스에서 이어하기
-    client2 = TrainingClient()
+    client2 = new_client()
     rec2 = Recorder(client2)
     client2.start(SessionRequest(kind="resume", run_dir=str(run_dir), workers=1, spectate=False))
     qtbot.waitUntil(lambda: "finished" in rec2.states() or bool(rec2.of("failed")), timeout=120000)
@@ -154,7 +172,7 @@ def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
 
 
 def test_bad_request_reports_error(qtbot: Any, tmp_path: Path) -> None:
-    client = TrainingClient()
+    client = new_client()
     rec = Recorder(client)
     client.start(SessionRequest(kind="resume", run_dir=str(tmp_path / "없는 실행"), workers=1))
     qtbot.waitUntil(lambda: bool(rec.of("closed")), timeout=60000)
@@ -177,3 +195,43 @@ def test_session_ends_cleanly(qtbot: Any, tmp_path: Path, how: str) -> None:
     assert not proc.is_alive()
     store = RunStore.open(run_dir)
     assert store.checkpoints() and store.checkpoints()[-1] == len(store.read_stats())
+
+
+LEAK_SCRIPT = '''
+import sys, tempfile, time
+from evolab import paths
+from evolab.app.main import create_application
+from evolab.app.lab.client import TrainingClient
+from evolab.engine.session import SessionRequest
+
+if __name__ == "__main__":
+    app = create_application()
+    c = TrainingClient()
+    text = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8")
+    c.start(SessionRequest(kind="new", env_text=text, runs_dir=sys.argv[1], workers=1, spectate=False,
+                           config={"popsize": 6, "trials": 2, "max_generations": 1000}))
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 5:
+        app.processEvents()
+        time.sleep(0.01)
+    print("leaving without shutdown")
+'''
+
+
+def test_python_exits_even_if_a_session_was_not_shut_down(tmp_path: Path) -> None:
+    """정리하지 않고 끝내도 멈추지 않는다(예전에는 multiprocessing이 끝날 때 학습 프로세스를 끝없이 기다렸다)."""
+    import os
+    import subprocess
+    import sys
+
+    script = tmp_path / "leak.py"
+    script.write_text(LEAK_SCRIPT, encoding="utf-8")
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    proc = subprocess.run([sys.executable, str(script), str(tmp_path / "runs")], capture_output=True, text=True,
+                          timeout=180, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert "leaving without shutdown" in proc.stdout
+    runs = list((tmp_path / "runs").iterdir())
+    from evolab.runs.store import RunStore
+
+    assert RunStore.open(runs[0]).checkpoints()  # 끝날 때 이번 세대를 마치고 체크포인트를 남겼다

@@ -7,10 +7,13 @@ PC에서 70~110ms를 쟀다). 받는 스레드는 기다리는 동안 GIL을 놓
 
 from __future__ import annotations
 
+import atexit
 import multiprocessing as mp
+import multiprocessing.util  # noqa: F401  아래 atexit 순서 때문에 먼저 불러 둔다
 import queue
 import threading
 import time
+import weakref
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -20,6 +23,24 @@ from evolab.engine.session import SessionRequest, session_main
 
 POLL_MS = 15
 MAX_PER_TICK = 32
+
+
+_LIVE: weakref.WeakSet[TrainingClient] = weakref.WeakSet()
+
+
+def _close_all_at_exit() -> None:
+    """파이썬이 끝날 때 남은 학습 프로세스를 정리한다.
+
+    multiprocessing은 끝날 때 daemon이 아닌 자식(학습 프로세스)을 끝없이 기다리는데, 학습 프로세스는 화면 쪽
+    파이프가 닫히기를 기다리므로 서로 막힌다(예: 창이 예외로 닫히거나 테스트가 정리 없이 실패). atexit는 등록한
+    역순으로 부르므로, multiprocessing.util(끝날 때 자식을 기다리는 함수를 등록한다)을 먼저 불러 두면 이 함수가
+    먼저 돈다.
+    """
+    for client in list(_LIVE):
+        client.abandon()
+
+
+atexit.register(_close_all_at_exit)
 
 
 class TrainingClient(QObject):
@@ -65,6 +86,26 @@ class TrainingClient(QObject):
         self._reader.start()
         self._closed_sent = False
         self._timer.start()
+        _LIVE.add(self)
+
+    def abandon(self, timeout: float = 30.0) -> None:
+        """파이프만 닫고 학습 프로세스가 스스로 끝나기를 기다린다(이번 세대를 마치고 체크포인트를 남긴다)."""
+        proc = self._proc
+        if proc is None:
+            return
+        for c in (self._cmd, self._events):
+            if c is not None:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+        self._cmd = self._events = None
+        proc.join(timeout=timeout)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        self._proc = None
+        _LIVE.discard(self)
 
     @staticmethod
     def _read(conn: Any, inbox: queue.Queue[Any]) -> None:
@@ -141,6 +182,7 @@ class TrainingClient(QObject):
                     pass
         proc = self._proc
         self._proc = self._cmd = self._events = None
+        _LIVE.discard(self)
         if proc is not None:
             proc.join(timeout=5)
             if proc.is_alive():

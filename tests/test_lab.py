@@ -28,8 +28,11 @@ def lab(qtbot: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LabView:
     view.popsize.setValue(6)
     view.trials.setValue(2)
     view.workers.setValue(1)
-    yield view
-    view.shutdown()
+    try:
+        yield view
+    finally:
+        view.client.abandon(timeout=60)  # 실패한 테스트도 학습 프로세스를 남기지 않게
+        view.shutdown()
 
 
 def wait_state(qtbot: Any, view: LabView, state: str, timeout: int = 120000) -> None:
