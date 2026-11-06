@@ -278,7 +278,7 @@ class TimeLeft(_Model):
 
 
 class Rays(_Model):
-    """부채꼴 레이. 채널 <id>.0 .. <id>.(count-1), 값 = 맞은 거리 / length. M4에서 런타임 구현."""
+    """부채꼴 레이. 채널 <id>.r0 .. <id>.r(count-1), 값 = 맞은 거리 / length. M4에서 런타임 구현."""
 
     kind: Literal["rays"]
     id: Id

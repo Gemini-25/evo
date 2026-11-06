@@ -462,6 +462,15 @@ def test_unknown_function_lists_functions_and_suggests() -> None:
         ("x * 1e308 * 1e308", 1e12),
         ("min(1e308 * 1e308, 5)", 5.0),
         ("sqrt(1e308 * 1e308)", 1e12),
+        # 음수의 분수 거듭제곱은 크기와 상관없이 정의되지 않음 -> 0.0 (복소수 계산이 넘쳐도)
+        ("(-1e308) ** 1.5", 0.0),
+        ("(-1e200) ** 2.5", 0.0),
+        ("(-1e-308) ** -1.5", 0.0),
+        ("(y * 1e300) ** 1.5", 0.0),
+        ("(-2) ** 1025", -1e12),
+        ("(-2) ** 1024", 1e12),
+        ("(-0.5) ** -1025", -1e12),
+        ("10 ** 400.5", 1e12),
     ],
 )
 def test_numeric_safety(source: str, expected: float) -> None:
@@ -523,6 +532,61 @@ def test_evaluation_never_raises_for_finite_inputs(source: str) -> None:
             assert type(r) is float and math.isfinite(r) and -1e12 <= r <= 1e12
         else:
             assert type(r) is bool
+
+
+INT_POOL: list[Any] = [0, 1, -1, 7, -7, 10**6, 10**150, -(10**150), 10**200, -(10**300), 2**1023, True, False]
+
+
+@pytest.mark.parametrize("source", FUZZ_EXPRESSIONS)
+def test_int_values_in_float_range_never_raise(source: str) -> None:
+    """float로 표기한 자리에는 int도 온다(PEP 484). int끼리 곱하거나 더해 float 범위를 넘는 큰 정수가
+    생기면 sqrt, 나눗셈, 상수와의 덧셈에서 OverflowError가 났다."""
+    c = compile_expr(source, SYMS)
+    rng = random.Random(4321)
+    for _ in range(300):
+        vals = {**_fuzz_values(rng, EXTREME), **{k: rng.choice(INT_POOL) for k in ("x", "y", "z", "fuel_used")}}
+        r = c(vals)
+        if c.type == "num":
+            assert type(r) is float and math.isfinite(r) and -1e12 <= r <= 1e12
+        else:
+            assert type(r) is bool
+
+
+@pytest.mark.parametrize(
+    ("source", "big", "expected"),
+    [
+        ("x * y + 0.5", 10**200, 1e12),
+        ("sqrt(x * y)", 10**200, 1e12),
+        ("x * y / 3", 10**200, 1e12),
+        ("atan2(x * y, 1)", 10**200, math.pi / 2),
+        ("exp(-(x * y))", 10**200, 0.0),
+        ("-(x * y) - 1", 10**200, -1e12),
+        ("(x + y) * 0.5 > 1e300", int(1.7e308), True),  # int 덧셈도 float 범위를 넘을 수 있다
+        ("sqrt(x - -y)", int(1.7e308), 1e12),
+    ],
+    ids=lambda v: "big" if isinstance(v, int) and not isinstance(v, bool) and v > 10**15 else None,
+)
+def test_int_results_beyond_float_range(source: str, big: int, expected: float | bool) -> None:
+    """각 값은 float 범위 안이지만 int끼리의 곱·합은 범위를 넘는다. 예전에는 OverflowError가 났다."""
+    assert compile_expr(source, SYMS)({"x": big, "y": big}) == expected
+
+
+def test_int_values_give_float_results() -> None:
+    assert compile_expr("x * y", SYMS)({"x": 3, "y": 4}) == 12.0
+    assert type(compile_expr("x * y", SYMS)({"x": 3, "y": 4})) is float
+    assert type(compile_expr("x + y - z", SYMS)({"x": 3, "y": 4, "z": 1})) is float
+    assert compile_expr("x / y", SYMS)({"x": 3, "y": 4}) == 0.75
+
+
+@pytest.mark.parametrize("source", ["x + y", "x - y", "x * y", "-x * y", "x * -y"])
+def test_signed_zero_survives_arithmetic(source: str) -> None:
+    """두 값을 더하고 빼고 곱할 때 int 대비로 넣은 변환(×1.0)이 float 결과의 비트를 바꾸지 않는다."""
+    c = compile_expr(source, SYMS)
+    for x in (0.0, -0.0, 1.5, -2.0, 5e-324, -1e6):
+        for y in (0.0, -0.0, 3.0, -1e-300):
+            ref = {"x + y": x + y, "x - y": x - y, "x * y": x * y, "-x * y": -x * y, "x * -y": x * -y}[source]
+            got = c({"x": x, "y": y})
+            assert np.float64(got).tobytes() == np.float64(ref).tobytes(), (source, x, y)
 
 
 @pytest.mark.parametrize("source", FUZZ_EXPRESSIONS)
@@ -1047,6 +1111,37 @@ def test_deterministic_across_hash_seeds() -> None:
         outputs.append(proc.stdout)
     assert outputs[0] == outputs[1] == outputs[2]
     assert "ERR" in outputs[0] and "|num|" in outputs[0]
+
+
+def test_concurrent_compiles_leave_warning_filters_intact() -> None:
+    """ast.parse의 경고를 끄는 catch_warnings는 프로세스 전체 필터를 바꿨다 되돌린다. 잠금이 없으면
+    두 스레드가 엇갈려 'ignore' 필터가 영영 남아 프로세스의 모든 경고가 사라졌다(4스레드면 거의 매번)."""
+    import threading
+    import warnings
+
+    before = list(warnings.filters)
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            for _ in range(1000):
+                compile_expr("x + 1 if a else 2", SYMS)  # 경고 없는 식이라도 필터를 건드린다
+                compile_expr("1if a else 2", SYMS)  # SyntaxWarning을 내는 식
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=work) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert not errors
+    assert list(warnings.filters) == before
 
 
 def _base_env() -> dict[str, str]:

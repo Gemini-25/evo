@@ -160,7 +160,8 @@ def sensor_channels(env: m.EnvFile) -> list[Channel]:
         elif isinstance(s, (m.FuelLeft, m.TimeLeft)):
             out.append(Channel(s.id, s.id, 0.0, 1.0))
         elif isinstance(s, m.Rays):
-            out += [Channel(f"{s.id}.{i}", s.id, 0.0, 1.0) for i in range(s.count)]
+            # '<id>.0'은 수식 문법에서 쓸 수 없으므로 '<id>.r0'처럼 이름 붙인다.
+            out += [Channel(f"{s.id}.r{i}", s.id, 0.0, 1.0) for i in range(s.count)]
     return out
 
 

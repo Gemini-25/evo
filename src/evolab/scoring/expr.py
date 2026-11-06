@@ -39,7 +39,8 @@ numpy보다 빠르다.
 
 값 사전
     ``Compiled.names``에 든 키가 모두 있어야 한다(없으면 KeyError; 단락 평가 때문에 안 읽힐 수도 있다).
-    숫자 기호의 값은 float, bool, float 범위 안의 int(np.float64 포함). 참/거짓 기호의 값은
+    숫자 기호의 값은 float, bool, float 범위 안의 int(np.float64 포함). int끼리 더하고 빼고 곱한
+    결과는 float로 계산하므로 큰 정수가 생겨 예외가 나는 일은 없다. 참/거짓 기호의 값은
     참·거짓으로 해석할 수 있는 무엇이든 된다. ``names``는 frozenset이라 순회 순서가 해시에
     따라 달라지므로, 순서가 필요하면 정렬해서 쓴다.
 
@@ -49,6 +50,7 @@ numpy보다 빠르다.
 성능
     ``Compiled.__call__``이 공개 규격이고, 더 빠른 길로 ``Compiled.fn``(같은 함수, 메서드 호출
     한 단계가 없음)을 쓸 수 있다. 클로저라서 Compiled는 pickle되지 않는다. 프로세스마다 컴파일한다.
+    compile_expr는 여러 스레드에서 동시에 불러도 된다(파싱 경고를 끄는 부분만 잠금으로 한 번에 하나).
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ import difflib
 import math
 import operator
 import re
+import threading
 import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -160,12 +163,14 @@ def _pow(a: Any, b: Any) -> float:
     except OverflowError:  # float 범위 밖의 int (규격 밖 입력)
         return LIMIT
     try:
-        r = x**y
+        r: float | complex = x**y
     except ZeroDivisionError:  # 0.0 ** 음수
         return 0.0
     except OverflowError:
-        return -LIMIT if (x < 0.0 and y.is_integer() and y % 2.0 == 1.0) else LIMIT
-    if type(r) is complex:  # 음수의 분수 거듭제곱
+        if x < 0.0 and not y.is_integer():  # 음수의 분수 거듭제곱: 크기와 상관없이 정의되지 않음
+            return 0.0
+        return -LIMIT if (x < 0.0 and y % 2.0 == 1.0) else LIMIT
+    if isinstance(r, complex):  # 음수의 분수 거듭제곱
         return 0.0
     if r > LIMIT:
         return LIMIT
@@ -424,6 +429,9 @@ def _chain(fns: list[_Fn], ops: list[type]) -> _Fn:
 
 
 def _arith(op: type, a: _Node, b: _Node) -> _Fn:
+    # 두 쪽 모두 값에서 오면 왼쪽에 1.0을 곱해 float로 만든다. float에는 결과가 비트까지 같고,
+    # int 값(float 범위 안)끼리 곱하거나 더해 float 범위를 넘는 큰 정수가 생겨
+    # 뒤에서 OverflowError가 나는 일을 막는다. 상수 쪽은 이미 float라 필요 없다.
     g = a.fn
     h = b.fn
     if op is ast.Add:
@@ -442,7 +450,7 @@ def _arith(op: type, a: _Node, b: _Node) -> _Fn:
         else:
 
             def f(v: Values) -> Any:
-                return g(v) + h(v)
+                return g(v) * 1.0 + h(v)
 
     elif op is ast.Sub:
         if b.const:
@@ -460,7 +468,7 @@ def _arith(op: type, a: _Node, b: _Node) -> _Fn:
         else:
 
             def f(v: Values) -> Any:
-                return g(v) - h(v)
+                return g(v) * 1.0 - h(v)
 
     elif op is ast.Mult:
         if b.const:
@@ -478,7 +486,7 @@ def _arith(op: type, a: _Node, b: _Node) -> _Fn:
         else:
 
             def f(v: Values) -> Any:
-                return g(v) * h(v)
+                return g(v) * 1.0 * h(v)
 
     elif op is ast.Div:
         if b.const and b.value:
@@ -525,7 +533,7 @@ def _call(name: str, args: list[_Node]) -> _Fn:
                 return abs(g(v))
 
     elif name in ("min", "max"):
-        f = _minmax(name == "min", fns)
+        return _minmax(name == "min", fns)
     elif name == "sqrt":
         (g,) = fns
         sqrt = math.sqrt
@@ -774,6 +782,7 @@ _WS_TABLE: Final = str.maketrans({"\t": " ", "\n": " ", "\r": " ", "\x0b": " ", 
 _PAIR: Final[dict[str, str]] = {"(": ")", "[": "]", "{": "}"}
 _LONE_EQ: Final = re.compile(r"(?<![=<>!:])=(?!=)")
 _NOT_COUNTED: Final = (ast.expr_context, ast.boolop, ast.operator, ast.unaryop, ast.cmpop)
+_PARSE_LOCK: Final = threading.RLock()
 _REJECTED_OPS: Final[dict[type, str]] = {
     ast.FloorDiv: "//",
     ast.Mod: "%",
@@ -1276,7 +1285,9 @@ def compile_expr(
         message, at = problem
         raise ExprError(message, at + lead)
     try:
-        with warnings.catch_warnings():
+        # catch_warnings는 프로세스 전체의 warnings.filters를 바꿨다가 되돌린다. 두 스레드가 동시에
+        # 들어가면 되돌리는 순서가 엇갈려 'ignore' 필터가 영영 남으므로 잠금으로 한 번에 하나만 들어간다.
+        with _PARSE_LOCK, warnings.catch_warnings():
             warnings.simplefilter("ignore")
             tree = ast.parse(text, mode="eval")
     except (SyntaxError, ValueError, RecursionError, MemoryError, OverflowError) as exc:
