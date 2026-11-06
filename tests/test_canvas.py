@@ -378,3 +378,35 @@ def test_broken_physics_frames_do_not_break_the_camera(qtbot: QtBot, lander) -> 
         (cx, cy), s = c.camera()
         assert np.isfinite([cx, cy, s]).all()
         render(c)
+
+
+def test_inspected_rays_are_drawn(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """트랙 자동차 개체를 들여다보면 레이를 스텝마다 그린다(replay가 레이 끝점을 남긴다)."""
+    import numpy as np
+    from PySide6.QtGui import QColor, QImage
+
+    from evolab import paths
+    from evolab.app.lab.canvas import SpectatorCanvas
+    from evolab.engine.replay import replay
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import load_env
+    from evolab.world.physics2d.episode import Trial
+
+    spec = load_env(paths.builtin_env_dir() / "track_car.evoenv")
+    layout = layout_for(spec)
+    rep = replay(spec, layout, layout.initial(), Trial(3, 0), trace=True)
+    assert rep.rays is not None and rep.rays.shape[1:] == (7, 5) and rep.rays.shape[0] == rep.result.steps
+    assert np.all((rep.rays[:, :, 4] >= 0) & (rep.rays[:, :, 4] <= 1))
+    c = SpectatorCanvas()
+    qtbot.addWidget(c)
+    c.resize(640, 400)
+    c.set_scene(rep.geometry, None, channels=rep.channels)
+    c.set_overlay([(rep.trajectory, rep.agent, QColor(255, 120, 40), "0")])
+    c.set_follow("champion")
+    c.set_time(0.3)
+    plain = QImage(640, 400, QImage.Format.Format_RGB32)
+    c.render(plain)
+    c.set_rays(rep.rays, rep.trajectory.dt)
+    with_rays = QImage(640, 400, QImage.Format.Format_RGB32)
+    c.render(with_rays)
+    assert plain != with_rays

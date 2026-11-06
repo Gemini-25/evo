@@ -340,6 +340,7 @@ class SpectatorCanvas(QWidget):
         self._prepare_static(world)
         self._population = []
         self._overlay = []
+        self._rays = None
         self._rebuild()
         self._fit_rect = None
         self._update_camera(snap=True)
@@ -427,6 +428,30 @@ class SpectatorCanvas(QWidget):
 
     def current_time(self) -> float:
         return self._t
+
+    def set_rays(self, rays: np.ndarray | None, dt: float = 1.0 / 60.0) -> None:
+        """들여다보는 개체의 센서 레이(스텝마다). rays: (스텝, 레이 수, 5) = 시작 x, y, 끝 x, y, 맞은 비율(1이면 안 맞음)."""
+        self._rays = None if rays is None or not len(rays) else np.asarray(rays, dtype=np.float32)
+        self._rays_dt = float(dt)
+        self.update()
+
+    def _draw_rays(self, p: QPainter) -> None:
+        rays = getattr(self, "_rays", None)
+        if rays is None:
+            return
+        k = int(min(len(rays) - 1, max(0, math.floor(self._t / self._rays_dt + 1e-9))))
+        for sx, sy, ex, ey, alpha in rays[k]:
+            near = 1.0 - float(alpha)
+            color = QColor(int(80 + 175 * near), int(220 - 150 * near), 90, 200)
+            pen = QPen(color, 0)
+            pen.setCosmetic(True)
+            pen.setWidthF(1.5)
+            p.setPen(pen)
+            p.drawLine(QPointF(float(sx), float(sy)), QPointF(float(ex), float(ey)))
+            if alpha < 1.0:
+                p.setBrush(color)
+                r = 0.25
+                p.drawEllipse(QPointF(float(ex), float(ey)), r, r)
 
     def set_follow(self, mode: str) -> None:
         """fit: 모든 개체와 패드·목표가 보이게(기본). champion: 챔피언(없으면 첫 겹쳐 보기)과 목표를 따라간다."""
@@ -719,6 +744,8 @@ class SpectatorCanvas(QWidget):
             self._draw_flames(p, mats)
             p.resetTransform()
             self._draw_labels(p, mats)
+        p.setTransform(base)
+        self._draw_rays(p)
         p.resetTransform()
         self._draw_legend(p)
         self._draw_hud(p)

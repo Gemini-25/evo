@@ -937,6 +937,7 @@ class LabView(QWidget):
             self.inspect.show()
             rep = result[0]
             self.canvas.set_overlay([(rep.trajectory, rep.agent, COLOR_NOW, str(index))])
+            self.canvas.set_rays(rep.rays, rep.trajectory.dt)
             if self.view_mode != "live":
                 self._start_clock()
             return
@@ -1083,6 +1084,7 @@ class LabView(QWidget):
     def _close_inspect(self) -> None:
         self._inspect_index = None
         self.inspect.hide()
+        self.canvas.set_rays(None)
         if self.view_mode == "live":
             self.canvas.set_overlay([])
 

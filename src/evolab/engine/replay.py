@@ -33,6 +33,8 @@ class Replay:
     """trace일 때 층마다 (스텝, 폭) float32."""
     raw: list[dict[str, float]] | None = None
     """trace일 때 스텝마다 센서 원래 값(정규화 전)."""
+    rays: np.ndarray | None = None
+    """trace이고 레이 센서가 있으면 (스텝, 레이 수, 5) float32: 시작 x, y, 끝 x, y, 맞은 비율."""
 
 
 def agent_geoms(geometry: WorldGeometry, moving: list[str]) -> list[BodyGeom]:
@@ -53,6 +55,7 @@ def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial
     obs_log: list[np.ndarray] = []
     act_log: list[list[np.ndarray]] = []
     raw_log: list[dict[str, float]] = []
+    ray_log: list[list[tuple[float, float, float, float, float]]] = []
     obs = np.zeros((1, layout.brain.n_in), dtype=np.float64)
     while not ep.done:
         obs[0] = ep.observe()
@@ -62,6 +65,9 @@ def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial
             obs_log.append(obs[0].astype(np.float32))
             act_log.append([a[0].astype(np.float32) for a in layers or []])
             raw_log.append(ep.channel_values())
+            view = ep.ray_view()
+            if view:
+                ray_log.append([(a[0], a[1], b[0], b[1], al) for a, b, al in view])
         ep.step(layout.to_actions(out)[0])
         rec.after_step(ep)
     observations = activations = raw = None
@@ -72,5 +78,6 @@ def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial
         activations = [np.stack([step[k] for step in act_log]) if act_log else np.zeros((0, w), dtype=np.float32)
                        for k, w in enumerate(widths)]
         raw = raw_log
+    rays = np.asarray(ray_log, dtype=np.float32) if ray_log else None
     return Replay(rec.build(), ep.result(), geometry, agent_geoms(geometry, ep.moving_bodies),
-                  list(ep.actuator_channels()), list(spec.inputs), observations, activations, raw)
+                  list(ep.actuator_channels()), list(spec.inputs), observations, activations, raw, rays)
