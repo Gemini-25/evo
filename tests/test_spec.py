@@ -150,10 +150,10 @@ def test_query_function_arguments_are_checked() -> None:
 
 def test_not_yet_features_are_reported_with_milestone() -> None:
     data = lander_data()
-    data["actuators"].append({"kind": "motor", "id": "mot", "joint": "j_leg_l", "max_torque": 1, "max_speed": 1})
+    data["bodies"][0]["type"] = "kinematic"  # 움직이는 정적 물체는 2차
     with pytest.raises(EnvFileError) as exc:
         compile_env(data)
-    assert S.SPEC_NOT_YET.format(milestone="M5b") in " ".join(messages(exc.value))
+    assert S.SPEC_NOT_YET.format(milestone="2") in " ".join(messages(exc.value))
 
 
 def test_warnings_do_not_block_loading() -> None:

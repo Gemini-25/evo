@@ -44,9 +44,7 @@ class EnvFileError(ValueError):
 
 
 # 아직 런타임이 없는 기능과 그 마일스톤.
-NOT_YET: dict[type[BaseModel], str] = {
-    m.Motor: "M5b",
-}
+NOT_YET: dict[type[BaseModel], str] = {}
 
 
 @dataclass
@@ -343,6 +341,12 @@ class _Compiler:
                 self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=a.tank))
             if isinstance(a, m.Motor) and a.joint not in joints:
                 self.error(f"{where}.joint", S.SPEC_REF_JOINT.format(ref=a.joint))
+            elif isinstance(a, m.Motor):
+                jm = joints[a.joint]
+                if jm.kind not in ("pivot", "rot_spring"):
+                    self.error(f"{where}.joint", S.SPEC_MOTOR_JOINT_KIND.format(ref=a.joint))
+                elif not ({jm.a, jm.b} & agent_dynamic):
+                    self.error(f"{where}.joint", S.SPEC_MOTOR_NOT_AGENT.format(ref=a.joint))
         for i, s in enumerate(env.sensors):
             where = f"sensors[{i}]"
             if isinstance(s, (m.BodyState, m.Target, m.ContactSensor, m.Rays)):

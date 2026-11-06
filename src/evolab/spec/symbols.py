@@ -87,6 +87,8 @@ def generator_values(gen: m.Generator) -> list[str]:
         return names
     if isinstance(gen, m.TrackGen):
         return [f"{gen.id}.start.x", f"{gen.id}.start.y", f"{gen.id}.start.angle", f"{gen.id}.length"]
+    if isinstance(gen, m.HillGen):
+        return [f"{gen.id}.x_min", f"{gen.id}.x_max"]
     return []
 
 
@@ -97,6 +99,8 @@ def generator_bodies(gen: m.Generator) -> dict[str, list[str]]:
         return {gen.id: tags}
     if isinstance(gen, m.TrackGen):
         return {f"{gen.id}.walls": ["wall"]}
+    if isinstance(gen, m.HillGen):
+        return {gen.id: ["terrain"]}
     return {}
 
 

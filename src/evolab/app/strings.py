@@ -592,3 +592,22 @@ ED_UNDO_EVOLVE_ON: Final = "진화 대상으로"
 ED_UNDO_EVOLVE_OFF: Final = "진화 대상 끄기"
 ED_CHECK_UNATTACHED: Final = "에이전트 물체 '{id}'이(가) 관절로 다른 물체에 붙어 있지 않습니다."
 ED_CHECK_OVERLAP: Final = "물체 '{a}'와(과) '{b}'이(가) 시작할 때 겹쳐 있습니다."
+
+# M6 GA/SA
+LEARNER_GA_ERR_ELITES: Final = "엘리트 수는 0 이상이고 개체 수({popsize})보다 작은 정수여야 합니다 (지금 {value})."
+LEARNER_GA_ERR_TOURNAMENT: Final = "토너먼트 크기는 1 이상이고 개체 수({popsize}) 이하인 정수여야 합니다 (지금 {value})."
+LEARNER_GA_ERR_CROSSOVER: Final = "교차 확률은 0 이상 1 이하의 숫자여야 합니다 (지금 {value})."
+LEARNER_GA_ERR_MUTATION_RATE: Final = "돌연변이 확률은 0 이상 1 이하의 숫자여야 합니다 (지금 {value})."
+LEARNER_GA_ERR_MUTATION_SIGMA: Final = "돌연변이 폭은 0보다 큰 유한한 숫자여야 합니다 (지금 {value})."
+LEARNER_GA_ERR_SIGMA_DECAY: Final = "돌연변이 폭 감쇠는 0보다 크고 1 이하인 숫자여야 합니다 (지금 {value})."
+LEARNER_SA_ERR_NEIGHBORS: Final = "이웃 수는 1 이상의 정수여야 합니다 (지금 {value})."
+LEARNER_SA_ERR_STEP: Final = "이웃 폭은 0보다 큰 유한한 숫자여야 합니다 (지금 {value})."
+LEARNER_SA_ERR_TEMPERATURE: Final = "초기 온도는 비워 두거나(첫 이웃들 점수의 표준편차) 0 이상의 유한한 숫자여야 합니다 (지금 {value})."
+LEARNER_SA_ERR_COOLING: Final = "온도 감쇠율은 0보다 크고 1 이하인 숫자여야 합니다 (지금 {value})."
+
+# M5b 모터·언덕 (lead)
+SPEC_MOTOR_JOINT_KIND: Final = "모터는 회전 관절(pivot, rot_spring)에만 달 수 있습니다: '{ref}'"
+SPEC_MOTOR_NOT_AGENT: Final = "모터를 단 관절 '{ref}'은(는) 에이전트의 움직이는 물체에 붙어 있어야 합니다."
+TERRAIN_HILLS_RANGE: Final = "언덕길 x 범위가 잘못되었습니다: {x_min} .. {x_max}"
+PLAY_KEY_CCW: Final = "{name} 반시계"
+PLAY_KEY_CW: Final = "{name} 시계"

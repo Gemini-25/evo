@@ -215,7 +215,10 @@ class Vehicle(_Model):
 
 
 class Motor(_Model):
-    """출력 하나, 범위 -1..1. M5b에서 런타임 구현."""
+    """회전 관절(pivot, rot_spring)을 돌리는 모터. 출력 하나, 범위 -1..1.
+
+    출력 u면 b 물체가 a 물체에 대해 u x max_speed(rad/s, +는 반시계)로 돌도록 최대 max_torque(N·m)까지 쓴다.
+    """
 
     kind: Literal["motor"]
     id: Id
@@ -389,7 +392,30 @@ class TrackGen(_Model):
     wall_radius: float = Field(default=0.1, ge=0.0)
 
 
-Generator = Annotated[Union[HeightmapGen, TrackGen], Field(discriminator="kind")]
+class HillGen(_Model):
+    """언덕길: 오른쪽(+x)으로 갈수록 오르막과 굴곡이 커지는 지형(언덕 넘는 자동차). 물체 <id>(태그 terrain)를 내놓는다.
+
+    높이 = base_y + slope x (x - 평지 끝) + 굴곡. 굴곡 크기는 amplitude에서 시작해 1m마다 growth씩 커진다.
+    처음 flat_start m는 평지다. gen.<id>.x_min / x_max를 쓸 수 있다.
+    """
+
+    kind: Literal["hills"]
+    id: Id
+    label: Label = ""
+    seed: Num = 0
+    x_range: tuple[Num, Num] = (-20.0, 400.0)
+    segment: float = Field(default=2.0, gt=0.0)
+    base_y: Num = 0.0
+    amplitude: Num = 0.5
+    growth: Num = 0.01
+    roughness: Num = 0.5
+    slope: Num = 0.03
+    flat_start: Num = 15.0
+    friction: Num = 0.9
+    radius: float = Field(default=0.1, ge=0.0)
+
+
+Generator = Annotated[Union[HeightmapGen, TrackGen, HillGen], Field(discriminator="kind")]
 
 
 # ---------------------------------------------------------------------------

@@ -254,6 +254,13 @@ class _Vehicle:
 
 
 @dataclass
+class _Motor:
+    constraint: pymunk.SimpleMotor
+    channel_index: int
+    max_speed: float
+
+
+@dataclass
 class _Checkpoints:
     id: str
     lines: list[tuple[geo.Point, geo.Point]]
@@ -520,7 +527,35 @@ class Episode:
                 self._build_heightmap(g)
             elif isinstance(g, m.TrackGen):
                 self._build_track(g)
+            elif isinstance(g, m.HillGen):
+                self._build_hills(g)
         self._body_id: dict[pymunk.Body, str] = {}
+
+    def _build_hills(self, g: m.HillGen) -> None:
+        from evolab.generators.terrain import generate_hills
+
+        num = lambda v: self._num(v, "generator")  # noqa: E731
+        try:
+            xs, ys = generate_hills(
+                int(num(g.seed)) & 0x7FFFFFFFFFFFFFFF, x_min=num(g.x_range[0]), x_max=num(g.x_range[1]),
+                segment=g.segment, base_y=num(g.base_y), amplitude=max(0.0, num(g.amplitude)),
+                growth=max(0.0, num(g.growth)), roughness=min(1.0, max(0.0, num(g.roughness))),
+                slope=num(g.slope), flat_start=max(0.0, num(g.flat_start)),
+            )
+        except ValueError as exc:
+            raise EpisodeBuildError(f"generators.{g.id}: {exc}") from None
+        body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        friction = _clamp(num(g.friction), 0.0, 1e3)
+        shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
+        for i in range(len(xs) - 1):
+            a = (float(xs[i]), float(ys[i]))
+            b = (float(xs[i + 1]), float(ys[i + 1]))
+            seg = pymunk.Segment(body, a, b, g.radius)
+            seg.friction = friction
+            shapes.append((seg, ShapeGeom("segment", [a, b], g.radius)))
+        self._add_body(g.id, body, shapes, ["terrain"], "world")
+        self.gen_values[f"gen.{g.id}.x_min"] = float(xs[0])
+        self.gen_values[f"gen.{g.id}.x_max"] = float(xs[-1])
 
     def _choose_track(self, g: m.TrackGen) -> Any:
         from evolab.generators import track as tg
@@ -856,6 +891,16 @@ class Episode:
             cog = t.body.center_of_gravity
             rx, ry = t.at[0] - cog.x, t.at[1] - cog.y
             t.torque = rx * t.force[1] - ry * t.force[0]
+        self._motors: list[_Motor] = []
+        joints = {j.id: j for j in self.env.joints}
+        for a in self.env.actuators:
+            if isinstance(a, m.Motor):
+                j = joints[a.joint]
+                motor = pymunk.SimpleMotor(self.bodies[j.a], self.bodies[j.b], 0.0)
+                motor.max_force = _clamp(self._num(a.max_torque, "agent"), 0.0, FORCE_LIMIT)
+                motor.collide_bodies = j.collide
+                self.space.add(motor)
+                self._motors.append(_Motor(motor, index[a.id], _clamp(self._num(a.max_speed, "agent"), 0.0, 1e4)))
         for v in self._vehicles:
             if v.bid not in slot_of:
                 slot_of[v.bid] = len(self._force_bodies)
@@ -970,6 +1015,9 @@ class Episode:
             acc[0] += t.force[0] * x
             acc[1] += t.force[1] * x
             acc[2] += t.torque * x
+        for mo in self._motors:
+            # Chipmunk SimpleMotor는 (b 각속도 - a 각속도) = -rate로 맞춘다. +출력이 b를 a에 대해 반시계로 돌게 부호를 바꾼다.
+            mo.constraint.rate = -u[mo.channel_index] * mo.max_speed
         for v in self._vehicles:
             # 자전거 모형: 옆미끄럼을 grip만큼 없애고, 회전 속도는 앞뒤 속도와 조향각으로 정한다.
             _x, _y, ang, vx, vy, _w = self._bstate(v.bid)

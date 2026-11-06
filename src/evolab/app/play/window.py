@@ -99,7 +99,7 @@ class KeyBinding:
 
 
 def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
-    """출력 채널마다 키. 추진기는 누르면 1, 차량은 앞/뒤 키가 가속 +1/-1, 왼쪽/오른쪽 키가 조향 +1/-1."""
+    """출력 채널마다 키. 추진기는 누르면 1, 차량은 앞/뒤 키가 가속 +1/-1, 왼쪽/오른쪽 키가 조향 +1/-1, 모터는 +1/-1."""
     out: list[KeyBinding] = []
     by_id = {a.id: a for a in spec.file.actuators}
 
@@ -120,6 +120,10 @@ def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
             else:
                 add(i, a.keys_left, S.PLAY_KEY_LEFT.format(name=name), 1.0)
                 add(i, a.keys_right, S.PLAY_KEY_RIGHT.format(name=name), -1.0)
+        elif isinstance(a, m.Motor):
+            name = a.label or a.id
+            add(i, a.keys_pos, S.PLAY_KEY_CCW.format(name=name), 1.0)
+            add(i, a.keys_neg, S.PLAY_KEY_CW.format(name=name), -1.0)
     return out
 
 

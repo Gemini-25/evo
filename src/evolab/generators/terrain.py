@@ -382,3 +382,35 @@ def _flatten_for_pad(
     out_xs = np.concatenate((ox[:split], (left, right), ox[split:]))
     out_ys = np.concatenate((oy[:split], (pad_y, pad_y), oy[split:]))
     return out_xs, out_ys
+
+
+def generate_hills(
+    seed: int,
+    *,
+    x_min: float,
+    x_max: float,
+    segment: float = 2.0,
+    base_y: float = 0.0,
+    amplitude: float = 0.5,
+    growth: float = 0.01,
+    roughness: float = 0.5,
+    slope: float = 0.03,
+    flat_start: float = 15.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """언덕길(언덕 넘는 자동차): 오른쪽으로 갈수록 오르막과 굴곡이 커진다.
+
+    굴곡 모양은 generate_heightmap(진폭 1)과 같은 시드 규칙을 쓰고, x에서의 굴곡 크기는
+    amplitude + growth x (x - 평지 끝)이다. 처음 flat_start m는 평지이고, 그 뒤 4m 동안 굴곡과 오르막이 서서히 붙는다.
+    높이 = base_y + slope x (x - 평지 끝) + 굴곡. 결과는 (xs, ys) float64 배열이고 같은 인자면 비트 단위로 같다.
+    """
+    if not (math.isfinite(x_min) and math.isfinite(x_max) and x_max > x_min):
+        raise ValueError(S.TERRAIN_HILLS_RANGE.format(x_min=x_min, x_max=x_max))
+    hm = generate_heightmap(seed, x_min=x_min, x_max=x_max, segment=segment, base_y=0.0, amplitude=1.0,
+                           roughness=roughness)
+    xs = np.asarray(hm.xs, dtype=np.float64)
+    noise = np.asarray(hm.ys, dtype=np.float64)
+    flat_end = x_min + max(0.0, flat_start)
+    d = np.maximum(0.0, xs - flat_end)
+    blend = np.minimum(1.0, d / 4.0)  # 평지에서 언덕으로 4m에 걸쳐 바뀐다
+    ys = base_y + blend * (slope * d + (amplitude + growth * d) * noise)
+    return xs, ys
