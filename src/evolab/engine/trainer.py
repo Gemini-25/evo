@@ -147,6 +147,11 @@ class TrainState:
     champion: Champion = field(default_factory=Champion)
     best_validation: float = -math.inf
     improved_generation: int = 0
+    compare_score: float = math.nan
+    """챔피언을 비교 평가 세트(선정에 쓰지 않은 시드 32개)로 잰 점수. 비교 그래프·표의 기본 값."""
+    compare_success: float = math.nan
+    """같은 평가에서 성공(outcome success) 비율."""
+    compare_evaluations: int = 0
 
 
 STOP_GENERATIONS = "max_generations"
@@ -338,12 +343,24 @@ class Trainer:
         best = int(np.argmax(val))
         if val[best] > s.champion.score:
             s.champion = Champion(cands[best].copy(), float(val[best]), s.generation)
+            self._compare(cands[best])
             if self.store is not None:
-                self.store.save_champion(s.generation, "champion", cands[best], score=float(val[best]))
+                self.store.save_champion(s.generation, "champion", cands[best], score=float(val[best]),
+                                         compare_score=s.compare_score)
         if val[best] > s.best_validation:
             s.best_validation = float(val[best])
             s.improved_generation = s.generation
         return float(val[best])
+
+    def _compare(self, genome: np.ndarray) -> None:
+        """새 챔피언을 비교 평가 세트로 잰다(명세: 공정한 비교). 이 시험은 누적 시험 횟수와 따로 센다."""
+        s = self.state
+        trials = seeds.compare_trials()
+        pairs = [(0, t) for t in trials]
+        res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, genome[None, :], pairs)
+        s.compare_evaluations += len(pairs)
+        s.compare_score = float(res.scores.mean())
+        s.compare_success = sum(1 for o in res.outcomes if o == "success") / len(pairs)
 
     def _stats_row(
         self, gen: int, X: np.ndarray, agg: np.ndarray, res: EvalResult, rep: int, validated: float | None, gen_time: float
@@ -365,6 +382,9 @@ class Trainer:
             "validation_best": validated if validated is not None else "",
             "champion_score": s.champion.score if math.isfinite(s.champion.score) else "",
             "champion_generation": s.champion.generation,
+            "compare_score": s.compare_score if math.isfinite(s.compare_score) else "",
+            "compare_success": s.compare_success if math.isfinite(s.compare_success) else "",
+            "compare_evaluations": s.compare_evaluations,
             "sigma": float(learner_stats.get("sigma", math.nan)),
             "diversity": float(np.mean(np.std(X, axis=0))),
             "distance": mean_pairwise_distance(X),
@@ -449,6 +469,9 @@ class Trainer:
                 "champion_score": s.champion.score,
                 "champion_generation": s.champion.generation,
                 "best_validation": s.best_validation,
+                "compare_score": s.compare_score,
+                "compare_success": s.compare_success,
+                "compare_evaluations": s.compare_evaluations,
                 "improved_generation": s.improved_generation,
             },
         }
@@ -469,6 +492,9 @@ class Trainer:
             champion=Champion(st["champion_genome"], st["champion_score"], st["champion_generation"]),
             best_validation=st["best_validation"],
             improved_generation=st["improved_generation"],
+            compare_score=st.get("compare_score", math.nan),
+            compare_success=st.get("compare_success", math.nan),
+            compare_evaluations=st.get("compare_evaluations", 0),
         )
 
     def checkpoint(self) -> None:
