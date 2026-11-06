@@ -245,3 +245,64 @@ def bench_command(args: Any) -> int:
     worst = pop * trials_n * math.ceil(spec.file.world.max_time / spec.file.world.dt)
     say(S.BENCH_WORST.format(steps=worst, sec=worst / (steps / el) / max(1, default_workers()), workers=default_workers()))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# 내보내기: bundle / reproduce / csv
+# ---------------------------------------------------------------------------
+
+
+def bundle_command(args: Any) -> int:
+    from evolab.runs.bundle import export_bundle
+
+    run = Path(args.run)
+    out = Path(args.out) if args.out else run / "exports" / S.BUNDLE_FILE_NAME.format(run=run.name)
+    try:
+        path = export_bundle(run, out)
+    except (RunStoreError, OSError) as exc:
+        warn(str(exc))
+        return 2
+    say(S.BUNDLE_DONE.format(path=path))
+    return 0
+
+
+def reproduce_command(args: Any) -> int:
+    from evolab.runs.bundle import compare_stats, read_bundle, reproduce
+    from evolab.runs.store import RunStore
+
+    base = Path(args.out) if args.out else paths.runs_dir()
+    state = {"last": 0.0}
+
+    def progress(row: dict[str, Any]) -> None:
+        now = time.perf_counter()
+        if now - state["last"] >= 2.0:
+            state["last"] = now
+            say(S.BUNDLE_PROGRESS.format(gen=row["generation"]))
+
+    try:
+        original = read_bundle(Path(args.bundle))["stats"]
+        new_dir = reproduce(Path(args.bundle), base, args.workers, progress)
+    except (RunStoreError, EnvFileError, ValueError, OSError) as exc:
+        warn(str(exc))
+        return 2
+    diff = compare_stats(original, RunStore.open(new_dir).read_stats())
+    say(S.BUNDLE_REPRODUCED.format(path=new_dir))
+    if diff is None:
+        say(S.BUNDLE_SAME.format(gens=len(original)))
+        return 0
+    say(S.BUNDLE_DIFFERENT.format(gen=diff))
+    return 1
+
+
+def csv_command(args: Any) -> int:
+    from evolab.runs.bundle import export_csv
+
+    run = Path(args.run)
+    out = Path(args.out) if args.out else run / "exports" / "stats.csv"
+    try:
+        path = export_csv(run, out)
+    except (RunStoreError, OSError) as exc:
+        warn(str(exc))
+        return 2
+    say(S.CSV_DONE.format(path=path))
+    return 0

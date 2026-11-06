@@ -55,6 +55,19 @@ def _build_parser() -> argparse.ArgumentParser:
     play.add_argument("--replay", type=Path, default=None, help=S.CLI_HELP_PLAY_REPLAY)
     play.add_argument("--verify", type=Path, default=None, help=S.CLI_HELP_PLAY_VERIFY)
 
+    bundle = sub.add_parser("bundle", help=S.CLI_HELP_BUNDLE)
+    bundle.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
+    bundle.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_BUNDLE_OUT)
+
+    repro = sub.add_parser("reproduce", help=S.CLI_HELP_REPRODUCE)
+    repro.add_argument("bundle", type=Path, help=S.CLI_HELP_BUNDLE_FILE)
+    repro.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)
+    repro.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
+
+    csvp = sub.add_parser("csv", help=S.CLI_HELP_CSV)
+    csvp.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
+    csvp.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_CSV_OUT)
+
     selftest = sub.add_parser("selftest", help=S.CLI_HELP_SELFTEST)
     selftest.add_argument("--log", type=Path, default=None, help=S.CLI_HELP_LOG)
     selftest.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_WORKERS)
@@ -104,12 +117,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "play":
         return _play(args.env, args.seed, args.replay, args.verify)
 
-    if args.command in ("train", "bench", "judge"):
+    if args.command in ("train", "bench", "judge", "bundle", "reproduce", "csv"):
         from evolab.engine import commands
 
-        return {"train": commands.train_command, "bench": commands.bench_command, "judge": commands.judge_command}[
-            args.command
-        ](args)
+        return {"train": commands.train_command, "bench": commands.bench_command, "judge": commands.judge_command,
+                "bundle": commands.bundle_command, "reproduce": commands.reproduce_command,
+                "csv": commands.csv_command}[args.command](args)
 
     milestone = _NOT_YET[args.command]
     _print_err(S.CLI_NOT_IMPLEMENTED.format(command=args.command, milestone=milestone))
