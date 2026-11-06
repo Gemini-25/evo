@@ -108,3 +108,18 @@ def test_pause_apply_and_continue(qtbot: Any, lab: LabView) -> None:
     t0 = time.monotonic()
     lab.end_session()
     assert time.monotonic() - t0 < 30
+
+
+def test_video_of_versus_replay(qtbot: Any, lab: LabView, tmp_path: Path) -> None:
+    from PIL import Image
+
+    lab.rb_fast.setChecked(True)
+    lab.max_generations.setValue(2)
+    assert lab.start_new()
+    wait_state(qtbot, lab, "finished")
+    assert lab.play_versus()
+    qtbot.waitUntil(lambda: getattr(lab, "_last_video", None) is not None, timeout=60000)
+    out = lab.save_video(tmp_path / "영상.gif")
+    assert out is not None and out.exists()
+    with Image.open(out) as im:
+        assert im.format == "GIF" and im.n_frames > 10 and im.size == (640, 400)

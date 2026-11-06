@@ -715,5 +715,5 @@ def test_speed_ask_tell() -> None:
         t_state = time.perf_counter() - t0
         mode = "diagonal" if learner.diagonal else "full"
         lines.append(f"dim {dim} {mode}: ask+tell {dt * 1e3:.2f} ms, state {len(blob) / 1e6:.2f} MB in {t_state * 1e3:.1f} ms")
-        assert dt < 0.25  # 병적인 느려짐만 잡는다
+        assert dt < 1.0  # 병적인 느려짐만 잡는다(1000차원 전체 공분산은 부하가 큰 PC에서 0.5초 가까이 걸린 적이 있다)
     print("\nCMA-ES popsize 32: " + "; ".join(lines))

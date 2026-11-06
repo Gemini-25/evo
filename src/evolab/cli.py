@@ -20,7 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", help=S.CLI_HELP_TRAIN)
     train.add_argument("env", type=Path, nargs="?", default=None, help=S.CLI_HELP_ENV_FILE)
-    train.add_argument("--method", default=None, choices=["cmaes"], help=S.CLI_HELP_METHOD)
+    train.add_argument("--method", default=None, choices=["cmaes", "ga", "sa"], help=S.CLI_HELP_METHOD)
     train.add_argument("--seed", type=int, default=None, help=S.CLI_HELP_SEED)
     train.add_argument("--resume", type=Path, default=None, help=S.CLI_HELP_RESUME)
     train.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)

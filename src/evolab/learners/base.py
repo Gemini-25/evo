@@ -78,3 +78,74 @@ def sanitize_scores(scores: np.ndarray, count: int) -> np.ndarray:
                 worst = max(lo - abs(lo), -float(np.finfo(np.float64).max))
             out[bad] = worst
     return out
+
+
+# ---------------------------------------------------------------------------- 직접 구현한 방법(GA, 담금질)의 공통 도우미
+
+
+def is_int(v: object) -> bool:
+    """정수(bool 제외)인가."""
+    return isinstance(v, (int, np.integer)) and not isinstance(v, (bool, np.bool_))
+
+
+def is_real(v: object) -> bool:
+    """실수로 쓸 수 있는 숫자(bool 제외)인가. 유한한지는 따로 본다."""
+    return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_))
+
+
+def initial_genome(x0: np.ndarray, bounded_dims: int) -> np.ndarray:
+    """초기 유전자를 검사해 float64 사본으로 돌려준다. 앞쪽 bounded_dims차원(몸 유전자)은 [-1, 1]로 잘라낸다."""
+    x = np.array(x0, dtype=np.float64, copy=True)
+    if x.ndim != 1 or x.size == 0 or not np.all(np.isfinite(x)):
+        raise ValueError(S.LEARNER_ERR_X0)
+    if bounded_dims > x.size:
+        raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS_TOO_MANY.format(value=bounded_dims, dim=x.size))
+    np.clip(x[:bounded_dims], -1.0, 1.0, out=x[:bounded_dims])
+    return x
+
+
+def clip_bounded(X: np.ndarray, bounded_dims: int) -> None:
+    """(N, 차원) 배열의 앞쪽 bounded_dims차원을 그 자리에서 [-1, 1]로 잘라낸다."""
+    if bounded_dims:
+        np.clip(X[:, :bounded_dims], -1.0, 1.0, out=X[:, :bounded_dims])
+
+
+def new_generator(seed: int) -> np.random.Generator:
+    """학습 방법 전용 난수 생성기(PCG64). 상태는 generator_state()로 꺼내 피클한다."""
+    return np.random.Generator(np.random.PCG64(seed))
+
+
+def generator_state(rng: np.random.Generator) -> dict[str, Any]:
+    """생성기 상태의 사본(정수와 문자열만 든 dict라 프로세스가 달라도 그대로 이어진다)."""
+    state = rng.bit_generator.state
+    return {**state, "state": dict(state["state"])}
+
+
+def generator_from_state(state: Any) -> np.random.Generator:
+    """generator_state()로 꺼낸 상태에서 생성기를 만든다. 잘못된 상태면 ValueError."""
+    rng = new_generator(0)
+    try:
+        rng.bit_generator.state = state
+    except (TypeError, ValueError, KeyError) as e:
+        raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
+    return rng
+
+
+def check_tell(pending: np.ndarray | None, candidates: np.ndarray) -> None:
+    """tell()에 넘긴 후보가 마지막 ask()의 후보와 같은지 본다. ask() 전이면 RuntimeError, 다르면 ValueError."""
+    if pending is None:
+        raise RuntimeError(S.LEARNER_ERR_TELL_WITHOUT_ASK)
+    cand = np.asarray(candidates)
+    if cand.shape != pending.shape or not np.array_equal(cand, pending):
+        raise ValueError(S.LEARNER_ERR_TELL_CANDIDATES)
+
+
+def state_array(value: Any, shape: tuple[int, ...]) -> np.ndarray:
+    """상태에서 읽은 배열을 검사해 float64 사본으로 돌려준다(모양이 다르거나 유한하지 않으면 ValueError)."""
+    try:
+        arr = np.array(value, dtype=np.float64, copy=True)
+    except (TypeError, ValueError) as e:
+        raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
+    if arr.shape != shape or not np.all(np.isfinite(arr)):
+        raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=f"shape {arr.shape} != {shape}"))
+    return arr

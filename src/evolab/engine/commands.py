@@ -77,6 +77,8 @@ def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig
         value = getattr(args, attr, None)
         if value is not None:
             c[key] = value
+    if base is None and getattr(args, "popsize", None) is None and c.get("method") == "ga":
+        c["popsize"] = 64  # 명세: 유전 알고리즘 기본 개체 수 64(CMA-ES는 32)
     return TrainConfig.from_dict(c)
 
 

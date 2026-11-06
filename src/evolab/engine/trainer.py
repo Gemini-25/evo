@@ -91,6 +91,19 @@ class TrainConfig:
     max_time: float | None = None
     target_score: float | None = None
     stagnation_generations: int | None = None
+    # 유전 알고리즘(method="ga"). 개체 수는 popsize를 쓴다(명세 기본 64는 GAConfig().popsize).
+    ga_elites: int = 2
+    ga_tournament: int = 3
+    ga_crossover: float = 0.7
+    ga_mutation_rate: float = 0.1
+    ga_mutation_sigma: float = 0.1
+    ga_sigma_decay: float = 1.0
+    # 담금질(method="sa"). popsize는 쓰지 않고, 한 세대 후보 수 = sa_neighbors + 1(현재해).
+    sa_neighbors: int = 8
+    sa_step: float = 0.1
+    sa_initial_temperature: float | None = None
+    """None이면 첫 이웃들 점수의 표준편차."""
+    sa_cooling: float = 0.995
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -123,6 +136,30 @@ class TrainConfig:
             raise bad("target_score")
         if self.aggregate not in (None, "mean", "min", "q25"):
             raise bad("aggregate")
+        if self.method not in ("cmaes", "ga", "sa"):
+            raise bad("method")
+        if self.method == "ga" and self.popsize < 2:
+            raise bad("popsize")
+        if not is_int(self.ga_elites) or self.ga_elites < 0 or (self.method == "ga" and self.ga_elites >= self.popsize):
+            raise bad("ga_elites")
+        if not is_int(self.ga_tournament) or self.ga_tournament < 1 or (
+            self.method == "ga" and self.ga_tournament > self.popsize
+        ):
+            raise bad("ga_tournament")
+        for name in ("ga_crossover", "ga_mutation_rate"):
+            if not is_num(getattr(self, name)) or not 0 <= getattr(self, name) <= 1:
+                raise bad(name)
+        for name in ("ga_mutation_sigma", "sa_step"):
+            if not is_num(getattr(self, name)) or getattr(self, name) <= 0:
+                raise bad(name)
+        for name in ("ga_sigma_decay", "sa_cooling"):
+            if not is_num(getattr(self, name)) or not 0 < getattr(self, name) <= 1:
+                raise bad(name)
+        if not is_int(self.sa_neighbors) or self.sa_neighbors < 1:
+            raise bad("sa_neighbors")
+        t = self.sa_initial_temperature
+        if t is not None and (not is_num(t) or t < 0):
+            raise bad("sa_initial_temperature")
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TrainConfig:
@@ -199,7 +236,38 @@ def make_learner(config: TrainConfig, layout: GenomeLayout) -> Learner:
                 bounded_dims=layout.n_body,
             ),
         )
-    raise ValueError(config.method)  # 유전 알고리즘, 담금질은 M6
+    if config.method == "ga":
+        from evolab.learners.ga import GAConfig, GeneticAlgorithm
+
+        return GeneticAlgorithm(
+            layout.initial(),
+            GAConfig(
+                popsize=config.popsize,
+                elites=config.ga_elites,
+                tournament=config.ga_tournament,
+                crossover=config.ga_crossover,
+                mutation_rate=config.ga_mutation_rate,
+                mutation_sigma=config.ga_mutation_sigma,
+                sigma_decay=config.ga_sigma_decay,
+                seed=seeds.learner_seed(config.run_seed),
+                bounded_dims=layout.n_body,
+            ),
+        )
+    if config.method == "sa":
+        from evolab.learners.sa import SAConfig, SimulatedAnnealing
+
+        return SimulatedAnnealing(
+            layout.initial(),
+            SAConfig(
+                neighbors=config.sa_neighbors,
+                step=config.sa_step,
+                initial_temperature=config.sa_initial_temperature,
+                cooling=config.sa_cooling,
+                seed=seeds.learner_seed(config.run_seed),
+                bounded_dims=layout.n_body,
+            ),
+        )
+    raise ValueError(config.method)
 
 
 class Trainer:

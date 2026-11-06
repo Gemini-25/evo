@@ -18,6 +18,7 @@ from PySide6.QtCore import QElapsedTimer, QObject, QSettings, Qt, QThread, QTime
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -211,6 +212,7 @@ class LabView(QWidget):
 
         self._build_ui()
         self._restore_settings()
+        self._method_changed(set_defaults=False)
         self._update_buttons()
 
     # ------------------------------------------------------------------
@@ -236,12 +238,15 @@ class LabView(QWidget):
         self.btn_versus.clicked.connect(self.play_versus)
         self.btn_live = QPushButton(S.LAB_LIVE)
         self.btn_live.clicked.connect(self.back_to_live)
+        self.btn_video = QPushButton(S.VIDEO_SAVE)
+        self.btn_video.clicked.connect(lambda: self.save_video())
         tl = QHBoxLayout()
         tl.addWidget(self.timeline_label)
         tl.addWidget(self.timeline, 1)
         tl.addWidget(self.btn_timeline)
         tl.addWidget(self.btn_versus)
         tl.addWidget(self.btn_live)
+        tl.addWidget(self.btn_video)
 
         center = QWidget()
         cl = QVBoxLayout(center)
@@ -298,11 +303,8 @@ class LabView(QWidget):
         st = QGroupBox(S.LAB_SETTINGS_GROUP)
         form = QFormLayout(st)
         self.method = QComboBox()
-        self.method.addItem(S.METHOD_NAMES["cmaes"], "cmaes")
-        for key in ("ga", "sa"):
-            self.method.addItem(S.LAB_METHOD_LATER.format(name=S.METHOD_NAMES[key]), key)
-            item = self.method.model().item(self.method.count() - 1)  # type: ignore[attr-defined]
-            item.setEnabled(False)
+        for key in ("cmaes", "ga", "sa"):
+            self.method.addItem(S.METHOD_NAMES[key], key)
         self.seed = _spin(0, 2**31 - 1, 1)
         self.popsize = _spin(2, 4096, 32)
         self.sigma = QDoubleSpinBox()
@@ -312,12 +314,43 @@ class LabView(QWidget):
         self.sigma.setValue(0.5)
         self.trials = _spin(0, 1000, 0, special=S.LAB_TRIALS_ENV)
         self.workers = _spin(1, 256, default_workers())
+        # 방법마다 화면에서 바꿀 수 있는 값(명세: 학습 방법 표)
+        self.ipop = QCheckBox(S.LAB_IPOP)
+        self.ga_elites = _spin(0, 1000, 2)
+        self.ga_crossover = _dspin(0.0, 1.0, 0.7, 2)
+        self.ga_mut_rate = _dspin(0.0, 1.0, 0.1, 3)
+        self.ga_mut_sigma = _dspin(0.0001, 10.0, 0.1, 3)
+        self.ga_decay = _dspin(0.5, 1.0, 1.0, 4)
+        self.sa_neighbors = _spin(1, 1000, 8)
+        self.sa_step = _dspin(0.0001, 10.0, 0.1, 3)
+        self.sa_temp = _dspin(0.0, 1e6, 0.0, 3)
+        self.sa_temp.setSpecialValueText(S.LAB_SA_TEMP_AUTO)
+        self.sa_cooling = _dspin(0.5, 1.0, 0.995, 4)
         form.addRow(S.LAB_METHOD, self.method)
         form.addRow(S.LAB_SEED, self.seed)
-        form.addRow(S.LAB_POPSIZE, self.popsize)
-        form.addRow(S.LAB_SIGMA, self.sigma)
+        self._method_rows: dict[str, list[QWidget]] = {"cmaes": [], "ga": [], "sa": []}
+
+        def row(label: str, widget: QWidget, methods: tuple[str, ...]) -> None:
+            form.addRow(label, widget)
+            for mname in methods:
+                self._method_rows[mname].append(widget)
+
+        row(S.LAB_POPSIZE, self.popsize, ("cmaes", "ga"))
+        row(S.LAB_SIGMA, self.sigma, ("cmaes",))
+        row("", self.ipop, ("cmaes",))
+        row(S.LAB_GA_ELITES, self.ga_elites, ("ga",))
+        row(S.LAB_GA_CROSSOVER, self.ga_crossover, ("ga",))
+        row(S.LAB_GA_MUT_RATE, self.ga_mut_rate, ("ga",))
+        row(S.LAB_GA_MUT_SIGMA, self.ga_mut_sigma, ("ga",))
+        row(S.LAB_GA_DECAY, self.ga_decay, ("ga",))
+        row(S.LAB_SA_NEIGHBORS, self.sa_neighbors, ("sa",))
+        row(S.LAB_SA_STEP, self.sa_step, ("sa",))
+        row(S.LAB_SA_TEMP, self.sa_temp, ("sa",))
+        row(S.LAB_SA_COOLING, self.sa_cooling, ("sa",))
+        self._method_form = form
         form.addRow(S.LAB_TRIALS, self.trials)
         form.addRow(S.LAB_WORKERS, self.workers)
+        self.method.currentIndexChanged.connect(lambda _i: self._method_changed())
         lay.addWidget(st)
 
         stop = QGroupBox(S.LAB_STOP_GROUP)
@@ -475,13 +508,37 @@ class LabView(QWidget):
         self.canvas.set_overlay([])
         self.canvas.set_time(0.0)
 
+    def _method_changed(self, set_defaults: bool = True) -> None:
+        """고른 학습 방법의 설정 칸만 보인다. 개체 수 기본값은 방법마다 다르다(CMA-ES 32, GA 64)."""
+        method = str(self.method.currentData())
+        for mname, widgets in self._method_rows.items():
+            for w in widgets:
+                visible = method == mname or (w in self._method_rows[method])
+                w.setVisible(visible)
+                label = self._method_form.labelForField(w)
+                if label is not None:
+                    label.setVisible(visible)
+        if set_defaults:
+            self.popsize.setValue(64 if method == "ga" else 32)
+
     def config_from_form(self) -> TrainConfig:
+        method = str(self.method.currentData())
         c = TrainConfig(
-            method=str(self.method.currentData()),
+            method=method,
             run_seed=self.seed.value(),
             popsize=self.popsize.value(),
             sigma0=self.sigma.value(),
             trials=self.trials.value() or None,
+            ipop=self.ipop.isChecked(),
+            ga_elites=self.ga_elites.value(),
+            ga_crossover=self.ga_crossover.value(),
+            ga_mutation_rate=self.ga_mut_rate.value(),
+            ga_mutation_sigma=self.ga_mut_sigma.value(),
+            ga_sigma_decay=self.ga_decay.value(),
+            sa_neighbors=self.sa_neighbors.value(),
+            sa_step=self.sa_step.value(),
+            sa_initial_temperature=self.sa_temp.value() or None,
+            sa_cooling=self.sa_cooling.value(),
         )
         self._stop_fields(c)
         return c
@@ -498,7 +555,18 @@ class LabView(QWidget):
 
         idx = self.method.findData(c.get("method", "cmaes"))
         if idx >= 0:
+            self.method.blockSignals(True)
             self.method.setCurrentIndex(idx)
+            self.method.blockSignals(False)
+            self._method_changed(set_defaults=False)
+        self.ipop.setChecked(bool(c.get("ipop", False)))
+        for widget, key, empty in ((self.ga_elites, "ga_elites", 2), (self.ga_crossover, "ga_crossover", 0.7),
+                                   (self.ga_mut_rate, "ga_mutation_rate", 0.1),
+                                   (self.ga_mut_sigma, "ga_mutation_sigma", 0.1),
+                                   (self.ga_decay, "ga_sigma_decay", 1.0), (self.sa_neighbors, "sa_neighbors", 8),
+                                   (self.sa_step, "sa_step", 0.1), (self.sa_temp, "sa_initial_temperature", 0.0),
+                                   (self.sa_cooling, "sa_cooling", 0.995)):
+            setv(widget, c.get(key), empty)
         setv(self.seed, c.get("run_seed"), 1)
         setv(self.popsize, c.get("popsize"), 32)
         setv(self.sigma, c.get("sigma0"), 0.5)
@@ -741,7 +809,9 @@ class LabView(QWidget):
         self.btn_end.setEnabled(active)
         self.btn_apply.setEnabled(paused)
         self.btn_reload.setEnabled(paused and self.env_path is not None)
-        for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo):
+        for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo, self.ipop,
+                  self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
+                  self.sa_neighbors, self.sa_step, self.sa_temp, self.sa_cooling):
             w.setEnabled(not active)
         has_gen = self.generation > 0 and self.run_dir is not None
         self.btn_timeline.setEnabled(has_gen)
@@ -874,10 +944,50 @@ class LabView(QWidget):
         self.canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels)
         self.canvas.set_population([])
         colors = [COLOR_OLD, COLOR_NOW] if len(reps) > 1 else [COLOR_NOW]
+        self._last_video = (list(zip(reps, colors, info, strict=True)), self._replay_label)
         self.canvas.set_overlay([(r.trajectory, r.agent, c, label)
                                  for r, c, label in zip(reps, colors, info, strict=True)])
         self.loop_overlay = True
         self._start_clock()
+
+    def save_video(self, path: Path | None = None) -> Path | None:
+        """지금 보고 있는 재생(타임라인 세대 대표, 1세대 vs 지금, 고속 모드 챔피언)을 GIF로 저장한다."""
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+
+        from evolab.app.export.video import export_gif
+        from evolab.runs.store import sanitize_folder_name
+
+        last = getattr(self, "_last_video", None)
+        if not last:
+            QMessageBox.information(self, S.VIDEO_SAVE_TITLE, S.VIDEO_NOTHING)
+            return None
+        items, label = last
+        if path is None:
+            folder = (self.run_dir / "exports") if self.run_dir is not None else paths.data_dir()
+            default = folder / f"{sanitize_folder_name(label)}.gif"
+            chosen, _ = QFileDialog.getSaveFileName(self, S.VIDEO_SAVE_TITLE, str(default), S.VIDEO_FILTER)
+            if not chosen:
+                return None
+            path = Path(chosen)
+        dlg = QProgressDialog(S.VIDEO_PROGRESS, S.VIDEO_CANCEL, 0, 100, self)
+        dlg.setMinimumDuration(300)
+
+        def progress(done: int, total: int) -> bool:
+            dlg.setMaximum(total)
+            dlg.setValue(done)
+            QApplication.processEvents()
+            return not dlg.wasCanceled()
+
+        try:
+            out = export_gif(items, path, title=label, progress=progress)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, str(exc))
+            return None
+        finally:
+            dlg.close()
+        if out is not None:
+            self.status.setText(self.status.text() + "\n" + S.VIDEO_DONE.format(path=out))
+        return out
 
     def _maybe_fast_replay(self, force: bool = False) -> None:
         if self.view_mode != "fast" or self.spec is None or self.layout is None:
@@ -1013,6 +1123,15 @@ class LabView(QWidget):
         self.client.shutdown()
         for th in list(self._threads):
             th.wait(10000)
+
+
+def _dspin(lo: float, hi: float, value: float, decimals: int) -> QDoubleSpinBox:
+    s = QDoubleSpinBox()
+    s.setRange(lo, hi)
+    s.setDecimals(decimals)
+    s.setSingleStep(10.0 ** -min(decimals, 2))
+    s.setValue(value)
+    return s
 
 
 def _spin(lo: int, hi: int, value: int, special: str | None = None) -> QSpinBox:
