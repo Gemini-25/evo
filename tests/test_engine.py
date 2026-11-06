@@ -251,3 +251,34 @@ def test_pool_error_does_not_leave_workers_behind(batch: Any) -> None:
         pool.evaluate("bad", bad, layout, genomes, pairs)
     pool.close()
     assert not any(p.is_alive() for p in procs)
+
+
+def test_recording_trajectories_does_not_change_results(batch: Any) -> None:
+    layout, genomes, pairs = batch
+    pool = WorkerPool(0)
+    plain = pool.evaluate("v", LANDER_TEXT, layout, genomes, pairs)
+    record = [k % 3 == 0 for k in range(len(pairs))]
+    with WorkerPool(2) as workers:
+        rec = workers.evaluate("v", LANDER_TEXT, layout, genomes, pairs, record=record, every=2)
+    assert rec.scores.tobytes() == plain.scores.tobytes()
+    assert plain.trajectories is None and rec.trajectories is not None
+    spec = compile_env(LANDER_TEXT)
+    for k, (g, trial) in enumerate(pairs):
+        tr = rec.trajectories[k]
+        if not record[k]:
+            assert tr is None
+            continue
+        steps = int(rec.steps[k])
+        assert tr.frames == steps // 2 + 1 + (1 if steps % 2 else 0)
+        assert tr.end_step == steps and abs(tr.duration - steps * spec.file.world.dt) < 1e-9
+        # 마지막 프레임 = 같은 시험을 직접 돌린 끝 상태
+        from evolab.world.physics2d.episode import Episode
+
+        ep = Episode(spec, None, trial)
+        brain = __import__("evolab.policy.brain", fromlist=["unpack"]).unpack(layout.brain, layout.brain_params(genomes[g:g + 1]))
+        while not ep.done:
+            ep.step(layout.to_actions(brain.forward(ep.observe()[None, :].astype(np.float64)))[0])
+        assert np.allclose(tr.poses[-1], ep.snapshot().poses.astype(np.float32))
+        assert tr.poses.shape[1] == len(ep.moving_bodies)
+    assert rec.weighted is not None and rec.weighted.shape == rec.blocks.shape
+    assert np.allclose(rec.weighted.sum(axis=1), rec.scores)

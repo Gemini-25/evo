@@ -68,6 +68,9 @@ class Task:
     genomes: np.ndarray
     pairs: list[tuple[int, int, int | None]]
     """(genomes 안 행 번호, 시험 시드, 트랙 번호)"""
+    record: list[bool] | None = None
+    """쌍마다 궤적 기록 여부(None이면 기록 안 함)."""
+    every: int = 2
 
 
 def _lower_priority() -> None:
@@ -115,7 +118,8 @@ def _worker_main(worker_id: int, conn: Any) -> None:
                 layout = GenomeLayout.from_dict(task.layout)
                 layouts[key] = layout
             pairs = [(g, Trial(seed, track)) for g, seed, track in task.pairs]
-            msg: tuple[int, str, Any] = (task.id, "ok", evaluate(spec, layout, task.genomes, pairs))
+            res = evaluate(spec, layout, task.genomes, pairs, task.record, task.every)
+            msg: tuple[int, str, Any] = (task.id, "ok", res)
         except Exception as exc:
             msg = (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
         try:
@@ -141,6 +145,8 @@ class WorkerPool:
         self._procs: list[Any] = []
         self._conns: list[Any] = []
         self._next_task = 0
+        self.last_busy = 0.0
+        """마지막 evaluate에서 워커들이 계산에 쓴 시간의 합(초). 워커 사용률 = last_busy / (워커 수 × 걸린 시간)."""
         if self.workers:
             limit_blas_threads()
             for w in range(self.workers):
@@ -203,13 +209,19 @@ class WorkerPool:
         layout: GenomeLayout,
         genomes: np.ndarray,
         pairs: Sequence[tuple[int, Trial]],
+        record: Sequence[bool] | None = None,
+        every: int = 2,
     ) -> EvalResult:
-        """(유전자 행, Trial) 쌍들을 평가해 요청한 순서로 돌려준다."""
+        """(유전자 행, Trial) 쌍들을 평가해 요청한 순서로 돌려준다. record[i]가 참인 쌍은 궤적도 돌려준다."""
         genomes = np.ascontiguousarray(genomes, dtype=np.float64)
+        self.last_busy = 0.0
         if not self.workers:
             from evolab.spec.io import compile_env
 
-            return evaluate(compile_env(env_text), layout, genomes, list(pairs))
+            t0 = time.perf_counter()
+            res = evaluate(compile_env(env_text), layout, genomes, list(pairs), record, every)
+            self.last_busy = time.perf_counter() - t0
+            return res
         layout_d = layout.to_dict()
         chunks = self._split(len(pairs))
         tasks: list[Task] = []
@@ -223,8 +235,11 @@ class WorkerPool:
                 task_pairs.append((local[g], trial.seed, trial.track))
                 order[i] = (c, r)
             self._next_task += 1
-            tasks.append(Task(self._next_task, env_version, env_text, layout_d, genomes[used], task_pairs))
+            rec = [bool(record[i]) for i in idx] if record is not None else None
+            tasks.append(Task(self._next_task, env_version, env_text, layout_d, genomes[used], task_pairs,
+                              rec if rec and any(rec) else None, every))
         parts = self._run(tasks)
+        self.last_busy = sum(p.nn_seconds + p.sim_seconds for p in parts)
         return EvalResult.concat(parts, order)
 
     def _split(self, n: int) -> list[list[int]]:

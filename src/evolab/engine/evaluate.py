@@ -21,6 +21,64 @@ from evolab.world.physics2d.episode import Episode, Trial
 
 
 @dataclass
+class Trajectory:
+    """관전·재생용 궤적. 프레임 k는 k*every 스텝(시각 k*every*dt), 마지막 프레임은 끝난 상태."""
+
+    poses: np.ndarray
+    """(F, 움직이는 물체 수, 3) float32: x, y, 각도. 순서는 Episode.moving_bodies."""
+    outputs: np.ndarray
+    """(F, 구동기 출력 수) float32: 실제 출력(연료가 떨어지면 0)."""
+    every: int
+    dt: float
+
+    @property
+    def frames(self) -> int:
+        return int(self.poses.shape[0])
+
+    @property
+    def duration(self) -> float:
+        """마지막 프레임의 시각(초). 마지막 프레임은 every 간격보다 가까울 수 있다."""
+        return float(self.times()[-1]) if self.frames else 0.0
+
+    def times(self) -> np.ndarray:
+        t = np.arange(self.frames, dtype=np.float64) * (self.every * self.dt)
+        if self.frames and self.end_step is not None:
+            t[-1] = self.end_step * self.dt
+        return t
+
+    end_step: int | None = None
+    """끝난 스텝 수(마지막 프레임의 시각)."""
+
+
+class _Recorder:
+    def __init__(self, every: int, dt: float) -> None:
+        self.every = every
+        self.dt = dt
+        self.poses: list[np.ndarray] = []
+        self.outputs: list[np.ndarray] = []
+        self.steps = 0
+
+    def add(self, ep: Episode) -> None:
+        f = ep.snapshot()
+        self.poses.append(f.poses.astype(np.float32))
+        self.outputs.append(f.outputs.astype(np.float32))
+
+    def after_step(self, ep: Episode) -> None:
+        self.steps += 1
+        if ep.done or self.steps % self.every == 0:
+            self.add(ep)
+
+    def build(self) -> Trajectory:
+        b = self.poses[0].shape[0]
+        u = self.outputs[0].shape[0]
+        return Trajectory(
+            np.stack(self.poses).reshape(len(self.poses), b, 3),
+            np.stack(self.outputs).reshape(len(self.outputs), u),
+            self.every, self.dt, self.steps,
+        )
+
+
+@dataclass
 class EvalResult:
     """쌍마다 한 줄. 순서는 요청한 쌍 순서."""
 
@@ -36,6 +94,10 @@ class EvalResult:
     """(n, 블록 수) 가중치 전 블록 값, 환경 파일의 블록 순서."""
     action_abs: np.ndarray
     """(n, 출력 수) 구동기 출력 크기의 평균."""
+    weighted: np.ndarray | None = None
+    """(n, 블록 수) 가중치를 곱한 블록 값(점수에 더해지는 몫). 수식 점수 환경이면 NaN."""
+    trajectories: list[Trajectory | None] | None = None
+    """요청한 쌍만 궤적, 나머지는 None. 하나도 요청하지 않았으면 None."""
     nn_seconds: float = 0.0
     sim_seconds: float = 0.0
 
@@ -52,6 +114,9 @@ class EvalResult:
             outcomes=pick(lambda x: x.outcomes),
             blocks=np.array(pick(lambda x: x.blocks), dtype=np.float64).reshape(len(order), -1),
             action_abs=np.array(pick(lambda x: x.action_abs), dtype=np.float64).reshape(len(order), -1),
+            weighted=np.array(pick(lambda x: x.weighted), dtype=np.float64).reshape(len(order), -1),
+            trajectories=(pick(lambda x: x.trajectories or [None] * len(x.scores))
+                          if any(x.trajectories for x in parts) else None),
             nn_seconds=sum(x.nn_seconds for x in parts),
             sim_seconds=sum(x.sim_seconds for x in parts),
         )
@@ -68,18 +133,28 @@ class _Active:
 
 
 def evaluate(
-    spec: EnvSpec, layout: GenomeLayout, genomes: np.ndarray, pairs: Sequence[tuple[int, Trial]]
+    spec: EnvSpec, layout: GenomeLayout, genomes: np.ndarray, pairs: Sequence[tuple[int, Trial]],
+    record: Sequence[bool] | None = None, every: int = 2,
 ) -> EvalResult:
-    """genomes: (G, dim). pairs: (genomes의 행 번호, Trial) 목록."""
+    """genomes: (G, dim). pairs: (genomes의 행 번호, Trial) 목록.
+
+    record[i]가 참인 쌍은 every 스텝마다 궤적을 남긴다. 궤적 기록은 상태를 읽기만 하므로 점수는 같다.
+    """
     genomes = np.ascontiguousarray(genomes, dtype=np.float64)
     n = len(pairs)
     body = layout.body_values(genomes) if layout.n_body else None
     all_brains = unpack(layout.brain, layout.brain_params(genomes))
     rows = np.array([g for g, _ in pairs], dtype=np.int64)
+    t_start = time.perf_counter()  # 세계 만들기도 시뮬레이션 시간에 넣는다
     episodes = [Episode(spec, body[g] if body is not None else None, trial) for g, trial in pairs]
+    recorders: dict[int, _Recorder] = {}
+    if record is not None:
+        for i, on in enumerate(record):
+            if on:
+                recorders[i] = _Recorder(max(1, int(every)), episodes[i].dt)
+                recorders[i].add(episodes[i])
 
     nn_t = 0.0
-    t_start = time.perf_counter()
     active = _Active(np.arange(n), all_brains.select(rows)) if n else None
     while active is not None and len(active.index):
         idx = active.index
@@ -91,7 +166,12 @@ def evaluate(
         still: list[int] = []
         for j, i in enumerate(idx):
             ep = episodes[i]
+            if ep.done:
+                continue  # 끝난 줄(묶음을 줄이기 전까지 남아 있음)
             ep.step(actions[j])
+            rec = recorders.get(i)
+            if rec is not None:
+                rec.after_step(ep)
             if not ep.done:
                 still.append(j)
         if len(still) == len(idx):
@@ -116,6 +196,9 @@ def evaluate(
         action_abs=np.array([[r.action_mean_abs[c] for c in spec.outputs] for r in results], dtype=np.float64).reshape(
             n, len(spec.outputs)
         ),
+        weighted=np.array([[r.weighted.get(b, np.nan) for b in block_ids] for r in results],
+                          dtype=np.float64).reshape(n, len(block_ids)),
+        trajectories=[recorders[i].build() if i in recorders else None for i in range(n)] if recorders else None,
         nn_seconds=nn_t,
         sim_seconds=time.perf_counter() - t_start - nn_t,
     )
