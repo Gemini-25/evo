@@ -94,19 +94,32 @@ class KeyBinding:
     keys: list[int]
     label: str
     key_names: list[str]
+    value: float = 1.0
+    """누르는 동안의 출력. 같은 출력에 묶인 키 값은 더한 뒤 -1..1로 자른다(차량: 앞 +1, 뒤 -1)."""
 
 
 def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
-    """출력 채널마다 누르면 1이 되는 키. 지금은 추진기만(차량·모터 키는 M4·M5b)."""
+    """출력 채널마다 키. 추진기는 누르면 1, 차량은 앞/뒤 키가 가속 +1/-1, 왼쪽/오른쪽 키가 조향 +1/-1."""
     out: list[KeyBinding] = []
     by_id = {a.id: a for a in spec.file.actuators}
+
+    def add(i: int, names: list[str], label: str, value: float) -> None:
+        mapped = [(n, k) for n in names if (k := qt_key(n)) is not None]
+        if mapped:
+            out.append(KeyBinding(i, [k for _, k in mapped], label, [n for n, _ in mapped], value))
+
     for i, channel in enumerate(spec.outputs):
         a = by_id.get(spec.actuator_channels[channel].owner)
         if isinstance(a, m.Thruster) and a.keys:
-            pairs = [(n, qt_key(n)) for n in a.keys]
-            mapped = [(n, k) for n, k in pairs if k is not None]
-            if mapped:
-                out.append(KeyBinding(i, [k for _, k in mapped], a.label or a.id, [n for n, _ in mapped]))
+            add(i, a.keys, a.label or a.id, 1.0)
+        elif isinstance(a, m.Vehicle):
+            name = a.label or a.id
+            if channel.endswith(".throttle"):
+                add(i, a.keys_forward, S.PLAY_KEY_FORWARD.format(name=name), 1.0)
+                add(i, a.keys_back, S.PLAY_KEY_BACK.format(name=name), -1.0)
+            else:
+                add(i, a.keys_left, S.PLAY_KEY_LEFT.format(name=name), 1.0)
+                add(i, a.keys_right, S.PLAY_KEY_RIGHT.format(name=name), -1.0)
     return out
 
 
@@ -446,8 +459,8 @@ class PlayWindow(QWidget):
         action = [0.0] * len(self.spec.outputs)
         for kb in self.bindings:
             if any(k in self.pressed for k in kb.keys):
-                action[kb.output_index] = 1.0
-        return action
+                action[kb.output_index] += kb.value
+        return [max(-1.0, min(1.0, x)) for x in action]
 
     def _tick(self) -> None:
         ep = self.episode

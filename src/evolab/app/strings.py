@@ -550,3 +550,10 @@ RT_TOO_MANY_RAY_TARGETS: Final = "레이 센서의 감지 대상 조합이 너�
 
 # M3 통계 대시보드 (2)
 DASH_STAGNATION_LEGEND: Final = "정체({n}세대 이상 그대로)"
+
+# M4 직접 조종 차량 키 (lead)
+PLAY_KEY_FORWARD: Final = "{name} 앞으로"
+PLAY_KEY_BACK: Final = "{name} 뒤로"
+PLAY_KEY_LEFT: Final = "{name} 왼쪽"
+PLAY_KEY_RIGHT: Final = "{name} 오른쪽"
+CLI_HELP_IPOP: Final = "정체하면 개체 수를 두 배로 늘려 다시 시작(IPOP-CMA-ES)"

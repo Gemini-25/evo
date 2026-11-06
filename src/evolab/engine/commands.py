@@ -20,7 +20,7 @@ from evolab.app import strings as S
 from evolab.engine import seeds
 from evolab.engine.pool import PoolError, WorkerPool, default_workers
 from evolab.engine.runsetup import create_run
-from evolab.engine.trainer import TrainConfig, Trainer
+from evolab.engine.trainer import TrainConfig, Trainer, training_trials
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStoreError
 from evolab.spec.compiled import EnvFileError
@@ -72,7 +72,7 @@ def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig
         ("method", "method"), ("run_seed", "seed"), ("popsize", "popsize"), ("sigma0", "sigma"),
         ("max_generations", "max_generations"), ("max_evaluations", "max_evaluations"), ("max_time", "max_time"),
         ("target_score", "target"), ("stagnation_generations", "stagnation"), ("trials", "trials"),
-        ("validate_every", "validate_every"), ("diagonal_threshold", "diagonal_threshold"),
+        ("validate_every", "validate_every"), ("diagonal_threshold", "diagonal_threshold"), ("ipop", "ipop"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -213,9 +213,9 @@ def bench_command(args: Any) -> int:
     version = env_hash(spec.file)[:16]
     layout = layout_for(spec)
     rng = np.random.default_rng(0)
-    pop, trials_n = args.popsize, spec.file.evaluation.trials
+    pop, trials_n = args.popsize, spec.track_set_size or spec.file.evaluation.trials
     genomes = layout.initial()[None, :] + 0.5 * rng.standard_normal((pop, layout.dim))
-    trials = seeds.train_trials(1, 0, trials_n)
+    trials = training_trials(spec, 1, 0, trials_n)
     pairs = [(i, t) for i in range(pop) for t in trials]
     say(S.BENCH_TITLE.format(name=spec.file.name, pop=pop, trials=trials_n, dim=layout.dim))
 
@@ -234,7 +234,7 @@ def bench_command(args: Any) -> int:
             pool.evaluate(version, env_text, layout, genomes[:2], pairs[: 2 * trials_n])  # 워커 기동·컴파일 시간 빼기
             times = []
             for g in range(args.generations):
-                trials_g = seeds.train_trials(1, g, trials_n)
+                trials_g = training_trials(spec, 1, g, trials_n)
                 pairs_g = [(i, t) for i in range(pop) for t in trials_g]
                 t0 = time.perf_counter()
                 r = pool.evaluate(version, env_text, layout, genomes, pairs_g)

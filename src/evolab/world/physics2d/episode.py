@@ -130,6 +130,41 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+_TRACK_CACHE: dict[tuple[Any, ...], Any] = {}
+"""만든 트랙(순수 함수 결과). 워커는 같은 학습 트랙 세트를 계속 쓰므로 한 번만 만든다."""
+
+
+def _cached_track(key: tuple[Any, ...], make: Callable[[], Any]) -> Any:
+    t = _TRACK_CACHE.get(key)
+    if t is None:
+        if len(_TRACK_CACHE) >= 256:
+            _TRACK_CACHE.clear()
+        t = make()
+        _TRACK_CACHE[key] = t
+    return t
+
+
+def _sub_seed(seed: int, name: str) -> int:
+    """시험 시드와 이름에서 63비트 시드를 만든다(파이썬 hash와 무관)."""
+    ss = np.random.SeedSequence(entropy=seed & ((1 << 128) - 1), spawn_key=(zlib.crc32(name.encode("utf-8")),))
+    a, b = (int(x) for x in ss.generate_state(2, np.uint32))
+    return (a | (b << 32)) & 0x7FFFFFFFFFFFFFFF
+
+
+def _cross(p: geo.Point, q: geo.Point, a: geo.Point, b: geo.Point) -> bool:
+    """선분 pq와 ab가 만나는가(끝점이 선 위에 있는 경우 포함)."""
+    def orient(u: geo.Point, v: geo.Point, w: geo.Point) -> float:
+        return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+
+    d1, d2 = orient(a, b, p), orient(a, b, q)
+    d3, d4 = orient(p, q, a), orient(p, q, b)
+    if ((d1 > 0) != (d2 > 0) or d1 == 0 or d2 == 0) and ((d3 > 0) != (d4 > 0) or d3 == 0 or d4 == 0):
+        if d1 == 0 and d2 == 0:
+            return False  # 선 위를 따라 움직임
+        return True
+    return False
+
+
 def _rand_values(env: m.EnvFile, seed: int) -> dict[str, float]:
     """랜덤 값마다 (시험 시드, id의 CRC) 독립 흐름에서 뽑는다. 랜덤 값을 더하거나 빼도 다른 값은 그대로다."""
     out: dict[str, float] = {}
@@ -203,6 +238,42 @@ class _Thruster:
 
 
 @dataclass
+class _Vehicle:
+    body: pymunk.Body
+    bid: str
+    ch_throttle: int
+    ch_steer: int
+    accel: float
+    steer: float
+    grip: float
+    wheelbase: float
+    drag: float
+    mass: float
+    slot: int = 0
+
+
+@dataclass
+class _Checkpoints:
+    id: str
+    lines: list[tuple[geo.Point, geo.Point]]
+    loop: bool
+    body: str
+    track: Any = None
+    next: int = 0
+    count: int = 0
+    laps: int = 0
+    last_time: float = 0.0
+    lap_start: float = 0.0
+    lap_times: list[float] = field(default_factory=list)
+    prev: geo.Point = (0.0, 0.0)
+    progress: float = 0.0
+    s_prev: float = 0.0
+    hint: int | None = None
+    done: bool = False
+    need_progress: bool = False
+
+
+@dataclass
 class _Tank:
     capacity: float
     remaining: float
@@ -271,6 +342,7 @@ class Episode:
         self._build_joints()
         self._build_actuators()
         self._setup_contacts()
+        self._build_checkpoints()
         self._values: dict[str, Any] = {}
         self._build_sensors()
         self._build_scoring()
@@ -336,6 +408,8 @@ class Episode:
         self.steps += 1
         self.time = self.steps * self.dt
 
+        if self._cps:
+            self._update_checkpoints()
         self._update_contacts()
         self._refresh_values()
         self._update_events()
@@ -439,10 +513,59 @@ class Episode:
         )
 
     def _build_generators(self) -> None:
+        self._cp_defs: list[tuple[str, list[tuple[geo.Point, geo.Point]], bool, str | None, Any]] = []
         for g in self.env.generators:
             if isinstance(g, m.HeightmapGen):
                 self._build_heightmap(g)
+            elif isinstance(g, m.TrackGen):
+                self._build_track(g)
         self._body_id: dict[pymunk.Body, str] = {}
+
+    def _choose_track(self, g: m.TrackGen) -> Any:
+        from evolab.generators import track as tg
+
+        num = lambda v: self._num(v, "generator")  # noqa: E731
+        width = num(g.width)
+        params = {
+            "segments": int(g.segments), "curvature": num(g.curvature), "width": width,
+            "length_range": (float(g.length_range[0]), float(g.length_range[1])), "checkpoints": int(g.checkpoints),
+        }
+        frozen = tuple(sorted(params.items()))
+        if g.source == "drawn":
+            pts = tuple(self._vec(q, "generator") for q in (g.centerline or []))
+            return _cached_track(("drawn", pts, width, int(g.checkpoints)),
+                                 lambda: tg.track_from_centerline(pts, width=width, checkpoints=int(g.checkpoints)))
+        if self.trial.track is not None:
+            tracks = _cached_track(("set", int(g.set_seed), int(g.set_size), frozen),
+                                   lambda: tg.track_set(int(g.set_seed), int(g.set_size), **params))
+            return tracks[int(self.trial.track) % len(tracks)]
+        seed = _sub_seed(self.trial.seed, f"track:{g.id}")
+        return _cached_track(("trial", seed, frozen), lambda: tg.generate_track(seed, **params))
+
+    def _build_track(self, g: m.TrackGen) -> None:
+        try:
+            track = self._choose_track(g)
+        except ValueError as exc:
+            raise EpisodeBuildError(f"generators.{g.id}: {exc}") from None
+        body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        friction = _clamp(self._num(g.friction, "generator"), 0.0, 1e3)
+        shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
+        for poly in (track.inner, track.outer):
+            pts = [(float(x), float(y)) for x, y in poly]
+            n = len(pts)
+            for i in range(n):
+                a, b = pts[i], pts[(i + 1) % n]
+                seg = pymunk.Segment(body, a, b, g.wall_radius)
+                seg.friction = friction
+                shapes.append((seg, ShapeGeom("segment", [a, b], g.wall_radius)))
+        self._add_body(f"{g.id}.walls", body, shapes, ["wall"], "world")
+        x, y, heading = track.start
+        self.gen_values.update({
+            f"gen.{g.id}.start.x": float(x), f"gen.{g.id}.start.y": float(y),
+            f"gen.{g.id}.start.angle": float(heading), f"gen.{g.id}.length": float(track.length),
+        })
+        lines = [((float(a[0]), float(a[1])), (float(b[0]), float(b[1]))) for a, b in track.checkpoints]
+        self._cp_defs.append((f"{g.id}.cp", lines, True, None, track))
 
     def _build_heightmap(self, g: m.HeightmapGen) -> None:
         num = lambda v: self._num(v, "generator")  # noqa: E731
@@ -504,6 +627,12 @@ class Episode:
         return [self._vec(p, stage) for p in shape.points]
 
     def _build_regions(self) -> None:
+        for c in self.env.checkpoints:
+            lines = [(self._vec(a, "world"), self._vec(b, "world")) for a, b in c.lines]
+            self._cp_defs.append((c.id, lines, c.loop, c.body, None))
+        for cid, lines, _loop, _body, _track in self._cp_defs:
+            for k, (a, b) in enumerate(lines):
+                self._region_geoms.append(RegionGeom(f"{cid}.{k}", "checkpoint", [a, b]))
         for r in self.env.regions:
             pos = self._vec(r.pos, "world")
             pts = [(x + pos[0], y + pos[1]) for x, y in self._shape_points(r.shape, "world")]
@@ -700,6 +829,19 @@ class Episode:
                                                  (f * math.cos(d), f * math.sin(d)), a.tank,
                                                  max(0.0, self._num(a.fuel_per_s, "agent"))))
         self._thruster_channels = {t.channel_index for t in self._thrusters}
+        self._vehicles: list[_Vehicle] = []
+        for a in self.env.actuators:
+            if isinstance(a, m.Vehicle):
+                body = self.bodies[a.body]
+                self._vehicles.append(_Vehicle(
+                    body, a.body, index[f"{a.id}.throttle"], index[f"{a.id}.steer"],
+                    _clamp(self._num(a.max_accel, "agent"), 0.0, FIELD_LIMIT),
+                    _clamp(self._num(a.max_steer, "agent"), 0.0, 1.5),
+                    _clamp(self._num(a.lateral_grip, "agent"), 0.0, 1.0),
+                    max(1e-3, _clamp(self._num(a.wheelbase, "agent"), 1e-3, FIELD_LIMIT)),
+                    _clamp(self._num(a.drag, "agent"), 0.0, 1e3),
+                    float(body.mass),
+                ))
         # 물체마다 힘·토크를 모아 스텝마다 한 번에 넣는다(pymunk 호출을 줄인다).
         slot_of: dict[str, int] = {}
         self._force_bodies: list[tuple[str, pymunk.Body]] = []
@@ -712,6 +854,11 @@ class Episode:
             cog = t.body.center_of_gravity
             rx, ry = t.at[0] - cog.x, t.at[1] - cog.y
             t.torque = rx * t.force[1] - ry * t.force[0]
+        for v in self._vehicles:
+            if v.bid not in slot_of:
+                slot_of[v.bid] = len(self._force_bodies)
+                self._force_bodies.append((v.bid, v.body))
+            v.slot = slot_of[v.bid]
         self._drag_slots: list[tuple[int, float]] = []
         for bid, k in self._drag:
             if bid not in slot_of:
@@ -719,6 +866,63 @@ class Episode:
                 self._force_bodies.append((bid, self.bodies[bid]))
             self._drag_slots.append((slot_of[bid], k))
         self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
+
+    def _build_checkpoints(self) -> None:
+        default = self._vehicles[0].bid if self._vehicles else (self._agent_ids[0] if self._agent_ids else None)
+        self._cps: list[_Checkpoints] = []
+        for cid, lines, loop, body, track in self._cp_defs:
+            bid = body or default
+            if bid is None or bid not in self.bodies:
+                raise EpisodeBuildError(S.SPEC_NO_AGENT_BODY)
+            cp = _Checkpoints(cid, lines, loop, bid, track)
+            cp.next = 1 % len(lines) if loop else 1
+            cp.done = not loop and len(lines) <= 1
+            cp.prev = self._bpos(bid)
+            if track is not None:
+                from evolab.generators.track import progress_along
+
+                cp.s_prev, cp.hint = progress_along(track, cp.prev[0], cp.prev[1], None)
+            self._cps.append(cp)
+        self._cp_by_id = {cp.id: cp for cp in self._cps}
+
+    def _update_checkpoints(self) -> None:
+        t = self.time
+        for cp in self._cps:
+            p = self._bpos(cp.body)
+            q = cp.prev
+            cp.prev = p
+            if not cp.done:
+                a, b = cp.lines[cp.next]
+                if _cross(q, p, a, b):
+                    cp.count += 1
+                    cp.last_time = t
+                    if cp.loop:
+                        if cp.next == 0:
+                            cp.laps += 1
+                            cp.lap_times.append(t - cp.lap_start)
+                            cp.lap_start = t
+                        cp.next = (cp.next + 1) % len(cp.lines)
+                    else:
+                        cp.next += 1
+                        if cp.next >= len(cp.lines):
+                            cp.done = True
+                            cp.laps = 1
+                            cp.lap_times.append(t)
+            if cp.need_progress:
+                if cp.track is not None:
+                    from evolab.generators.track import progress_along
+
+                    s_now, cp.hint = progress_along(cp.track, p[0], p[1], cp.hint)
+                    d = s_now - cp.s_prev
+                    half = cp.track.length / 2.0
+                    if d > half:
+                        d -= cp.track.length
+                    elif d < -half:
+                        d += cp.track.length
+                    cp.progress += d
+                    cp.s_prev = s_now
+                else:
+                    cp.progress = float(cp.count)
 
     def _apply_forces(self) -> None:
         """모은 추진기 힘(물체 좌표)과 바람 항력(세계 좌표, 무게중심)을 물체마다 한 번에 넣는다."""
@@ -764,6 +968,17 @@ class Episode:
             acc[0] += t.force[0] * x
             acc[1] += t.force[1] * x
             acc[2] += t.torque * x
+        for v in self._vehicles:
+            # 자전거 모형: 옆미끄럼을 grip만큼 없애고, 회전 속도는 앞뒤 속도와 조향각으로 정한다.
+            _x, _y, ang, vx, vy, _w = self._bstate(v.bid)
+            c, s_ = math.cos(ang), math.sin(ang)
+            fwd = vx * c + vy * s_
+            lat = (-vx * s_ + vy * c) * (1.0 - v.grip)
+            v.body.velocity = (fwd * c - lat * s_, fwd * s_ + lat * c)
+            v.body.angular_velocity = fwd * math.tan(u[v.ch_steer] * v.steer) / v.wheelbase
+            self._cache.pop(v.bid, None)
+            acc = self._acc[v.slot]
+            acc[0] += (u[v.ch_throttle] * v.accel - v.drag * fwd) * v.mass
         self._u_applied = applied
         sums = self._abs_sum
         for i, x in enumerate(applied):
@@ -966,9 +1181,78 @@ class Episode:
         if isinstance(s, m.TimeLeft):
             max_time = self.env.world.max_time
             return [s.id], [1.0], (lambda: (max(0.0, 1.0 - self.time / max_time),))
+        if isinstance(s, m.Rays):
+            return self._rays_fn(s)
         raise EpisodeBuildError(S.SPEC_NOT_YET.format(milestone="M4"))
 
+    def _ray_filter(self, selectors: Sequence[str]) -> pymunk.ShapeFilter:
+        """selectors에 맞는 모양에만 범주 비트를 하나 붙이고, 그 비트만 보는 질의 필터를 돌려준다.
+
+        다른 모양의 범주는 기본 비트 하나로 바꾼다. 충돌 마스크는 그대로(모두)라 부딪힘은 바뀌지 않는다.
+        """
+        key = tuple(selectors)
+        if not hasattr(self, "_ray_bits"):
+            self._ray_bits: dict[tuple[str, ...], int] = {}
+            for shape in self._shape_info:
+                f = shape.filter
+                shape.filter = pymunk.ShapeFilter(group=f.group, categories=1, mask=f.mask)
+        bit = self._ray_bits.get(key)
+        if bit is None:
+            bit = 1 << (1 + len(self._ray_bits))
+            if bit >= 1 << 31:
+                raise EpisodeBuildError(S.RT_TOO_MANY_RAY_TARGETS)
+            self._ray_bits[key] = bit
+            for shape in self._shape_info:
+                if self._matches(shape, key):
+                    f = shape.filter
+                    shape.filter = pymunk.ShapeFilter(group=f.group, categories=f.categories | bit, mask=f.mask)
+        return pymunk.ShapeFilter(group=AGENT_GROUP, mask=bit)  # 에이전트 모양(자기 몸)은 맞지 않는다
+
+    def _rays_fn(self, s: m.Rays) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
+        n = s.count
+        spread = self._num(s.spread, "agent")
+        center = self._num(s.center, "agent")
+        length = max(1e-6, _clamp(self._num(s.length, "agent"), 1e-6, FIELD_LIMIT))
+        ox, oy = self._vec(s.origin, "agent")
+        angles = [center] if n == 1 else [center - spread / 2.0 + spread * i / (n - 1) for i in range(n)]
+        filt = self._ray_filter(s.hits)
+        bid = s.body
+        space = self.space
+        memo: list[Any] = [-1, ()]
+
+        def rays() -> tuple[float, ...]:
+            if memo[0] == self.steps:
+                return memo[1]
+            x, y, a, *_ = self._bstate(bid)
+            c, si = math.cos(a), math.sin(a)
+            px, py = x + ox * c - oy * si, y + ox * si + oy * c
+            out = []
+            for ang in angles:
+                th = a + ang
+                end = (px + length * math.cos(th), py + length * math.sin(th))
+                hit = space.segment_query_first((px, py), end, 0.0, filt)
+                out.append(hit.alpha if hit is not None else 1.0)
+            memo[0], memo[1] = self.steps, tuple(out)
+            return memo[1]
+
+        self._ray_views.append((bid, (ox, oy), angles, length, rays))
+        return [f"{s.id}.r{i}" for i in range(n)], [1.0] * n, rays
+
+    def ray_view(self) -> list[tuple[geo.Point, geo.Point, float]]:
+        """화면 표시용: 레이마다 (시작점, 끝점(맞은 곳 또는 최대 길이), 맞은 비율 0..1)."""
+        out: list[tuple[geo.Point, geo.Point, float]] = []
+        for bid, (ox, oy), angles, length, fn in self._ray_views:
+            x, y, a, *_ = self._bstate(bid)
+            c, si = math.cos(a), math.sin(a)
+            px, py = x + ox * c - oy * si, y + ox * si + oy * c
+            for ang, alpha in zip(angles, fn(), strict=True):
+                th = a + ang
+                d = alpha * length
+                out.append(((px, py), (px + d * math.cos(th), py + d * math.sin(th)), alpha))
+        return out
+
     def _build_sensors(self) -> None:
+        self._ray_views: list[tuple[str, geo.Point, list[float], float, Callable[[], tuple[float, ...]]]] = []
         raw: dict[str, Callable[[], float]] = {}
         where: dict[str, tuple[int, int, float]] = {}
         self._sensor_fns: list[Callable[[], tuple[float, ...]]] = []
@@ -1010,6 +1294,12 @@ class Episode:
         for tid in self._tanks:
             getters[tid] = (lambda t=tid: self._tanks[t].remaining / self._tanks[t].capacity)
         getters["time"] = lambda: self.time
+        for cp in self._cps:
+            getters[f"{cp.id}.count"] = (lambda cp=cp: float(cp.count))
+            getters[f"{cp.id}.laps"] = (lambda cp=cp: float(cp.laps))
+            getters[f"{cp.id}.since"] = (lambda cp=cp: self.time - cp.last_time)
+            getters[f"{cp.id}.progress"] = (lambda cp=cp: cp.progress)
+            cp.need_progress = f"{cp.id}.progress" in needed
         # 사건 값은 _update_events가 채운다.
         event_names = {e for e in [*sy.BUILTIN_EVENTS, *(ev.id for ev in self.env.events)]}
         event_keys = {f"{e}{suffix}" for e in event_names for suffix in ("", ".count", ".since")}
@@ -1183,6 +1473,11 @@ class Episode:
         if isinstance(b, m.FuelBlock):
             t = self._tanks[b.tank]
             return (t.capacity - t.remaining) / t.capacity
+        if isinstance(b, m.CheckpointBlock):
+            cp = self._cp_by_id[b.checkpoints]
+            if b.kind == "checkpoints":
+                return float(cp.count)
+            return sum(cp.lap_times) / len(cp.lap_times) if cp.lap_times else 0.0
         if isinstance(b, m.ExprBlock):
             if b.agg == "mean":
                 return st.acc / st.count if st.count else 0.0

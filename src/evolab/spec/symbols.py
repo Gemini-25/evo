@@ -135,6 +135,9 @@ def region_ids(env: m.EnvFile) -> list[str]:
     return out
 
 
+CHECKPOINT_FIELDS = ("count", "laps", "since", "progress")
+
+
 def checkpoint_ids(env: m.EnvFile) -> list[str]:
     out = [c.id for c in env.checkpoints]
     for g in env.generators:
@@ -292,6 +295,9 @@ def step_symbols(env: m.EnvFile) -> dict[str, Sym]:
         out[e] = BOOL_STEP
         out[f"{e}.count"] = NUM_STEP
         out[f"{e}.since"] = NUM_STEP
+    for c in checkpoint_ids(env):
+        for f in CHECKPOINT_FIELDS:
+            out[f"{c}.{f}"] = NUM_STEP
     return out
 
 

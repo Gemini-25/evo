@@ -157,6 +157,18 @@ STOP_STAGNATION = "stagnation"
 STOP_REQUESTED = "requested"
 
 
+def training_trials(spec: EnvSpec, run_seed: int, generation: int, count: int) -> list[Trial]:
+    """학습 시험 목록. 학습 트랙 세트가 있으면 시험 = 트랙마다 한 번(시험 번호 = 트랙 번호, 시험 수 = 세트 크기)."""
+    size = spec.track_set_size
+    if size:
+        return [Trial(t.seed, k) for k, t in enumerate(seeds.train_trials(run_seed, generation, size))]
+    return seeds.train_trials(run_seed, generation, count)
+
+
+def trials_for(spec: EnvSpec, config: TrainConfig) -> int:
+    return spec.track_set_size or config.trials or spec.file.evaluation.trials
+
+
 def aggregate(scores: np.ndarray, how: str) -> np.ndarray:
     """(개체, 시험) -> (개체,). 하위 25%는 아래쪽 ceil(시험 수 x 0.25)개의 평균."""
     if how == "mean":
@@ -202,7 +214,7 @@ class Trainer:
         self.store = store
         self.clock = clock
         self.layout = layout_for(self.spec)
-        self.trials = config.trials or self.spec.file.evaluation.trials
+        self.trials = trials_for(self.spec, config)
         self.how = config.aggregate or self.spec.file.evaluation.aggregate
         self.learner = make_learner(config, self.layout)
         self.state = TrainState()
@@ -266,7 +278,7 @@ class Trainer:
         s = self.state
         gen = s.generation
         X = self.learner.ask()
-        trials = seeds.train_trials(self.config.run_seed, gen, self.trials)
+        trials = training_trials(self.spec, self.config.run_seed, gen, self.trials)
         pairs = [(i, t) for i in range(X.shape[0]) for t in trials]
         t_eval = self.clock()
         if record:
@@ -395,7 +407,7 @@ class Trainer:
         trial_config.validate()
         done = {k: v for k, v in changes.items() if getattr(self.config, k) != v}
         self.config = trial_config
-        self.trials = self.config.trials or self.spec.file.evaluation.trials
+        self.trials = trials_for(self.spec, self.config)
         self.how = self.config.aggregate or self.spec.file.evaluation.aggregate
         return done
 
@@ -414,7 +426,7 @@ class Trainer:
         self.env_text = env_text
         self.spec = spec
         self.env_version = env_hash(spec.file)[:16]
-        self.trials = self.config.trials or spec.file.evaluation.trials
+        self.trials = trials_for(spec, self.config)
         self.how = self.config.aggregate or spec.file.evaluation.aggregate
         return self.env_version
 

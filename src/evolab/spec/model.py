@@ -190,7 +190,12 @@ class Thruster(_Model):
 
 
 class Vehicle(_Model):
-    """출력 두 개(가속, 조향), 범위 -1..1. M4에서 런타임 구현."""
+    """위에서 본 차량 구동기. 출력 두 개: <id>.throttle(앞뒤 가속), <id>.steer(조향, +는 왼쪽), 범위 -1..1.
+
+    물체 좌표 +x가 앞이다. 스텝마다 앞쪽 힘 = throttle x max_accel x 질량, 구름 저항 = -drag x 앞뒤 속도 x 질량
+    (최고 속도 = max_accel / drag), 옆미끄럼 속도는 lateral_grip(0..1) 비율만큼 없앤다(1이면 옆으로 미끄러지지 않음),
+    회전 속도 = 앞뒤 속도 x tan(steer x max_steer) / wheelbase(자전거 모형).
+    """
 
     kind: Literal["vehicle"]
     id: Id
@@ -199,6 +204,8 @@ class Vehicle(_Model):
     max_accel: Num
     max_steer: Num
     lateral_grip: Num = 1.0
+    wheelbase: Num = 2.5
+    drag: Num = 0.3
     keys_forward: list[str] = []
     keys_back: list[str] = []
     keys_left: list[str] = []
@@ -279,7 +286,11 @@ class TimeLeft(_Model):
 
 
 class Rays(_Model):
-    """부채꼴 레이. 채널 <id>.r0 .. <id>.r(count-1), 값 = 맞은 거리 / length. M4에서 런타임 구현."""
+    """부채꼴 레이. 채널 <id>.r0 .. <id>.r(count-1), 값 = 맞은 거리 / length(안 맞으면 1).
+
+    레이 i의 방향(물체 좌표) = center - spread/2 + spread x i/(count-1) (count가 1이면 center). hits에 맞는
+    모양(물체 id 또는 tag.<태그>)만 맞는다. 자기 몸은 맞지 않는다.
+    """
 
     kind: Literal["rays"]
     id: Id
@@ -313,12 +324,18 @@ class Region(_Model):
 
 
 class Checkpoints(_Model):
-    """순서 있는 체크포인트 선. M4에서 런타임 구현."""
+    """순서 있는 체크포인트 선. 0번은 출발선이다(출발할 때 지난 것으로 본다).
+
+    수식에서 <id>.count(지난 체크포인트 수), <id>.laps(바퀴 수, loop일 때), <id>.since(마지막으로 지난 뒤 초),
+    <id>.progress(진행: 트랙 생성기의 체크포인트면 중심선을 따라 간 거리 m, 아니면 지난 체크포인트 수)를 쓴다.
+    """
 
     id: Id
     label: Label = ""
     lines: list[tuple[Vec2, Vec2]] = Field(min_length=1)
     loop: bool = True
+    body: Ref | None = None
+    """선을 지나는지 볼 물체. 없으면 차량 구동기의 물체, 그것도 없으면 첫 에이전트 물체."""
 
 
 class PadSpec(_Model):
@@ -347,7 +364,12 @@ class HeightmapGen(_Model):
 
 
 class TrackGen(_Model):
-    """M4에서 런타임 구현."""
+    """닫힌 트랙. 물체 <id>.walls(안쪽·바깥쪽 벽, 태그 wall)와 체크포인트 <id>.cp를 내놓는다.
+
+    gen.<id>.start.x / start.y / start.angle(출발선 가운데, 진행 방향), gen.<id>.length(중심선 길이)를 쓸 수 있다.
+    source가 generated면: 시험에 트랙 번호가 있으면 학습 트랙 세트(set_seed로 만든 set_size개)의 그 번호 트랙,
+    없으면(검증·비교·판정) 시험 시드로 새 트랙을 만든다. drawn이면 centerline(중심선 꼭짓점)으로 만든 트랙 하나.
+    """
 
     kind: Literal["track"]
     id: Id
@@ -361,6 +383,8 @@ class TrackGen(_Model):
     curvature: Num = 0.5
     length_range: tuple[float, float] = (150.0, 250.0)
     checkpoints: int = 24
+    friction: Num = 0.5
+    wall_radius: float = Field(default=0.1, ge=0.0)
 
 
 Generator = Annotated[Union[HeightmapGen, TrackGen], Field(discriminator="kind")]
@@ -471,7 +495,7 @@ class SmoothnessBlock(_Block):
 
 
 class CheckpointBlock(_Block):
-    """M4에서 런타임 구현."""
+    """checkpoints: 지난 체크포인트 수. lap_time: 끝낸 바퀴의 평균 시간(초, 끝낸 바퀴가 없으면 0)."""
 
     kind: Literal["checkpoints", "lap_time"]
     checkpoints: Ref

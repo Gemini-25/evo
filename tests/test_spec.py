@@ -150,10 +150,10 @@ def test_query_function_arguments_are_checked() -> None:
 
 def test_not_yet_features_are_reported_with_milestone() -> None:
     data = lander_data()
-    data["actuators"].append({"kind": "vehicle", "id": "car", "body": "hull", "max_accel": 1, "max_steer": 1})
+    data["actuators"].append({"kind": "motor", "id": "mot", "joint": "j_leg_l", "max_torque": 1, "max_speed": 1})
     with pytest.raises(EnvFileError) as exc:
         compile_env(data)
-    assert S.SPEC_NOT_YET.format(milestone="M4") in " ".join(messages(exc.value))
+    assert S.SPEC_NOT_YET.format(milestone="M5b") in " ".join(messages(exc.value))
 
 
 def test_warnings_do_not_block_loading() -> None:

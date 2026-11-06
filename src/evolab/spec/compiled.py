@@ -45,11 +45,7 @@ class EnvFileError(ValueError):
 
 # 아직 런타임이 없는 기능과 그 마일스톤.
 NOT_YET: dict[type[BaseModel], str] = {
-    m.Vehicle: "M4",
     m.Motor: "M5b",
-    m.Rays: "M4",
-    m.TrackGen: "M4",
-    m.CheckpointBlock: "M4",
 }
 
 
@@ -76,6 +72,14 @@ class EnvSpec:
     @property
     def warnings(self) -> list[Issue]:
         return [i for i in self.issues if i.severity == "warning"]
+
+    @property
+    def track_set_size(self) -> int | None:
+        """학습 트랙 세트가 있으면 그 크기(시험 = 트랙마다 한 번, 시험 번호 = 트랙 번호), 없으면 None."""
+        for g in self.file.generators:
+            if isinstance(g, m.TrackGen) and g.source == "generated":
+                return int(g.set_size)
+        return None
 
     @property
     def body_param_count(self) -> int:
@@ -370,10 +374,24 @@ class _Compiler:
                     hit_ref(f"{where}.with[{k}]", ref, b.body)
             if isinstance(b, m.FuelBlock) and b.tank not in tanks:
                 self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=b.tank))
+            if isinstance(b, m.CheckpointBlock) and b.checkpoints not in sy.checkpoint_ids(env):
+                self.error(f"{where}.checkpoints", S.SPEC_REF_CHECKPOINTS.format(ref=b.checkpoints))
             if isinstance(b, (m.EnergyBlock, m.SmoothnessBlock)) and b.actuators != "all":
                 for k, ref in enumerate(b.actuators):
                     if ref not in actuator_ids:
                         self.error(f"{where}.actuators[{k}]", S.SPEC_REF_ACTUATOR.format(ref=ref))
+        for i, c in enumerate(env.checkpoints):
+            if c.body is not None:
+                body_ref(f"checkpoints[{i}].body", c.body)
+        tracks = [g for g in env.generators if isinstance(g, m.TrackGen)]
+        for i, g in enumerate(env.generators):
+            if isinstance(g, m.TrackGen) and g.source == "drawn" and (g.centerline is None or len(g.centerline) < 3):
+                self.error(f"generators[{i}].centerline", S.SPEC_TRACK_CENTERLINE)
+        if len([g for g in tracks if g.source == "generated"]) > 1:
+            self.error("generators", S.SPEC_TRACK_ONE_SET)
+        if env.checkpoints or tracks:
+            if not [a for a in env.actuators if isinstance(a, m.Vehicle)] and not agent_bodies:
+                self.error("checkpoints", S.SPEC_NO_AGENT_BODY)
         if not env.sensors:
             self.warn("sensors", S.SPEC_NO_SENSORS)
         if not [a for a in env.actuators if not isinstance(a, m.FuelTank)]:
@@ -414,8 +432,6 @@ class _Compiler:
         for i, b in enumerate(self.env.bodies):
             if b.type == "kinematic":
                 self.error(f"bodies[{i}].type", S.SPEC_NOT_YET.format(milestone="2"))
-        if self.env.checkpoints:
-            self.error("checkpoints", S.SPEC_NOT_YET.format(milestone="M4"))
 
     def _compile_formulas(self) -> dict[tuple[str, sy.BuildStage], Compiled]:
         out: dict[tuple[str, sy.BuildStage], Compiled] = {}
