@@ -563,12 +563,14 @@ def test_select_index_forms() -> None:
 def test_shape_errors_are_not_reported_as_wrong_length() -> None:
     # 차원 수가 틀린 배열(프로그램 오류)에 "211개인데 211개가 필요" 같은 엉뚱한 안내를 하지 않는다.
     lay = BrainLayout(9, (16,), 3)
-    for bad in (np.zeros((2, 2, 211)), np.float64(1.0)):
+    bad_shapes: list[Any] = [np.zeros((2, 2, 211)), np.float64(1.0)]
+    for bad in bad_shapes:
         with pytest.raises(ValueError) as info:
             unpack(lay, bad)
         assert not isinstance(info.value, BrainSizeError)
     layout = GenomeLayout((BodyGene("a", 0.0, 1.0, 0.5),), BrainLayout(2, (), 1), ((0.0, 1.0),))
-    for bad in (np.zeros((2, 2, layout.dim)), np.float64(1.0)):
+    bad_genomes: list[Any] = [np.zeros((2, 2, layout.dim)), np.float64(1.0)]
+    for bad in bad_genomes:
         with pytest.raises(ValueError) as ginfo:
             layout.body_values(bad)
         assert not isinstance(ginfo.value, GenomeError)
@@ -622,7 +624,8 @@ def test_batch_brain_compares_by_identity() -> None:
     lay = BrainLayout(2, (3,), 1)
     a = unpack(lay, np.zeros((2, lay.n_params)))
     b = unpack(lay, np.zeros((2, lay.n_params)))
-    assert a == a and a != b  # 예전에는 배열 비교라 ValueError(진릿값이 모호함)
+    same = a
+    assert a == same and a != b  # 예전에는 배열 비교라 ValueError(진릿값이 모호함)
     assert len({a, b}) == 2
 
 
