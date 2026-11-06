@@ -560,3 +560,221 @@ def test_store_speed_report(store: RunStore, capsys: pytest.CaptureFixture[str])
         print(f"\n[runs] append_stats {1e6 * (t1 - t0) / n:.0f}us, save_champion {1e6 * (t2 - t1) / n:.0f}us, "
               f"save_checkpoint(211 full C) {1e3 * (t3 - t2) / 20:.2f}ms, read_stats({n}) {1e3 * (t4 - t3):.2f}ms")
     assert (t3 - t0) < 30
+
+
+# ---------------------------------------------------------------------------
+# 반박 검토에서 찾은 결함의 회귀 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_reserved_long_name_stays_within_limit() -> None:
+    name = sanitize_folder_name("CON." + "x" * 200)
+    assert name.startswith("_CON.") and len(name) == store_mod.MAX_FOLDER_NAME
+    assert sanitize_folder_name("CON" + " " * 77 + "x") == "_CON"  # 잘라서 예약 이름이 되어도 고친다
+
+
+def test_partial_append_is_cut_before_next_row(store: RunStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """디스크가 가득 차 줄 앞부분만 써진 뒤 같은 저장소 객체로 이어 쓰면, 잘린 "1"과 다음 줄이 붙어 12세대가 됐다."""
+    store.append_stats({"generation": 0, "a": 1.0})
+    real_open = RunStore._open_append
+
+    class HalfWrite(io.FileIO):
+        def write(self, b: Any) -> int:
+            super().write(bytes(b)[:1])
+            raise OSError(28, "No space left on device")
+
+    calls = {"n": 0}
+
+    def flaky(self: RunStore, path: Path) -> Any:
+        calls["n"] += 1
+        return HalfWrite(str(path), "ab") if calls["n"] == 1 else real_open(self, path)
+
+    monkeypatch.setattr(RunStore, "_open_append", flaky)
+    with pytest.raises(OSError):
+        store.append_stats({"generation": 1, "a": 2.0})
+    store.append_stats({"generation": 2, "a": 3.0})
+    assert [r["generation"] for r in store.read_stats()] == ["0", "2"]
+    assert (store.root / "stats.csv").read_bytes().decode("utf-8-sig").splitlines() == ["generation,a", "0,1.0", "2,3.0"]
+
+
+def test_atomic_write_skips_stale_tmp_name_of_reused_pid(store: RunStore) -> None:
+    """윈도우는 pid를 금방 다시 쓴다. 같은 pid였던 죽은 프로세스의 임시 파일 이름과 겹쳐도 쓰기가 실패하면 안 된다."""
+    nxt = next(store_mod._tmp_counter) + 1
+    stale = [store.root / f".run.json.{os.getpid()}.{nxt + i}.tmp" for i in range(3)]
+    for p in stale:
+        p.write_bytes(b"left by a crashed process")
+    store.update_run_info(memo="이어서")
+    assert store.read_run_info()["memo"] == "이어서"
+    assert all(p.read_bytes() == b"left by a crashed process" for p in stale)  # 남의 파일은 건드리지 않는다
+
+
+def test_stats_reject_line_breaks(store: RunStore) -> None:
+    """따옴표 속 줄바꿈이 있으면, 전원이 끊겨 잘린 줄을 줄바꿈 기준으로 잘라 냈을 때 열린 따옴표가 뒤 줄을 모두 삼킨다."""
+    store.append_stats({"generation": 0, "note": "한 줄"})
+    for bad in ("두\n줄", "캐리지\r리턴"):
+        with pytest.raises(ValueError, match="line breaks"):
+            store.append_stats({"generation": 1, "note": bad})
+    with pytest.raises(ValueError, match="line breaks"):
+        RunStore.create(store.root.parent, "열 이름", {}).append_stats({"gen\neration": 0})
+    assert store.read_stats() == [{"generation": "0", "note": "한 줄"}]
+
+
+def test_stats_resaved_as_ansi_is_reported(store: RunStore) -> None:
+    """엑셀에서 'CSV(쉼표로 분리)'로 다시 저장하면 CP949가 된다: 날 UnicodeDecodeError 대신 알기 쉬운 오류."""
+    store.append_stats({"generation": 0, "block_착지": 1.0})
+    (store.root / "stats.csv").write_bytes("generation,block_착지\r\n0,1.0\r\n".encode("cp949"))
+    with pytest.raises(RunStoreError, match="UTF-8"):
+        RunStore.open(store.root).append_stats({"generation": 1, "block_착지": 2.0})
+    with pytest.raises(RunStoreError, match="UTF-8"):
+        store.read_stats()
+
+
+@pytest.mark.parametrize("truncate_too", [False, True])
+def test_sidecar_that_cannot_be_deleted_is_not_merged_twice(
+    store: RunStore, monkeypatch: pytest.MonkeyPatch, truncate_too: bool
+) -> None:
+    """윈도우: 화면 프로세스가 stats.csv.pending을 읽는 순간에는 지우기가 막힌다. 학습이 멈추거나 줄이 두 번 들어가면 안 된다."""
+    store.append_stats({"generation": 0, "a": 1})
+    stats = store.root / "stats.csv"
+    sidecar = store.root / "stats.csv.pending"
+    real_open = RunStore._open_append
+    real_unlink = Path.unlink
+    real_builtin_open = open
+    lock = {"main": True, "sidecar": False}
+
+    def locked_main(self: RunStore, path: Path) -> Any:
+        if lock["main"] and path == stats:
+            raise PermissionError(13, "locked by Excel", str(path))
+        return real_open(self, path)
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if lock["sidecar"] and self == sidecar:
+            raise PermissionError(13, "being read", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    def no_truncate(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if lock["sidecar"] and Path(file) == sidecar and mode in ("r+b", "ab"):
+            raise PermissionError(13, "being read", str(file))
+        return real_builtin_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(RunStore, "_open_append", locked_main)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    if truncate_too:
+        monkeypatch.setattr(store_mod, "open", no_truncate, raising=False)
+    store.append_stats({"generation": 1, "a": 1})  # 엑셀 잠금: 옆 파일로
+    assert store.pending_stats == 1
+    lock["main"], lock["sidecar"] = False, True  # 엑셀을 닫았고, 다른 프로세스가 옆 파일을 잡기 시작함
+    if not truncate_too:
+        store.append_stats({"generation": 2, "a": 1})  # 지우기는 막혀도 비우기는 된다: 예외 없이 계속
+        assert sidecar.exists() and sidecar.stat().st_size == 0
+    else:
+        # 지우기도 비우기도 덧붙이기도 막힘(OneDrive가 올리는 중 등): 잠깐 다시 시도한 뒤 알기 쉬운 오류.
+        # 1세대 줄은 이미 옮겼고 옆 파일에도 남아 있지만 두 번 보이지 않는다.
+        with pytest.raises(RunStoreError, match="다른 프로그램"):
+            store.append_stats({"generation": 2, "a": 1})
+        assert [r["generation"] for r in store.read_stats()] == ["0", "1"] and store.pending_stats == 0
+        assert sidecar.read_bytes() == b"1,1\r\n"
+        lock["sidecar"] = False
+        store.append_stats({"generation": 2, "a": 1})
+        lock["sidecar"] = True
+    assert [r["generation"] for r in store.read_stats()] == ["0", "1", "2"]
+    assert store.pending_stats == 0
+    store.append_stats({"generation": 3, "a": 1})
+    assert [r["generation"] for r in store.read_stats()] == ["0", "1", "2", "3"]
+    # 아직 못 비웠다면, stats.csv를 줄인 뒤 다음 덧붙이기에서 옮긴 줄이 되살아나면 안 된다
+    lock["sidecar"] = False
+    store.truncate_after(1)
+    store.append_stats({"generation": 2, "a": 5})
+    assert [(r["generation"], r["a"]) for r in store.read_stats()] == [("0", "1"), ("1", "1"), ("2", "5")]
+    assert not sidecar.exists() and store.pending_stats == 0
+
+
+def test_pending_merged_before_crash_is_not_duplicated(store: RunStore) -> None:
+    """stats.csv에 옮긴 직후 옆 파일을 지우기 전에 끊긴 경우 (events.jsonl도 같은 방식)."""
+    for g in range(3):
+        store.append_stats({"generation": g, "a": g})
+        store.append_event("tick", g)
+    for name in ("stats.csv", "events.jsonl"):
+        main = (store.root / name).read_bytes()
+        last = main[main.rstrip(b"\n").rfind(b"\n") + 1:]
+        (store.root / (name + ".pending")).write_bytes(last)
+    reopened = RunStore.open(store.root)
+    assert [r["generation"] for r in reopened.read_stats()] == ["0", "1", "2"] and reopened.pending_stats == 0
+    assert [e["generation"] for e in reopened.read_events()] == [0, 1, 2]
+    reopened.append_stats({"generation": 3, "a": 3})
+    reopened.append_event("tick", 3)
+    assert [r["generation"] for r in reopened.read_stats()] == ["0", "1", "2", "3"]
+    assert [e["generation"] for e in reopened.read_events()] == [0, 1, 2, 3]
+    assert not (store.root / "stats.csv.pending").exists() and not (store.root / "events.jsonl.pending").exists()
+
+
+def test_run_json_does_not_depend_on_hash_seed(base: Path) -> None:
+    """집합은 PYTHONHASHSEED마다 순서가 달라진다. 같은 설정이면 run.json이 바이트까지 같아야 한다."""
+    tags = {"알파", "beta", "감마", "delta", "eps", "zeta"}
+    code = (
+        "import sys; from pathlib import Path; from evolab.runs.store import RunStore\n"
+        "s = RunStore.create(Path(sys.argv[1]), sys.argv[2], {'tags': set(sys.argv[3:])})\n"
+        "s.append_event('start', 0, tags=set(sys.argv[3:]))\n"
+    )
+    for seed in ("1", "2", "3"):
+        subprocess.run([sys.executable, "-c", code, str(base), f"h{seed}", *sorted(tags)], check=True,
+                       env={**os.environ, "PYTHONHASHSEED": seed})
+    run_jsons = {(base / f"h{s}" / "run.json").read_bytes() for s in "123"}
+    assert len(run_jsons) == 1
+    assert json.loads(run_jsons.pop())["tags"] == sorted(tags)
+    assert {tuple(RunStore.open(base / f"h{s}").read_events()[0]["tags"]) for s in "123"} == {tuple(sorted(tags))}
+
+
+def test_checkpoint_syncs_logs_before_it_is_written(store: RunStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """덧붙이기는 매번 fsync하지 않는다. 전원이 끊겨 체크포인트만 남고 그 앞 통계 줄이 사라지면 이어 간 실행에 빈 세대가 생긴다."""
+    store.append_stats({"generation": 0, "a": 1})
+    store.append_event("start", 0)
+    order: list[str] = []
+    real_sync, real_write = store_mod._sync_file, store_mod._atomic_write
+
+    def sync(path: Path) -> None:
+        order.append(f"sync {path.name}")
+        real_sync(path)
+
+    def write(path: Path, fn: Any) -> None:
+        order.append(f"write {path.name}")
+        real_write(path, fn)
+
+    monkeypatch.setattr(store_mod, "_sync_file", sync)
+    monkeypatch.setattr(store_mod, "_atomic_write", write)
+    store.save_checkpoint(1, {})
+    assert order.index("sync stats.csv") < order.index("write gen_000001.pkl")
+    assert order.index("sync events.jsonl") < order.index("write gen_000001.pkl")
+    real_sync(store.root / "없는 파일.csv")  # 없는 파일을 만들지 않는다
+    assert not (store.root / "없는 파일.csv").exists()
+
+
+def test_truncate_after_cleans_stale_tmp_files(store: RunStore) -> None:
+    """끊긴 실행이 save_champion 도중에 남긴 임시 파일은 이어 갈 때 지운다(지금 쓰는 중일 수 있는 새 파일은 둔다)."""
+    old = time.time() - 3600
+    stale = [store.root / "champions" / ".gen_000003_representative.npz.4242.7.tmp", store.root / ".run.json.4242.8.tmp"]
+    for p in stale:
+        p.write_bytes(b"half")
+        os.utime(p, (old, old))
+    fresh = store.root / "champions" / ".gen_000004_champion.npz.4243.1.tmp"
+    fresh.write_bytes(b"writing")
+    keep = store.root / "exports" / "내 영상.tmp"
+    keep.write_bytes(b"user file")
+    os.utime(keep, (old, old))
+    store.truncate_after(10)
+    assert not any(p.exists() for p in stale) and fresh.exists() and keep.exists()
+
+
+def test_partly_merged_pending_is_completed_once(store: RunStore) -> None:
+    """옆 파일 줄을 옮기던 중(앞 몇 줄만 들어간 뒤) 끊긴 경우: 남은 줄만 옮긴다."""
+    store.append_stats({"generation": 0, "a": 0})
+    stats, sidecar = store.root / "stats.csv", store.root / "stats.csv.pending"
+    lines = [f"{g},{g}\r\n".encode() for g in (1, 2, 3)]
+    sidecar.write_bytes(b"".join(lines))
+    with open(stats, "ab") as f:
+        f.write(lines[0] + lines[1][:2])  # 1번 줄은 다 들어가고 2번 줄은 잘림
+    reopened = RunStore.open(store.root)
+    assert [r["generation"] for r in reopened.read_stats()] == ["0", "1", "2", "3"] and reopened.pending_stats == 2
+    reopened.append_stats({"generation": 4, "a": 4})
+    assert stats.read_bytes().decode("utf-8-sig").splitlines() == ["generation,a", "0,0", "1,1", "2,2", "3,3", "4,4"]
+    assert not sidecar.exists()

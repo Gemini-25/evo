@@ -13,8 +13,10 @@ pycma 4.5에서 실험으로 확인한 것:
 - stop()은 부작용이 있다(평탄 점수 세대 수를 센다). 그래서 tell() 뒤 정확히 한 번씩 부르고 다른 곳에서는 부르지 않는다.
   pycma의 종료 조건이 차도 ask/tell은 계속 동작한다. ipop이 켜져 있으면 그때 개체 수 2배로 재시작한다.
 - tell()은 ask()가 돌려준 배열 객체 그대로 넘긴다. pycma는 후보 바이트의 hash로 내부 좌표를 찾는데,
-  bytes hash는 프로세스마다 달라서 ask와 tell 사이에 상태를 저장하면 다른 프로세스에서 이어갈 수 없다.
-  그래서 state_dict()는 세대 경계(tell 뒤)에서만 허용한다.
+  bytes hash는 프로세스마다 달라서 ask와 tell 사이의 pycma 객체를 저장하면 다른 프로세스에서 이어갈 수 없다.
+  그래서 ask()는 pycma ask 직전에 객체를 피클해 두고(211차원 전체 공분산 약 0.7ms), ask와 tell 사이의
+  state_dict()는 그 세대 경계 상태를 돌려준다. 불러온 뒤 ask()는 같은 후보를 다시 낸다. (워커 오류로 세대 도중에
+  멈춰도 Trainer가 체크포인트를 남길 수 있다. Trainer의 세대 수도 그 세대를 끝내지 않은 상태다.)
 - 상태: es 객체를 통째로 피클한다(전용 RandomState가 randn을 통해 함께 담긴다). 211차원 전체 공분산 약 0.9MB.
 """
 
@@ -23,7 +25,7 @@ from __future__ import annotations
 import math
 import pickle
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Final
@@ -40,6 +42,7 @@ STATE_FORMAT: Final = 1
 IPOP_MAX_DOUBLINGS: Final = 5
 _PICKLE_PROTOCOL: Final = 5
 _SEED_LIMIT: Final = 2**32  # RandomState 시드 범위
+_EIG_EPS: Final = float(np.finfo(np.float64).eps)
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,14 @@ class CMAESConfig:
             raise ValueError(S.LEARNER_ERR_SEED.format(value=self.seed))
         if not _is_int(self.bounded_dims) or self.bounded_dims < 0:
             raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS.format(value=self.bounded_dims))
+
+
+def _mean_pheno(es: Any, bounded_dims: int) -> np.ndarray:
+    """분포 평균을 경계 안으로 옮긴 표현형(pycma result.xfavorite와 같은 계산)."""
+    x = np.array(es.gp.pheno(es.mean, into_bounds=es.boundary_handler.repair), dtype=np.float64, copy=True)
+    if bounded_dims:
+        np.clip(x[:bounded_dims], -1.0, 1.0, out=x[:bounded_dims])
+    return x
 
 
 def _is_int(v: object) -> bool:
@@ -110,6 +121,8 @@ class CMAES:
         self._es: Any = self._new_es(x, self._popsize)
         self._pending: list[np.ndarray] | None = None  # pycma ask()가 돌려준 객체 그대로
         self._pending_array: np.ndarray | None = None
+        # ask와 tell 사이에만 있다: ask 직전 pycma 객체(피클)와 그때의 diversity. state_dict()가 쓴다.
+        self._boundary: tuple[bytes, float] | None = None
         self._diversity = math.nan
         self._mean_step = math.nan
         self._stop_reasons: tuple[str, ...] = ()
@@ -152,6 +165,7 @@ class CMAES:
     def ask(self) -> np.ndarray:
         """(popsize, 차원) 후보. tell() 전에 다시 부르면 같은 후보를 다시 돌려준다(난수를 더 쓰지 않음)."""
         if self._pending_array is None:
+            boundary = (pickle.dumps(self._es, protocol=_PICKLE_PROTOCOL), self._diversity)
             with _quiet_cma():
                 solutions = self._es.ask()
             arr = np.array(solutions, dtype=np.float64)
@@ -160,6 +174,7 @@ class CMAES:
                 np.clip(arr[:, :k], -1.0, 1.0, out=arr[:, :k])  # BoundTransform 결과는 이미 경계 안
             self._pending = solutions
             self._pending_array = arr
+            self._boundary = boundary
             self._diversity = float(np.mean(np.std(arr, axis=0)))
         return self._pending_array.copy()
 
@@ -177,6 +192,7 @@ class CMAES:
             self._stop_reasons = tuple(str(key) for key in self._es.stop())
         self._pending = None
         self._pending_array = None
+        self._boundary = None
         self._generation += 1
         self._evaluations += self._popsize
         self._best = self._mean_pheno()
@@ -189,7 +205,8 @@ class CMAES:
         return self._best.copy()
 
     def stats(self) -> dict[str, float]:
-        """sigma: pycma 단계 크기, axis_ratio: 탐색 분포 공분산의 가장 긴 축 ÷ 가장 짧은 축,
+        """sigma: pycma 단계 크기, axis_ratio: 탐색 분포 공분산의 가장 긴 축 ÷ 가장 짧은 축(전체 공분산은
+        고윳값 계산 정밀도 때문에 최대 1/√eps ≈ 6.7e7),
         std_mean: 좌표별 표준편차 평균(sigma × 대각 디코딩 × √C 대각), mean_step: 마지막 tell에서 추천해가 움직인 거리,
         diversity: 마지막 ask 후보의 유전자별 표준편차 평균, popsize, restarts, generation, evaluations.
         """
@@ -208,9 +225,15 @@ class CMAES:
 
     # ------------------------------------------------------------------ 상태
     def state_dict(self) -> dict[str, Any]:
-        """세대 경계(tell 뒤, 다음 ask 전)에서만 부른다. pycma 객체는 피클한 bytes로 담겨 이후 진행과 무관한 사본이다."""
-        if self._pending is not None:
-            raise RuntimeError(S.LEARNER_ERR_STATE_PENDING)
+        """세대 경계 상태. pycma 객체는 피클한 bytes로 담겨 이후 진행과 무관한 사본이다.
+
+        ask()와 tell() 사이에 부르면 그 ask() 직전 상태(이번 세대를 시작하기 전)를 돌려준다. 불러와서 ask()하면
+        같은 후보가 나온다.
+        """
+        if self._boundary is not None:
+            es_blob, diversity = self._boundary
+        else:
+            es_blob, diversity = pickle.dumps(self._es, protocol=_PICKLE_PROTOCOL), self._diversity
         return {
             "format": STATE_FORMAT,
             "name": self.name,
@@ -220,48 +243,68 @@ class CMAES:
             "restarts": self._restarts,
             "generation": self._generation,
             "evaluations": self._evaluations,
-            "diversity": self._diversity,
+            "diversity": diversity,
             "mean_step": self._mean_step,
             "stop_reasons": list(self._stop_reasons),
             "pycma_version": str(self._cma.__version__),
-            "es": pickle.dumps(self._es, protocol=_PICKLE_PROTOCOL),
+            "es": es_blob,
         }
 
     def load_state_dict(self, d: dict[str, Any]) -> None:
         """저장된 상태로 바꾼다. 설정(개체 수, 시그마 등)도 저장된 값이 생성자 값보다 우선한다.
         설정을 바꿔 이어 가려면 CMAES(이전 best(), 새 설정)로 새로 만든다. 유전자 차원이 다르면 ValueError.
+        상태가 잘못되었으면(빠진 항목, 깨진 피클, 서로 안 맞는 값) ValueError이고, 그때 이 학습 방법은 그대로다.
         """
+        if not isinstance(d, Mapping):
+            raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=type(d).__name__))
         if d.get("name") != self.name:
             raise ValueError(S.LEARNER_ERR_STATE_KIND.format(got=d.get("name"), want=self.name))
         if d.get("format") != STATE_FORMAT:
             raise ValueError(S.LEARNER_ERR_STATE_FORMAT.format(got=d.get("format")))
-        if int(d["dim"]) != self._dim:
-            raise ValueError(S.LEARNER_ERR_STATE_DIM.format(got=d["dim"], want=self._dim))
+        # 모두 읽고 검사한 뒤에야 바꾼다(중간에 실패해도 반쯤 불러온 상태가 남지 않게).
+        try:
+            dim = int(d["dim"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
+        if dim != self._dim:
+            raise ValueError(S.LEARNER_ERR_STATE_DIM.format(got=dim, want=self._dim))
         try:
             config = CMAESConfig(**d["config"])
-        except TypeError as e:  # 모르는 설정 이름
+            popsize = int(d["popsize"])
+            restarts = int(d["restarts"])
+            generation = int(d["generation"])
+            evaluations = int(d["evaluations"])
+            diversity = float(d["diversity"])
+            mean_step = float(d["mean_step"])
+            stop_reasons = tuple(str(s) for s in d["stop_reasons"])
+        except (KeyError, TypeError, ValueError) as e:  # 빠진 항목, 모르는 설정 이름, 잘못된 값
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
         try:
             with _quiet_cma():
                 es = pickle.loads(d["es"])
             rng = es.opts["randn"].__self__
-        except Exception as e:  # 다른 pycma 버전에서 만든 상태 등
+            es_dim, es_popsize = int(es.N), int(es.popsize)
+            best = _mean_pheno(es, config.bounded_dims)
+        except Exception as e:  # 다른 pycma 버전에서 만든 상태, pycma 객체가 아님 등
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
-        if not isinstance(rng, np.random.RandomState) or int(es.N) != self._dim:
+        if not isinstance(rng, np.random.RandomState):
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=type(rng).__name__))
+        if (es_dim, es_popsize) != (self._dim, popsize) or best.shape != (self._dim,):
+            raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=f"N={es_dim}, popsize={es_popsize}/{popsize}"))
         self._config = config
         self._es = es
         self._rng = rng  # 재시작도 같은 난수 흐름을 이어 쓴다
-        self._popsize = int(d["popsize"])
-        self._restarts = int(d["restarts"])
-        self._generation = int(d["generation"])
-        self._evaluations = int(d["evaluations"])
-        self._diversity = float(d["diversity"])
-        self._mean_step = float(d["mean_step"])
-        self._stop_reasons = tuple(str(s) for s in d["stop_reasons"])
+        self._popsize = popsize
+        self._restarts = restarts
+        self._generation = generation
+        self._evaluations = evaluations
+        self._diversity = diversity
+        self._mean_step = mean_step
+        self._stop_reasons = stop_reasons
         self._pending = None
         self._pending_array = None
-        self._best = self._mean_pheno()
+        self._boundary = None
+        self._best = best
         self._axis_cache = None
 
     # ------------------------------------------------------------------ 내부
@@ -292,12 +335,7 @@ class CMAES:
         self._axis_cache = None
 
     def _mean_pheno(self) -> np.ndarray:
-        es = self._es
-        x = np.array(es.gp.pheno(es.mean, into_bounds=es.boundary_handler.repair), dtype=np.float64, copy=True)
-        k = self._config.bounded_dims
-        if k:
-            np.clip(x[:k], -1.0, 1.0, out=x[:k])
-        return x
+        return _mean_pheno(self._es, self._config.bounded_dims)
 
     def _axis_ratio(self) -> float:
         """√(공분산 고윳값 최대 ÷ 최소). 공분산 = sigma² · S·C·S (S = 대각 디코딩). 세대마다 한 번만 계산."""
@@ -306,11 +344,16 @@ class CMAES:
             return self._axis_cache[1]
         es = self._es
         scaling = np.asarray(es.sigma_vec.scaling, dtype=np.float64) * np.ones(self._dim)
+        top = float(np.max(scaling))
+        if top > 0 and math.isfinite(top):
+            # 비는 공통 배율과 무관하다. 경계가 있으면 pycma가 scaling을 약 1/sigma0로 두어 큰 sigma0에서 제곱이 0이 된다.
+            scaling = scaling / top
         c = getattr(es.sm, "C", None)
         if isinstance(c, np.ndarray) and c.ndim == 2:
             ev = np.linalg.eigvalsh(c * scaling[:, None] * scaling[None, :])
             lo, hi = float(ev[0]), float(ev[-1])
-            ratio = math.sqrt(hi / lo) if lo > 0 else math.inf
+            # 고윳값 오차는 약 eps × 최대 고윳값이라 그보다 작은 최솟값은 0이나 음수로도 나온다(무한대 대신 상한).
+            ratio = math.sqrt(hi / max(lo, hi * _EIG_EPS)) if hi > 0 else math.nan
         else:
             sd = scaling * np.sqrt(np.asarray(es.sm.variances, dtype=np.float64))
             ratio = float(sd.max() / sd.min()) if sd.min() > 0 else math.inf

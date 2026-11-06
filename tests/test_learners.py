@@ -162,6 +162,7 @@ def test_sanitize_scores() -> None:
 def test_non_finite_scores_never_reach_pycma() -> None:
     learner = CMAES(np.zeros(4), CMAESConfig(popsize=8))
     told: list[list[float]] = []
+    X = learner.ask()  # ask가 pycma 객체를 피클하므로 엿보기 함수는 그 뒤에 단다
     real_tell = learner._es.tell
 
     def spy(solutions: Any, values: list[float]) -> None:
@@ -169,7 +170,6 @@ def test_non_finite_scores_never_reach_pycma() -> None:
         real_tell(solutions, values)
 
     learner._es.tell = spy
-    X = learner.ask()
     scores = sphere(X)
     scores[[1, 4, 6]] = [np.nan, np.inf, -np.inf]
     learner.tell(X, scores)
@@ -257,6 +257,26 @@ def test_axis_ratio_tracks_ill_conditioning(threshold: int) -> None:
     assert 100 < learner.stats()["axis_ratio"] < 1e4
 
 
+def test_axis_ratio_stays_finite_for_numerically_singular_covariance() -> None:
+    # 평탄한 점수로 수천 세대(경계 있음) 돌면 공분산이 수치적으로 특이해져 최소 고윳값이 0 이하로 계산되고
+    # axis_ratio가 무한대가 됐다(실측: 6차원, 4,000세대). 고윳값 정밀도 한계(1/√eps)에서 멈춰야 한다.
+    learner = CMAES(np.zeros(4), CMAESConfig(popsize=8))
+    learner._es.sm.C = np.ones((4, 4))  # 계수 1: 고윳값 4, 0, 0, 0 (계산값은 ±1e-16 근처)
+    ratio = learner.stats()["axis_ratio"]
+    assert math.isfinite(ratio) and ratio == pytest.approx(1 / math.sqrt(np.finfo(np.float64).eps))
+
+
+@pytest.mark.parametrize("sigma0", [1e-200, 1e200])
+def test_axis_ratio_with_extreme_sigma0_and_bounds(sigma0: float) -> None:
+    # 경계가 있으면 pycma가 대각 배율을 약 1/sigma0로 둔다. 배율 제곱이 0으로 언더플로해도 예외 없이 계산해야 한다.
+    learner = CMAES(np.zeros(5), CMAESConfig(popsize=8, sigma0=sigma0, bounded_dims=5))
+    for _ in range(3):
+        X = learner.ask()
+        learner.tell(X, -np.sum(np.tanh(X) ** 2, axis=1))
+        ratio = learner.stats()["axis_ratio"]
+        assert math.isfinite(ratio) and 1.0 <= ratio < 10.0
+
+
 # ---------------------------------------------------------------------------- 통계
 
 
@@ -304,8 +324,6 @@ def test_misuse_is_rejected() -> None:
     with pytest.raises(RuntimeError):
         learner.tell(np.zeros((6, 4)), np.zeros(6))
     X = learner.ask()
-    with pytest.raises(RuntimeError):
-        learner.state_dict()  # 세대 도중에는 저장 불가
     with pytest.raises(ValueError):
         learner.tell(X[::-1], sphere(X))  # 순서가 바뀐 후보
     Y = X.copy()
@@ -370,6 +388,83 @@ def test_load_state_dict_validation() -> None:
     assert np.array_equal(target.best(), learner.best())
 
 
+@pytest.mark.parametrize(
+    "broken",
+    [
+        None,
+        [],
+        "cmaes",
+        {"name": "cmaes", "format": 1},
+        "missing:restarts",
+        "missing:popsize",
+        "missing:config",
+        "missing:dim",
+        "missing:es",
+        {"popsize": 7},  # pycma 객체(6)와 안 맞음
+        {"dim": "four"},
+        {"config": "nope"},
+        {"config": {"popsize": 1}},
+        {"generation": "x"},
+        {"es": pickle.dumps({"not": "pycma"})},
+    ],
+)
+def test_failed_load_raises_value_error_and_changes_nothing(broken: Any) -> None:
+    # 깨진 상태를 불러오다 실패해도 반쯤 바뀐 학습 방법이 남으면 안 된다(전에는 KeyError가 개체 수·pycma 객체만
+    # 바꾼 뒤에 났다).
+    source = CMAES(np.zeros(4), CMAESConfig(popsize=6, seed=2))
+    run(source, sphere, 3)
+    good = source.state_dict()
+    if isinstance(broken, str) and broken.startswith("missing:"):
+        state: Any = {k: v for k, v in good.items() if k != broken.split(":")[1]}
+    elif isinstance(broken, dict) and "name" not in broken:
+        state = {**good, **broken}
+    else:
+        state = broken
+    target = CMAES(np.zeros(4), CMAESConfig(popsize=10, seed=3))
+    untouched = CMAES(np.zeros(4), CMAESConfig(popsize=10, seed=3))
+    run(target, sphere, 2)
+    run(untouched, sphere, 2)
+    with pytest.raises(ValueError):
+        target.load_state_dict(state)
+    assert target.popsize == 10 and target.config.popsize == 10 and target.generation == 2
+    assert np.array_equal(target.best(), untouched.best())
+    assert all(np.array_equal(x, y) for x, y in zip(run(target, sphere, 3), run(untouched, sphere, 3), strict=True))
+
+
+def test_state_dict_between_ask_and_tell_is_the_generation_boundary() -> None:
+    # Trainer는 워커 오류로 세대 도중(ask 뒤, tell 전)에 멈춰도 체크포인트를 남긴다. 그때 상태는 그 ask 직전 상태라서
+    # 불러오면 같은 후보를 다시 내고, 끊지 않은 실행과 끝까지 같다.
+    config = CMAESConfig(popsize=5, seed=13, bounded_dims=2, ipop=True)  # 개체 5: pycma 거울 표본도 섞인다
+    straight = CMAES(np.zeros(6), config)
+    asked_straight = run(straight, flat_then_sphere, 60)
+
+    learner = CMAES(np.zeros(6), config)
+    run(learner, flat_then_sphere, 30)
+    before = learner.state_dict()
+    stats_before = learner.stats()
+    best_before = learner.best()
+    X = learner.ask()
+    mid = learner.state_dict()
+    assert mid == before  # pycma 객체 바이트, 세대 수, diversity(이번 ask 전 값)까지 같다
+    assert mid["diversity"] == stats_before["diversity"] != learner.stats()["diversity"]
+    assert np.array_equal(learner.ask(), X)  # 저장해도 기다리는 후보는 그대로
+    learner.tell(X, flat_then_sphere(X))
+    assert np.array_equal(X, asked_straight[30])
+
+    resumed = CMAES(np.zeros(6), CMAESConfig())
+    resumed.load_state_dict(pickle.loads(pickle.dumps(mid)))
+    assert resumed.generation == 30 and np.array_equal(resumed.best(), best_before)
+    again = run(resumed, flat_then_sphere, 30)
+    assert all(np.array_equal(x, y) for x, y in zip(again, asked_straight[30:], strict=True))
+    assert np.array_equal(resumed.best(), straight.best()) and resumed.stats() == straight.stats()
+    assert straight.restarts > 0
+
+
+def flat_then_sphere(X: np.ndarray) -> np.ndarray:
+    """앞 차원이 0.5보다 크면 평탄(재시작을 부른다), 아니면 계단 구면."""
+    return np.where(X[:, 0] > 0.5, -100.0, np.round(sphere(X), 1))
+
+
 # ---------------------------------------------------------------------------- 결정성
 
 
@@ -379,6 +474,50 @@ def test_same_seed_same_result_and_seed_matters() -> None:
     c = run(CMAES(np.zeros(6), CMAESConfig(popsize=8, seed=12)), sphere, 15)
     assert all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))
     assert not np.array_equal(a[0], c[0])
+
+
+_FRESH_RUN_SCRIPT = textwrap.dedent(
+    """
+    import hashlib
+    import numpy as np
+    from evolab.learners.cmaes import CMAES, CMAESConfig
+
+    h = hashlib.sha256()
+    for dim, config in [
+        (8, CMAESConfig(popsize=5, seed=7, bounded_dims=3, ipop=True)),
+        (30, CMAESConfig(popsize=12, seed=8, diagonal_threshold=10, bounded_dims=2, ipop=True)),
+        (40, CMAESConfig(popsize=16, seed=9)),
+        (211, CMAESConfig(seed=10)),  # 착륙선 차원, 전체 공분산
+    ]:
+        learner = CMAES(np.linspace(-0.5, 0.5, dim), config)
+        for _ in range(40):
+            X = learner.ask()
+            h.update(X.tobytes())
+            learner.tell(X, -np.round(np.sum((X - 0.3) ** 2, axis=1), 1))
+        h.update(learner.best().tobytes())
+        h.update(repr(sorted(learner.stats().items())).encode())
+    print(h.hexdigest())
+    """
+)
+
+
+def test_same_seed_gives_same_run_in_fresh_processes() -> None:
+    # `evolab train`을 두 번 따로 돌린 경우: 해시 시드(PYTHONHASHSEED)가 달라도 처음부터 끝까지 같아야 한다.
+    # 두 자식 프로세스끼리 비교한다(정답 해시를 박지 않음). BLAS 스레드 수가 다르면 211차원 결과 비트가 달라지므로
+    # (실측: 스레드 1개와 4개) 앱처럼 1개로 고정한다. 이 프로세스는 pytest가 띄울 때의 스레드 수라 비교에 쓰지 않는다.
+    blas = {name: "1" for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
+    digests = []
+    for hash_seed in ("0", "98765"):
+        child = subprocess.run(
+            [sys.executable, "-c", _FRESH_RUN_SCRIPT],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **blas, "PYTHONHASHSEED": hash_seed},
+            timeout=300,
+        )
+        digests.append(child.stdout.strip())
+    assert len(digests[0]) == 64 and digests[0] == digests[1]
 
 
 def test_global_numpy_rng_has_no_influence() -> None:
@@ -510,15 +649,19 @@ OBJECTIVES: dict[str, Objective] = {"shifted_ellipsoid": shifted_ellipsoid, "fla
 
 
 @pytest.mark.parametrize(
-    ("dim", "config", "objective"),
+    ("dim", "config", "objective", "mid_generation"),
     [
-        (10, CMAESConfig(popsize=32, seed=21), "shifted_ellipsoid"),
-        (12, CMAESConfig(popsize=8, seed=22, bounded_dims=4, ipop=True), "flat"),  # 재시작이 저장 앞뒤로 생김
-        (1000, CMAESConfig(popsize=32, seed=23, diagonal_threshold=999, bounded_dims=3), "shifted_ellipsoid"),
+        (10, CMAESConfig(popsize=32, seed=21), "shifted_ellipsoid", False),
+        (12, CMAESConfig(popsize=8, seed=22, bounded_dims=4, ipop=True), "flat", False),  # 재시작이 저장 앞뒤로 생김
+        (1000, CMAESConfig(popsize=32, seed=23, diagonal_threshold=999, bounded_dims=3), "shifted_ellipsoid", False),
+        # ask 뒤 tell 전에 저장(워커 오류로 세대 도중 멈춤). 개체 5는 pycma 거울 표본, 재시작도 앞뒤로.
+        (12, CMAESConfig(popsize=5, seed=24, bounded_dims=4, ipop=True), "flat", True),
     ],
-    ids=["full-10d", "ipop-bounded-12d", "diagonal-1000d"],
+    ids=["full-10d", "ipop-bounded-12d", "diagonal-1000d", "mirrored-ipop-12d-mid-generation"],
 )
-def test_resume_in_new_process_is_bit_identical(dim: int, config: CMAESConfig, objective: str, tmp_path: Path) -> None:
+def test_resume_in_new_process_is_bit_identical(
+    dim: int, config: CMAESConfig, objective: str, mid_generation: bool, tmp_path: Path
+) -> None:
     f = OBJECTIVES[objective]
     x0 = np.linspace(-0.5, 0.5, dim)
     straight = CMAES(x0, config)
@@ -527,6 +670,8 @@ def test_resume_in_new_process_is_bit_identical(dim: int, config: CMAESConfig, o
     first = CMAES(x0, config)
     asked_first = run(first, f, 20)
     assert all(np.array_equal(x, y) for x, y in zip(asked_first, asked_straight[:20], strict=True))
+    if mid_generation:
+        assert np.array_equal(first.ask(), asked_straight[20])  # 이 세대는 평가하지 못하고 저장
     job = {"x0": x0, "config": asdict(config), "state": first.state_dict(), "objective": objective, "gens": 20}
     job_file = tmp_path / "job.pkl"
     out_file = tmp_path / "out.pkl"

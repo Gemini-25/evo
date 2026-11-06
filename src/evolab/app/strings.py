@@ -283,7 +283,6 @@ LEARNER_ERR_X0: Final = "초기 유전자는 유한한 숫자로 된 비어 있�
 LEARNER_ERR_SCORES_SHAPE: Final = "점수 배열의 모양 {got}이 후보 수 ({count},)와 맞지 않습니다."
 LEARNER_ERR_TELL_WITHOUT_ASK: Final = "후보를 받기(ask) 전에 점수를 넘겼습니다(tell)."
 LEARNER_ERR_TELL_CANDIDATES: Final = "점수와 함께 넘긴 후보가 마지막으로 받은 후보(ask)와 다릅니다. 받은 후보를 같은 순서로 그대로 넘겨야 합니다."
-LEARNER_ERR_STATE_PENDING: Final = "후보를 평가하는 도중에는 학습 방법 상태를 저장할 수 없습니다. 세대가 끝난 뒤(tell 뒤) 저장하세요."
 LEARNER_ERR_STATE_KIND: Final = "다른 학습 방법('{got}')의 상태라 '{want}'에 불러올 수 없습니다."
 LEARNER_ERR_STATE_FORMAT: Final = "학습 방법 상태 형식({got})을 읽을 수 없습니다."
 LEARNER_ERR_STATE_DIM: Final = "저장된 학습 방법 상태의 유전자 차원({got})이 지금 환경의 차원({want})과 다릅니다."

@@ -46,7 +46,11 @@ class Learner(Protocol):
         ...
 
     def state_dict(self) -> dict[str, Any]:
-        """이어 가기에 필요한 모든 것. 피클할 수 있고, 지금 상태의 사본이다."""
+        """이어 가기에 필요한 모든 것. 피클할 수 있고, 지금 상태의 사본이다.
+
+        ask()와 tell() 사이에 불러도 된다(워커 오류로 세대 도중에 멈춘 Trainer가 저장한다). 그때는 그 ask() 직전
+        상태를 돌려주고, 불러온 뒤 ask()는 같은 후보를 다시 낸다.
+        """
         ...
 
     def load_state_dict(self, d: dict[str, Any]) -> None: ...

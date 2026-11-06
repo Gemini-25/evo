@@ -89,6 +89,8 @@ _RESERVED_NAMES = re.compile(r"(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|
 _VERSION_ID = re.compile(r"v(\d{3,})")
 _CHECKPOINT_NAME = re.compile(r"gen_(\d{6,})\.pkl")
 _CHECKPOINT_TMP = re.compile(r"\.gen_\d+\.pkl\.\d+\.\d+\.tmp")
+_LINE_BREAK = re.compile(r"[\r\n]")
+_STORE_TMP = re.compile(r"\..+\.\d+\.\d+\.tmp")
 _SAVEZ_RESERVED: Final = frozenset({"file", "allow_pickle"})
 _EVENT_RESERVED: Final = frozenset({"kind", "generation", "time"})
 
@@ -129,7 +131,7 @@ def sanitize_folder_name(name: str) -> str:
     if not s:
         s = S.RUNS_DEFAULT_FOLDER_NAME
     if _RESERVED_NAMES.fullmatch(s.split(".", 1)[0].rstrip(" ")):
-        s = "_" + s
+        s = ("_" + s)[:MAX_FOLDER_NAME].rstrip(" .")  # '_'를 붙여도 MAX_FOLDER_NAME을 넘지 않게
     return s
 
 
@@ -163,7 +165,12 @@ def _json_default(o: Any) -> Any:
         return o.tolist()
     if isinstance(o, Path):
         return str(o)
-    if isinstance(o, (set, frozenset, tuple)):
+    if isinstance(o, (set, frozenset)):
+        try:
+            return sorted(o)  # 집합 순서는 PYTHONHASHSEED마다 달라진다: 같은 내용이면 같은 파일이 되게
+        except TypeError:
+            return list(o)
+    if isinstance(o, tuple):
         return list(o)
     raise TypeError(f"{type(o).__name__} is not JSON serializable")
 
@@ -218,9 +225,15 @@ def _fsync_dir(path: Path) -> None:
 
 def _atomic_write(path: Path, write: Callable[[IO[bytes]], object]) -> None:
     """같은 폴더의 임시 파일에 다 쓰고, 디스크에 내린 뒤 바꾼다. 실패하면 임시 파일을 지우고 원래 파일은 그대로."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
+    while True:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{next(_tmp_counter)}.tmp")
+        try:
+            out = open(tmp, "xb")
+            break
+        except FileExistsError:
+            continue  # 같은 pid였던 죽은 프로세스가 남긴 임시 파일(윈도우는 pid를 금방 다시 쓴다): 다음 번호로
     try:
-        with open(tmp, "xb") as f:
+        with out as f:
             write(f)
             f.flush()
             os.fsync(f.fileno())
@@ -237,12 +250,86 @@ def _atomic_write(path: Path, write: Callable[[IO[bytes]], object]) -> None:
     _fsync_dir(path.parent)
 
 
+def _sync_file(path: Path) -> None:
+    """덧붙여 온 파일을 디스크에 내린다(있을 때만, 할 수 없으면 그만). 윈도우의 fsync는 쓰기 핸들이 필요하다."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
+    except OSError:
+        return  # 없음, 또는 엑셀이 잠금: 그 줄들은 옆 파일에 있고 옆 파일도 따로 내린다
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _tail_bytes(path: Path, n: int) -> bytes:
+    """파일의 마지막 n바이트(짧으면 전부, 없으면 빈 바이트)."""
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - n))
+            return f.read()
+    except FileNotFoundError:
+        return b""
+
+
+def _overlap(main_tail: bytes, side: bytes) -> int:
+    """옆 파일 내용(side, 완전한 줄들)의 앞부분 가운데 본 파일 끝과 같은 가장 긴 것의 길이(줄 경계). 없으면 0.
+
+    통계 줄은 세대 번호가, 사건 줄은 세대와 시각이 들어 있어 서로 다르므로 겹침은 이미 옮긴 줄뿐이다.
+    """
+    view = memoryview(side)
+    j = len(side)
+    while j > 0:
+        if main_tail.endswith(view[:j]):
+            return j
+        j = side.rfind(b"\n", 0, j - 1) + 1
+    return 0
+
+
+def _remove_stale_tmp(folder: Path, pattern: re.Pattern[str]) -> None:
+    """죽은 프로세스가 남긴 임시 파일을 지운다. 지금 쓰는 중일 수 있는 새 파일은 두려고 오래된 것만."""
+    now = time.time()
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return
+    for entry in entries:
+        if pattern.fullmatch(entry.name):
+            try:
+                if now - entry.stat().st_mtime > _STALE_TMP_SECONDS:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+
+
 def _complete_lines(data: bytes) -> bytes:
     """줄바꿈으로 끝나는 부분까지만 (끝의 NUL과 잘린 마지막 줄은 버린다)."""
     stripped = data.rstrip(b"\x00")
     if stripped.endswith(b"\n"):
         return stripped
     return stripped[: stripped.rfind(b"\n") + 1]
+
+
+def _log_bytes(path: Path) -> tuple[bytes, bytes, bool]:
+    """(본 파일의 완전한 줄들, 옆 파일(…pending)에서 아직 옮기지 않은 줄들, 옆 파일에 이미 옮긴 줄이 남아 있는가).
+
+    옮긴 뒤 옆 파일을 비우지 못한 경우(그 사이 끊김, 윈도우에서 다른 프로세스가 읽는 중)에 같은 줄이 두 번 보이지 않게
+    한다(_RunStore._append_line의 옮기는 순서 참고).
+    """
+    main = _complete_lines(_read_bytes(path))
+    side = _complete_lines(_read_bytes(path.with_name(path.name + PENDING_SUFFIX)))
+    j = _overlap(main, side) if side else 0
+    return main, side[j:], j > 0
+
+
+def _read_or_none(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def _read_bytes(path: Path) -> bytes:
@@ -271,6 +358,10 @@ def _cell(key: str, value: Any) -> str:
     if isinstance(value, (float, np.floating)):
         return repr(float(value))
     if isinstance(value, str):
+        if _LINE_BREAK.search(value):
+            # 한 줄 = 한 통계 줄이어야 전원이 끊겨 잘린 줄을 줄바꿈 기준으로 잘라 낼 수 있다(따옴표 속 줄바꿈이
+            # 잘리면 열린 따옴표가 뒤의 모든 줄을 삼킨다).
+            raise ValueError(f"stats value {key!r} must not contain line breaks")
         return value
     raise TypeError(f"stats value {key!r} must be a scalar (number, str, bool or None), got {type(value).__name__}")
 
@@ -455,25 +546,77 @@ class RunStore:
         self._tail_checked.add(path)
 
     def _append_line(self, path: Path, line: bytes) -> None:
-        """한 줄(또는 여러 줄)을 덧붙인다. 파일이 잠겨 있으면 옆 파일(…pending)에 쌓아 두고, 풀리면 함께 옮긴다."""
+        """한 줄(또는 여러 줄)을 덧붙인다. 파일이 잠겨 있으면 옆 파일(…pending)에 쌓아 두고, 풀리면 옮긴다.
+
+        옮기는 순서: 옆 파일에서 아직 옮기지 않은 부분을 본 파일에 덧붙이고, 옆 파일을 비우고, 새 줄은 비우기에
+        성공했을 때만 본 파일에 쓴다(실패하면 옆 파일에). 그래서 본 파일은 언제나 옆 파일의 앞부분(줄 단위)으로
+        끝나거나 옆 파일과 겹치지 않고, 그 겹친 길이(_overlap)로 이미 옮긴 줄을 알아본다. 옮긴 직후 끊기거나 윈도우에서
+        화면 프로세스가 옆 파일을 읽고 있어 비우지 못해도 같은 줄이 두 번 들어가지 않는다.
+        """
         sidecar = path.with_name(path.name + PENDING_SUFFIX)
-        pending = _complete_lines(_read_bytes(sidecar))
-        delays: tuple[float, ...] = () if pending else _APPEND_RETRY_DELAYS
+        raw = _read_or_none(sidecar)
+        side = _complete_lines(raw or b"")
+        delays: tuple[float, ...] = () if side else _APPEND_RETRY_DELAYS
         for delay in (*delays, None):
             try:
                 self._repair_tail(path)
+                if side:
+                    rest = side[_overlap(_tail_bytes(path, len(side)), side):]
+                    if rest:
+                        with self._open_append(path) as f:
+                            f.write(rest)
+                    side = raw = b""
+                    if not self._clear_sidecar(sidecar):
+                        self._write_sidecar(sidecar, line)
+                        return
                 with self._open_append(path) as f:
-                    f.write(pending + line)
-                break
+                    f.write(line)
+                if raw is not None and not side:
+                    self._clear_sidecar(sidecar)  # 줄 없이 남은 옆 파일(비우기만 됐거나 잘린 줄뿐)
+                return
             except PermissionError:
+                self._tail_checked.discard(path)
                 if delay is None:
-                    self._repair_tail(sidecar)
-                    with open(sidecar, "ab") as f:
-                        f.write(line)
+                    self._write_sidecar(sidecar, line)
                     return
                 _sleep(delay)
-        if sidecar.exists():
-            _remove(sidecar)
+            except BaseException:
+                # 디스크 가득 참 등으로 줄의 앞부분만 써졌을 수 있다: 다음 덧붙이기 전에 그 꼬리를 다시 잘라 낸다
+                # (안 그러면 잘린 "1"과 다음 줄 "2,…"가 붙어 12세대 줄이 된다).
+                self._tail_checked.discard(path)
+                raise
+
+    def _write_sidecar(self, sidecar: Path, line: bytes) -> None:
+        """옆 파일에 덧붙인다. 옆 파일마저 잠겨 있으면(윈도우: OneDrive가 올리는 중 등) 잠깐씩 다시 시도한다."""
+        for delay in (*_REPLACE_RETRY_DELAYS, None):
+            try:
+                self._repair_tail(sidecar)
+                with open(sidecar, "ab") as f:
+                    f.write(line)
+                return
+            except PermissionError as exc:
+                self._tail_checked.discard(sidecar)
+                if delay is None:
+                    raise RunStoreError(S.RUNS_FILE_BUSY.format(path=sidecar)) from exc
+                _sleep(delay)
+            except BaseException:
+                self._tail_checked.discard(sidecar)
+                raise
+
+    def _clear_sidecar(self, sidecar: Path) -> bool:
+        """옮긴 옆 파일을 지운다. 윈도우에서 다른 프로세스가 읽고 있으면 지우기는 막히지만 비우기는 되므로 비운다."""
+        self._tail_checked.discard(sidecar)
+        try:
+            sidecar.unlink(missing_ok=True)
+            return True
+        except PermissionError:
+            pass
+        try:
+            with open(sidecar, "r+b") as f:
+                f.truncate(0)
+            return True
+        except OSError:
+            return False
 
     # -- stats.csv ------------------------------------------------------------
     def _stats_path(self) -> Path:
@@ -488,7 +631,10 @@ class RunStore:
                 return None
             if not first.endswith(b"\n"):
                 return None
-            rows = _parse_csv(first.removeprefix(_BOM))
+            try:
+                rows = _parse_csv(first.removeprefix(_BOM))
+            except UnicodeDecodeError:  # 엑셀이 ANSI(CP949) CSV로 다시 저장한 파일
+                raise RunStoreError(S.RUNS_STATS_NOT_UTF8.format(path=self._stats_path())) from None
             if not rows or not rows[0]:
                 return None
             self._stats_header = rows[0]
@@ -499,19 +645,22 @@ class RunStore:
         keys = list(row)
         if not keys or not all(isinstance(k, str) for k in keys):
             raise TypeError("stats row keys must be non-empty str")
+        if any(_LINE_BREAK.search(k) for k in keys):
+            raise ValueError("stats column names must not contain line breaks")
         if self._stats_header is not None and not self._stats_path().exists():
             self._stats_header = None  # 누가 지웠다: 열 이름부터 다시 쓴다
             self._tail_checked.discard(self._stats_path())
         header = self._read_stats_header()
         if header is None:
+            # 열 이름 줄은 원자적으로 쓴다. 옆 파일에 쌓인 (더 오래된) 줄이 있으면 그 뒤에, 새 줄은 맨 뒤에.
             sidecar = self._stats_path().with_name(STATS_FILE + PENDING_SUFFIX)
-            text = (_csv_line(keys) + _csv_line(_cell(k, row[k]) for k in keys)).encode("utf-8")
+            line = _csv_line(_cell(k, row[k]) for k in keys).encode("utf-8")
+            text = _csv_line(keys).encode("utf-8")
             pending = _complete_lines(_read_bytes(sidecar))
             _atomic_write(self._stats_path(), lambda f: f.write(_BOM + text + pending))
-            if pending:
-                _remove(sidecar)
             self._stats_header = keys
             self._tail_checked.add(self._stats_path())
+            self._append_line(self._stats_path(), line)
             return
         if set(keys) != set(header):
             missing = [k for k in header if k not in row]
@@ -520,30 +669,33 @@ class RunStore:
         line = _csv_line(_cell(k, row[k]) for k in header).encode("utf-8")
         self._append_line(self._stats_path(), line)
 
-    def _stats_table(self) -> tuple[list[str], list[list[str]], list[list[str]]]:
-        """(열 이름, stats.csv의 줄들, 옆 파일에 쌓인 줄들). 열 수가 맞지 않는 줄은 버린다."""
+    def _stats_table(self) -> tuple[list[str], list[list[str]], list[list[str]], bool]:
+        """(열 이름, stats.csv의 줄들, 옆 파일에 쌓인 줄들, 옆 파일이 이미 옮긴 줄뿐인가). 열 수가 맞지 않는 줄은 버린다."""
         path = self._stats_path()
+        main, side, merged = _log_bytes(path)
         try:
-            rows = _parse_csv(_complete_lines(_read_bytes(path)).removeprefix(_BOM))
-            pending = _parse_csv(_complete_lines(_read_bytes(path.with_name(STATS_FILE + PENDING_SUFFIX))))
+            rows = _parse_csv(main.removeprefix(_BOM))
+            pending = _parse_csv(side)
         except UnicodeDecodeError:
             raise RunStoreError(S.RUNS_STATS_NOT_UTF8.format(path=path)) from None
         if not rows:
-            return [], [], []
+            return [], [], [], merged
         header = rows[0]
         n = len(header)
-        return header, [r for r in rows[1:] if len(r) == n], [r for r in pending if len(r) == n]
+        return header, [r for r in rows[1:] if len(r) == n], [r for r in pending if len(r) == n], merged
 
     def read_stats(self) -> list[dict[str, str]]:
         """모든 통계 줄(값은 글자). 엑셀 잠금 때문에 옆 파일에 쌓인 줄도 뒤에 붙인다."""
-        header, rows, pending = self._stats_table()
+        header, rows, pending, _ = self._stats_table()
         return [dict(zip(header, r, strict=True)) for r in (*rows, *pending)]
 
     @property
     def pending_stats(self) -> int:
         """stats.csv가 잠겨 있어(엑셀 등) 옆 파일에 쌓아 둔 통계 줄 수. 0이 아니면 S.RUNS_STATS_PENDING으로 알린다."""
-        data = _complete_lines(_read_bytes(self._stats_path().with_name(STATS_FILE + PENDING_SUFFIX)))
-        return data.count(b"\n")
+        path = self._stats_path()
+        if not _complete_lines(_read_bytes(path.with_name(STATS_FILE + PENDING_SUFFIX))):
+            return 0
+        return _log_bytes(path)[1].count(b"\n")
 
     # -- events.jsonl ---------------------------------------------------------
     def append_event(self, kind: str, generation: int, **data: Any) -> None:
@@ -561,9 +713,8 @@ class RunStore:
         self._append_line(self.root / EVENTS_FILE, line.encode("utf-8"))
 
     def read_events(self) -> list[dict[str, Any]]:
-        path = self.root / EVENTS_FILE
-        sidecar = path.with_name(EVENTS_FILE + PENDING_SUFFIX)
-        data = _complete_lines(_read_bytes(path)) + _complete_lines(_read_bytes(sidecar))
+        main, side, _ = _log_bytes(self.root / EVENTS_FILE)
+        data = main + side
         out: list[dict[str, Any]] = []
         for raw in data.split(b"\n"):
             raw = raw.strip()
@@ -587,6 +738,11 @@ class RunStore:
         folder = self.root / CHECKPOINTS_DIR
         folder.mkdir(exist_ok=True)
         path = self._checkpoint_path(g)
+        # 덧붙이기는 매번 디스크에 내리지 않는다(느림). 체크포인트 앞에서 한 번 내려, 전원이 끊겨도 체크포인트가
+        # 그 세대까지의 통계·사건 줄보다 앞서 남지 않게 한다(이어 가면 빈 세대가 생긴다).
+        for log in (STATS_FILE, EVENTS_FILE):
+            _sync_file(self.root / log)
+            _sync_file(self.root / (log + PENDING_SUFFIX))
         _atomic_write(path, lambda f: pickle.dump(state, f, protocol=PICKLE_PROTOCOL))
         self._apply_retention(g)
         return path
@@ -606,14 +762,7 @@ class RunStore:
                     self._checkpoint_path(g).unlink(missing_ok=True)
                 except OSError:
                     pass  # 화면 프로세스가 읽는 중이면 다음 저장 때 다시 지운다
-        now = time.time()
-        for entry in os.scandir(self.root / CHECKPOINTS_DIR):
-            if _CHECKPOINT_TMP.fullmatch(entry.name):
-                try:
-                    if now - entry.stat().st_mtime > _STALE_TMP_SECONDS:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
+        _remove_stale_tmp(self.root / CHECKPOINTS_DIR, _CHECKPOINT_TMP)
 
     def protect(self, generation: int) -> None:
         """이 세대 체크포인트를 정리에서 뺀다(분기 지점, 환경 수정 지점). run.json의 protected_checkpoints."""
@@ -715,6 +864,9 @@ class RunStore:
                         _remove(self._champion_path(c, kind))
         except PermissionError as exc:
             raise RunStoreError(S.RUNS_FILE_BUSY.format(path=exc.filename or self.root)) from exc
+        # 끊긴 실행이 남긴 임시 파일(챔피언은 세대마다 쓰므로 여기에 쌓인다). 체크포인트 폴더는 저장 때마다 본다.
+        for folder in (self.root, self.root / ENVS_DIR, self.root / CHAMPIONS_DIR):
+            _remove_stale_tmp(folder, _STORE_TMP)
         info = self.read_run_info()
         marks = [int(x) for x in info.get("protected_checkpoints", [])]
         if any(x > g for x in marks):
@@ -723,10 +875,14 @@ class RunStore:
         self._truncate_stats(g)
 
     def _truncate_stats(self, g: int) -> None:
-        """generation 열 값이 g보다 큰 줄을 지운다. generation 열이 없으면 판단할 수 없으니 그대로 둔다."""
+        """generation 열 값이 g보다 큰 줄을 지운다. generation 열이 없으면 판단할 수 없으니 그대로 둔다.
+
+        옆 파일을 먼저 고친다. 이미 옮긴 줄이 옆 파일에 남아 있는데 stats.csv를 먼저 줄이면, 그 사이에 끊겼을 때 다음
+        덧붙이기에서 지운 줄이 되살아난다.
+        """
         path = self._stats_path()
         sidecar = path.with_name(STATS_FILE + PENDING_SUFFIX)
-        header, rows, pending = self._stats_table()
+        header, rows, pending, merged = self._stats_table()
         if "generation" not in header:
             return
         col = header.index("generation")
@@ -736,6 +892,13 @@ class RunStore:
             return gen is None or gen <= g
 
         kept, kept_pending = [r for r in rows if keep(r)], [r for r in pending if keep(r)]
+        if merged or len(kept_pending) != len(pending):
+            if kept_pending:
+                ptext = "".join(_csv_line(r) for r in kept_pending).encode("utf-8")
+                _atomic_write(sidecar, lambda f: f.write(ptext))
+                self._tail_checked.discard(sidecar)
+            elif not self._clear_sidecar(sidecar):
+                raise RunStoreError(S.RUNS_FILE_BUSY.format(path=sidecar))
         raw = _read_bytes(path)
         if len(kept) != len(rows) or len(_complete_lines(raw)) != len(raw):
             text = "".join(_csv_line(r) for r in (header, *kept)).encode("utf-8")
@@ -744,9 +907,3 @@ class RunStore:
             except RunStoreError:
                 raise RunStoreError(S.RUNS_STATS_LOCKED.format(path=path)) from None
             self._tail_checked.add(path)
-        if len(kept_pending) != len(pending):
-            if kept_pending:
-                ptext = "".join(_csv_line(r) for r in kept_pending).encode("utf-8")
-                _atomic_write(sidecar, lambda f: f.write(ptext))
-            else:
-                _remove(sidecar)
