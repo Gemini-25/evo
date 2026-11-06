@@ -465,10 +465,12 @@ class LabView(QWidget):
         return True
 
     def _show_still_scene(self) -> None:
+        """전시 시드의 세계만 그린다(시뮬레이션하지 않는다: 화면 스레드를 막지 않게)."""
         if self.spec is None or self.layout is None:
             return
-        rep = replay(self.spec, self.layout, self.layout.initial(), seeds.display_trial())
-        self.canvas.set_scene(rep.geometry, None, channels=rep.channels)
+        g = self.layout.initial()[None, :]
+        ep = Episode(self.spec, self.layout.body_values(g)[0] if self.layout.n_body else None, seeds.display_trial())
+        self.canvas.set_scene(ep.geometry(), None, channels=list(ep.actuator_channels()))
         self.canvas.set_population([])
         self.canvas.set_overlay([])
         self.canvas.set_time(0.0)

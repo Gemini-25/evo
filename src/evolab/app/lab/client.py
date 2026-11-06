@@ -1,12 +1,15 @@
 """화면 쪽 학습 프로세스 연결. 학습 프로세스를 띄우고, 명령을 보내고, 결과를 Qt 신호로 바꾼다.
 
-결과 파이프는 화면 스레드의 타이머가 짧게 자주 읽는다(학습 프로세스는 세대마다 몇 개만 보낸다). 화면이 읽지
-않으면 윈도우에서는 학습 프로세스의 보내기가 기다리므로, 읽기는 화면이 바빠도 밀리지 않게 타이머 하나로 한다.
+결과 파이프는 받는 스레드가 계속 읽어 큐에 넣고, 화면 스레드의 타이머가 큐를 비운다. 세대 결과(관전 궤적 포함
+약 1MB)는 파이프로 여러 번 나뉘어 오므로, 화면 스레드에서 직접 받으면 다 올 때까지 창이 멈춘다(부하가 큰
+PC에서 70~110ms를 쟀다). 받는 스레드는 기다리는 동안 GIL을 놓는다.
 """
 
 from __future__ import annotations
 
 import multiprocessing as mp
+import queue
+import threading
 import time
 from typing import Any
 
@@ -34,6 +37,8 @@ class TrainingClient(QObject):
         self._proc: Any = None
         self._cmd: Any = None
         self._events: Any = None
+        self._inbox: queue.Queue[Any] = queue.Queue()
+        self._reader: threading.Thread | None = None
         self._closed_sent = True
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
@@ -55,8 +60,23 @@ class TrainingClient(QObject):
         cmd_r.close()
         ev_w.close()
         self._proc, self._cmd, self._events = proc, cmd_w, ev_r
+        self._inbox = queue.Queue()
+        self._reader = threading.Thread(target=self._read, args=(ev_r, self._inbox), name="training-events", daemon=True)
+        self._reader.start()
         self._closed_sent = False
         self._timer.start()
+
+    @staticmethod
+    def _read(conn: Any, inbox: queue.Queue[Any]) -> None:
+        while True:
+            try:
+                msg = conn.recv()
+            except (EOFError, OSError, TypeError, ValueError):  # 끊김, 또는 다른 스레드가 파이프를 닫음
+                inbox.put(_EOF)
+                return
+            inbox.put(msg)
+            if isinstance(msg, dict) and msg.get("type") == "closed":
+                return
 
     def send(self, msg: dict[str, Any]) -> bool:
         if self._cmd is None:
@@ -73,23 +93,19 @@ class TrainingClient(QObject):
             return
         for _ in range(MAX_PER_TICK):
             try:
-                if not self._events.poll():
-                    break
-                msg = self._events.recv()
-            except (EOFError, OSError):
+                msg = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            if msg is _EOF:
                 self._lost()
                 return
             self._dispatch(msg)
             if self._events is None:
                 return
-        if self._proc is not None and not self._proc.is_alive() and not self._safe_poll():
+        if self._proc is not None and not self._proc.is_alive() and self._inbox.empty() and (
+            self._reader is None or not self._reader.is_alive()
+        ):
             self._lost()
-
-    def _safe_poll(self) -> bool:
-        try:
-            return bool(self._events is not None and self._events.poll())
-        except (EOFError, OSError):
-            return False
 
     def _dispatch(self, msg: dict[str, Any]) -> None:
         kind = msg.get("type")
@@ -142,13 +158,16 @@ class TrainingClient(QObject):
         deadline = time.monotonic() + timeout
         while self._proc is not None and time.monotonic() < deadline:
             try:
-                if self._events.poll(0.05):
-                    msg = self._events.recv()
-                    if msg.get("type") == "closed":
-                        break
-                    self._dispatch(msg)
-                elif not self._proc.is_alive():
+                msg = self._inbox.get(timeout=0.05)
+            except queue.Empty:
+                if not self._proc.is_alive() and (self._reader is None or not self._reader.is_alive()):
                     break
-            except (EOFError, OSError):
+                continue
+            if msg is _EOF or msg.get("type") == "closed":
                 break
+            self._dispatch(msg)
         self._finish()
+
+
+_EOF = object()
+"""받는 스레드가 파이프가 끊긴 것을 알리는 표지."""
