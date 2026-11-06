@@ -189,3 +189,23 @@ def test_same_trial_twice_is_identical() -> None:
             poses.append(ep.snapshot().poses.copy())
         out.append((ep.result().score, np.array(poses).tobytes()))
     assert out[0] == out[1]
+
+
+def test_lateral_accel_limit_makes_fast_cars_turn_wider() -> None:
+    def turn_radius(lat_max: float, throttle: float) -> float:
+        acts = [dict(BASE["actuators"][0], max_lateral_accel=lat_max)]
+        spec = env(bodies=[BASE["bodies"][0]], actuators=acts, sensors=[BASE["sensors"][1]], checkpoints=[],
+                   events=[], termination=[{"event": "timeout", "outcome": "neutral"}], scoring={"blocks": []})
+        ep = Episode(spec, None, Trial(1))
+        run(ep, [throttle, 0.0], 600)  # 최고 속도까지
+        v = ep.channel_values()["st.v_fwd"]
+        a0 = ep.snapshot().poses[0, 2]
+        run(ep, [throttle, 1.0], 30)
+        omega = (ep.snapshot().poses[0, 2] - a0) / 0.5
+        return v / omega
+
+    free = turn_radius(0.0, 1.0)
+    limited = turn_radius(4.0, 1.0)
+    assert free == pytest.approx(2.0 / math.tan(0.5), rel=0.05)  # 제한 없으면 자전거 모형 반지름
+    assert limited == pytest.approx(12.0**2 / 4.0, rel=0.05)  # v²/a: 최고 속도 12m/s, 4m/s²
+    assert turn_radius(4.0, 0.2) < limited  # 느리면 더 꺾인다

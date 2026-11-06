@@ -194,7 +194,8 @@ class Vehicle(_Model):
 
     물체 좌표 +x가 앞이다. 스텝마다 앞쪽 힘 = throttle x max_accel x 질량, 구름 저항 = -drag x 앞뒤 속도 x 질량
     (최고 속도 = max_accel / drag), 옆미끄럼 속도는 lateral_grip(0..1) 비율만큼 없앤다(1이면 옆으로 미끄러지지 않음),
-    회전 속도 = 앞뒤 속도 x tan(steer x max_steer) / wheelbase(자전거 모형).
+    회전 속도 = 앞뒤 속도 x tan(steer x max_steer) / wheelbase(자전거 모형). max_lateral_accel(m/s², 0이면 제한 없음)을
+    넘는 횡가속도가 필요하면 그만큼만 돈다(빠르면 덜 꺾인다: 코너 앞에서 속도를 줄여야 한다).
     """
 
     kind: Literal["vehicle"]
@@ -206,6 +207,7 @@ class Vehicle(_Model):
     lateral_grip: Num = 1.0
     wheelbase: Num = 2.5
     drag: Num = 0.3
+    max_lateral_accel: Num = 0.0
     keys_forward: list[str] = []
     keys_back: list[str] = []
     keys_left: list[str] = []

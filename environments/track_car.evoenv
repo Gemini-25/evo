@@ -61,8 +61,8 @@
       "segments": 12,
       "curvature": 0.5,
       "length_range": [
-        150.0,
-        250.0
+        120.0,
+        200.0
       ],
       "checkpoints": 24,
       "friction": 0.5,
@@ -124,7 +124,8 @@
       "keys_right": [
         "Right",
         "D"
-      ]
+      ],
+      "max_lateral_accel": 8.0
     }
   ],
   "sensors": [

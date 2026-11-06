@@ -249,6 +249,7 @@ class _Vehicle:
     wheelbase: float
     drag: float
     mass: float
+    lat_max: float = 0.0
     slot: int = 0
 
 
@@ -841,6 +842,7 @@ class Episode:
                     max(1e-3, _clamp(self._num(a.wheelbase, "agent"), 1e-3, FIELD_LIMIT)),
                     _clamp(self._num(a.drag, "agent"), 0.0, 1e3),
                     float(body.mass),
+                    _clamp(self._num(a.max_lateral_accel, "agent"), 0.0, FIELD_LIMIT),
                 ))
         # 물체마다 힘·토크를 모아 스텝마다 한 번에 넣는다(pymunk 호출을 줄인다).
         slot_of: dict[str, int] = {}
@@ -975,7 +977,10 @@ class Episode:
             fwd = vx * c + vy * s_
             lat = (-vx * s_ + vy * c) * (1.0 - v.grip)
             v.body.velocity = (fwd * c - lat * s_, fwd * s_ + lat * c)
-            v.body.angular_velocity = fwd * math.tan(u[v.ch_steer] * v.steer) / v.wheelbase
+            omega = fwd * math.tan(u[v.ch_steer] * v.steer) / v.wheelbase
+            if v.lat_max > 0.0 and abs(omega * fwd) > v.lat_max:
+                omega = math.copysign(v.lat_max / abs(fwd), omega)  # 횡가속도 한계: 빠르면 덜 꺾인다
+            v.body.angular_velocity = omega
             self._cache.pop(v.bid, None)
             acc = self._acc[v.slot]
             acc[0] += (u[v.ch_throttle] * v.accel - v.drag * fwd) * v.mass
