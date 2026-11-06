@@ -512,3 +512,140 @@ def test_layout_pickles() -> None:
     b2 = pickle.loads(pickle.dumps(brain))
     x = np.ones((3, 9))
     assert b2.forward(x).tobytes() == brain.forward(x).tobytes()
+
+
+# ---------------------------------------------------------------------------
+# 적대적 검토에서 찾은 결함의 회귀 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_unpack_never_shares_memory_even_for_one_row() -> None:
+    # N=1(2차원 한 줄, 1차원)일 때도 펼친 가중치가 원본의 보기(view)가 아니어야 한다.
+    # 보기였을 때는 나중에 유전자 배열을 고치면 이미 펼친 뇌가 몰래 바뀌었다.
+    lay = BrainLayout(3, (4,), 2)
+    x = np.ones((1, 3))
+    for shape in [(1, lay.n_params), (lay.n_params,)]:
+        flat = np.random.default_rng(0).standard_normal(shape)
+        brain = unpack(lay, flat)
+        assert not any(np.shares_memory(a, flat) for a in brain.weights + brain.biases)
+        before = brain.forward(x).tobytes()
+        flat[...] = 1e6
+        assert brain.forward(x).tobytes() == before
+    # 읽기 전용 원본(np.load 등)이어도 펼친 가중치는 쓸 수 있는 새 배열
+    ro = np.zeros((1, lay.n_params))
+    ro.flags.writeable = False
+    assert all(w.flags.writeable and w.flags.c_contiguous for w in unpack(lay, ro).weights)
+
+
+def test_pack_unpack_empty_batch() -> None:
+    for lay in (BrainLayout(9, (16,), 3), BrainLayout(3, (4, 5), 2), BrainLayout(0, (2,), 1)):
+        empty = unpack(lay, np.zeros((0, lay.n_params)))
+        assert empty.n == 0
+        assert pack(empty).shape == (0, lay.n_params)  # 예전에는 reshape(0, -1)에서 ValueError
+        assert empty.select(np.array([], dtype=np.int64)).n == 0
+        assert pack(empty.select([])).shape == (0, lay.n_params)  # type: ignore[arg-type]
+
+
+def test_select_index_forms() -> None:
+    lay = BrainLayout(2, (3,), 1)
+    flat = np.random.default_rng(1).standard_normal((4, lay.n_params))
+    brain = unpack(lay, flat)
+    one = brain.select(np.int64(2))  # type: ignore[arg-type]  # 번호 하나 -> N=1
+    assert one.n == 1 and pack(one).tobytes() == flat[2:3].tobytes()
+    assert pack(brain.select([3, 0])).tobytes() == flat[[3, 0]].tobytes()  # type: ignore[arg-type]
+    assert pack(brain.select(np.array([3, 0], dtype=np.int32))).tobytes() == flat[[3, 0]].tobytes()
+    with pytest.raises(TypeError):
+        brain.select(np.array([1.7]))  # 실수 번호를 몰래 1로 자르지 않는다
+    with pytest.raises(IndexError):
+        brain.select(np.array([True, False]))  # 길이가 다른 마스크
+
+
+def test_shape_errors_are_not_reported_as_wrong_length() -> None:
+    # 차원 수가 틀린 배열(프로그램 오류)에 "211개인데 211개가 필요" 같은 엉뚱한 안내를 하지 않는다.
+    lay = BrainLayout(9, (16,), 3)
+    for bad in (np.zeros((2, 2, 211)), np.float64(1.0)):
+        with pytest.raises(ValueError) as info:
+            unpack(lay, bad)
+        assert not isinstance(info.value, BrainSizeError)
+    layout = GenomeLayout((BodyGene("a", 0.0, 1.0, 0.5),), BrainLayout(2, (), 1), ((0.0, 1.0),))
+    for bad in (np.zeros((2, 2, layout.dim)), np.float64(1.0)):
+        with pytest.raises(ValueError) as ginfo:
+            layout.body_values(bad)
+        assert not isinstance(ginfo.value, GenomeError)
+    # 진짜 길이 오류는 한국어 안내(조사가 숫자 발음에 따라 틀리지 않게 '개'로 센다)
+    with pytest.raises(GenomeError) as size:
+        lander().brain_params(np.zeros(214))
+    assert str(size.value).startswith("유전자 길이가 214개인데 이 환경에는 211개(")
+
+
+def test_to_actions_rejects_wrong_width() -> None:
+    # 'unit'(모두 0..1) 빠른 경로가 모양을 보지 않아 열 수가 달라도 조용히 통과했었다.
+    unit = GenomeLayout((), BrainLayout(2, (), 3), ((0.0, 1.0),) * 3)
+    sign = GenomeLayout((), BrainLayout(2, (), 2), ((-1.0, 1.0),) * 2)
+    for layout, width in ((unit, 2), (unit, 4), (sign, 3)):
+        with pytest.raises(ValueError):
+            layout.to_actions(np.zeros((5, width)))
+    with pytest.raises(ValueError):
+        unit.to_actions(np.zeros((2, 2, 3)))
+    assert unit.to_actions(np.zeros((0, 3))).shape == (0, 3)
+
+
+def test_body_values_reject_nan_and_huge_ranges() -> None:
+    layout = GenomeLayout(
+        (BodyGene("leg", 0.6, 2.0, 1.2), BodyGene("side", -0.4, 0.4, 0.2)), BrainLayout(1, (), 1), ((0.0, 1.0),)
+    )
+    g = np.zeros((3, layout.dim))
+    g[1, 1] = np.nan
+    with pytest.raises(GenomeError, match="'side'"):  # NaN은 잘라낼 곳이 없다: 범위 밖 몸 수치를 내지 않는다
+        layout.body_values(g)
+    g[1, 1] = 0.0
+    g[:, 2:] = np.nan  # 뇌 쪽 NaN은 몸 수치와 상관없다
+    assert np.all(np.isfinite(layout.body_values(g)))
+    # 폭(high - low)이 float 범위를 넘으면 NaN이 나오므로 만들 때 거부(한국어 안내)
+    with pytest.raises(GenomeError, match="너무 넓어"):
+        BodyGene("w", -1e308, 1e308, 0.0)
+    wide = BodyGene("w", -1e307, 1e307, 0.0)
+    wl = GenomeLayout((wide,), BrainLayout(1, (), 1), ((0.0, 1.0),))
+    assert np.isfinite(wl.initial()).all()
+    assert wl.body_values(np.array([[-1.0, 0, 0], [1.0, 0, 0]]))[:, 0].tolist() == [-1e307, 1e307]
+
+
+def test_layout_rejects_non_integer_sizes() -> None:
+    with pytest.raises(TypeError):
+        BrainLayout(9.7, (16,), 3)  # type: ignore[arg-type]  # 예전에는 몰래 9로 잘랐다
+    with pytest.raises(TypeError):
+        BrainLayout(9, (16.0,), 3)  # type: ignore[arg-type]
+    assert BrainLayout(np.int64(9), (np.int32(16),), np.int64(3)) == BrainLayout(9, (16,), 3)  # type: ignore[arg-type]
+
+
+def test_batch_brain_compares_by_identity() -> None:
+    lay = BrainLayout(2, (3,), 1)
+    a = unpack(lay, np.zeros((2, lay.n_params)))
+    b = unpack(lay, np.zeros((2, lay.n_params)))
+    assert a == a and a != b  # 예전에는 배열 비교라 ValueError(진릿값이 모호함)
+    assert len({a, b}) == 2
+
+
+def test_forward_ignores_input_layout_and_alignment() -> None:
+    # 입력·가중치가 어떤 메모리 배치(전치, 띄엄띄엄, 64바이트 경계에서 어긋남)여도 같은 비트.
+    lay = BrainLayout(9, (16,), 3)
+    rng = np.random.default_rng(21)
+    flat = rng.standard_normal((6, lay.n_params))
+    x = rng.uniform(-5, 5, (6, 9))
+    brain = unpack(lay, flat)
+    ref = brain.forward(x).tobytes()
+    assert brain.forward(np.asfortranarray(x)).tobytes() == ref
+    wide = np.zeros((6, 27))
+    wide[:, ::3] = x
+    assert brain.forward(wide[:, ::3]).tobytes() == ref
+
+    def shifted(a: np.ndarray, off: int) -> np.ndarray:
+        raw = np.zeros(a.nbytes + 128, dtype=np.uint8)
+        start = (-raw.ctypes.data) % 64 + off
+        view = raw[start : start + a.nbytes].view(np.float64).reshape(a.shape)
+        view[...] = a
+        return view
+
+    for off in (8, 24, 40, 56):
+        moved = BatchBrain(lay, [shifted(w, off) for w in brain.weights], [shifted(b, 64 - off) for b in brain.biases])
+        assert moved.forward(shifted(x, off)).tobytes() == ref, off

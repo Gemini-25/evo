@@ -56,6 +56,10 @@ class BodyGene:
             raise ValueError(f"body gene {self.id!r}: low must be < high, got {self.low}, {self.high}")
         if not self.low <= self.initial <= self.high:
             raise ValueError(f"body gene {self.id!r}: initial {self.initial} outside [{self.low}, {self.high}]")
+        if not math.isfinite(self.high - self.low):
+            # 환경 검사는 유한한 최솟값·최댓값만 보므로 -1e308..1e308 같은 범위가 들어올 수 있다.
+            # 폭이 무한대가 되면 body_values와 initial이 NaN을 낸다.
+            raise GenomeError(S.POLICY_BODY_RANGE_HUGE.format(id=self.id, low=self.low, high=self.high))
 
 
 @dataclass(frozen=True)
@@ -129,10 +133,11 @@ class GenomeLayout:
 
     def _check(self, genomes: np.ndarray) -> np.ndarray:
         g = np.asarray(genomes, dtype=np.float64)
-        if g.ndim not in (1, 2) or g.shape[-1] != self.dim:
-            got = g.shape[-1] if g.ndim else 0
+        if g.ndim not in (1, 2):
+            raise ValueError(f"genomes must be (N, {self.dim}) or ({self.dim},), got {g.shape}")
+        if g.shape[-1] != self.dim:
             raise GenomeError(
-                S.POLICY_GENOME_SIZE.format(got=got, want=self.dim, body=self.n_body, brain=self.brain.n_params)
+                S.POLICY_GENOME_SIZE.format(got=g.shape[-1], want=self.dim, body=self.n_body, brain=self.brain.n_params)
             )
         return g
 
@@ -149,10 +154,16 @@ class GenomeLayout:
         """(N, dim) -> (N, n_body) 물리 단위 몸 수치. 1차원 (dim,)이면 (n_body,).
 
         유전자를 -1..1로 자르고 low + (g + 1) / 2 * (high - low). 반올림으로 범위를 넘지 않게 한 번 더 자른다.
+        NaN은 자를 곳이 없으므로 GenomeError(결과는 언제나 [low, high] 안).
         """
         g = self._check(genomes)
         low, high = self._body_low, self._body_high
-        x = np.clip(g[..., : self.n_body], -1.0, 1.0)
+        raw = g[..., : self.n_body]
+        bad = np.isnan(raw)
+        if bad.any():
+            k = int(np.argwhere(bad)[0][-1])
+            raise GenomeError(S.POLICY_GENOME_NAN.format(gene=self.body[k].id))
+        x = np.clip(raw, -1.0, 1.0)
         v = low + (x + 1.0) / 2.0 * (high - low)
         return np.ascontiguousarray(np.clip(v, low, high))
 
@@ -164,6 +175,8 @@ class GenomeLayout:
     def to_actions(self, raw: np.ndarray) -> np.ndarray:
         """뇌 출력(tanh, -1..1) (N, n_out) -> 구동기 고유 범위. (0, 1) 채널은 (y + 1) / 2, (-1, 1)은 그대로."""
         y = np.asarray(raw, dtype=np.float64)
+        if y.ndim not in (1, 2) or y.shape[-1] != self.brain.n_out:
+            raise ValueError(f"brain outputs must be (N, {self.brain.n_out}) or ({self.brain.n_out},), got {y.shape}")
         kind, unit, other, lo, hi = self._action_plan
         if kind == "unit":
             return (y + 1.0) / 2.0

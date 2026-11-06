@@ -11,6 +11,7 @@ tests/test_policy.py가 N=1 계산, 다른 묶음 크기, 섞은 순서와 비�
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -37,9 +38,10 @@ class BrainLayout:
 
     def __post_init__(self) -> None:
         # JSON에서 온 list도 받는다(얼린 dataclass라 object.__setattr__로 고친다).
-        object.__setattr__(self, "hidden", tuple(int(h) for h in self.hidden))
-        object.__setattr__(self, "n_in", int(self.n_in))
-        object.__setattr__(self, "n_out", int(self.n_out))
+        # operator.index: 정수(파이썬·numpy)만 받고 9.7 같은 실수를 몰래 9로 자르지 않는다.
+        object.__setattr__(self, "hidden", tuple(operator.index(h) for h in self.hidden))
+        object.__setattr__(self, "n_in", operator.index(self.n_in))
+        object.__setattr__(self, "n_out", operator.index(self.n_out))
         if self.n_in < 0 or self.n_out < 0:
             raise ValueError(f"n_in and n_out must be >= 0, got {self.n_in}, {self.n_out}")
         if any(h < 1 for h in self.hidden):
@@ -67,7 +69,7 @@ class BrainLayout:
         return " → ".join(str(n) for n in self.sizes) + f", {self.activation}"
 
 
-@dataclass
+@dataclass(eq=False)  # 배열 필드라 자동 ==는 오류를 낸다. 같은 객체인지로만 비교한다.
 class BatchBrain:
     """신경망 N개의 가중치. 한 번 펼쳐 두고, 층마다 연속(C-contiguous) float64 배열로 둔다."""
 
@@ -113,10 +115,15 @@ class BatchBrain:
         return h
 
     def select(self, rows: np.ndarray) -> BatchBrain:
-        """rows번째 신경망들만 뽑은 새 묶음(복사, 연속 배열). 같은 번호를 여러 번 써도 된다."""
+        """rows번째 신경망들만 뽑은 새 묶음(복사, 연속 배열). 같은 번호를 여러 번 써도 된다.
+
+        rows: 정수 번호 배열(번호 하나면 N=1) 또는 길이 N의 bool 마스크.
+        """
         idx = np.asarray(rows)
         if idx.dtype != np.bool_:
-            idx = idx.astype(np.intp, copy=False)
+            if idx.size and idx.dtype.kind not in "iu":
+                raise TypeError(f"rows must be integer indices or a bool mask, got dtype {idx.dtype}")
+            idx = np.atleast_1d(idx.astype(np.intp, copy=False))
         return BatchBrain(
             self.layout,
             [np.ascontiguousarray(w[idx]) for w in self.weights],
@@ -128,21 +135,24 @@ def unpack(layout: BrainLayout, flat: np.ndarray) -> BatchBrain:
     """뇌 파라미터 (N, n_params)를 층별 가중치로 펼친다. 1차원 (n_params,)는 N=1로 본다.
 
     층마다 W를 행 우선(fan_in x fan_out)으로, 이어서 b(fan_out)를 담는다.
+    가중치는 언제나 새로 복사한다: N=1이어도 flat과 메모리를 같이 쓰지 않으므로, 나중에 flat을
+    고쳐도 이미 펼친 뇌는 바뀌지 않는다.
     """
     arr = np.asarray(flat, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr[None, :]
-    if arr.ndim != 2 or arr.shape[1] != layout.n_params:
-        got = arr.shape[-1] if arr.ndim else 0
-        raise BrainSizeError(S.POLICY_BRAIN_SIZE.format(got=got, want=layout.n_params, shape=layout.describe()))
+    if arr.ndim != 2:
+        raise ValueError(f"brain parameters must be (N, {layout.n_params}) or ({layout.n_params},), got {arr.shape}")
+    if arr.shape[1] != layout.n_params:
+        raise BrainSizeError(S.POLICY_BRAIN_SIZE.format(got=arr.shape[1], want=layout.n_params, shape=layout.describe()))
     n = arr.shape[0]
     weights: list[np.ndarray] = []
     biases: list[np.ndarray] = []
     off = 0
     for fi, fo in layout.shapes:
-        weights.append(np.ascontiguousarray(arr[:, off : off + fi * fo]).reshape(n, fi, fo))
+        weights.append(np.array(arr[:, off : off + fi * fo], order="C", copy=True).reshape(n, fi, fo))
         off += fi * fo
-        biases.append(np.ascontiguousarray(arr[:, off : off + fo]))
+        biases.append(np.array(arr[:, off : off + fo], order="C", copy=True))
         off += fo
     return BatchBrain(layout, weights, biases)
 
@@ -152,6 +162,6 @@ def pack(brain: BatchBrain) -> np.ndarray:
     n = brain.n
     parts: list[np.ndarray] = []
     for w, b in zip(brain.weights, brain.biases, strict=True):
-        parts.append(w.reshape(n, -1))
+        parts.append(w.reshape(n, w.shape[1] * w.shape[2]))  # -1은 N=0일 때 모양을 못 정한다
         parts.append(b)
     return np.ascontiguousarray(np.concatenate(parts, axis=1), dtype=np.float64)

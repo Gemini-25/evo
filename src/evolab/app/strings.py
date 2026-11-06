@@ -266,8 +266,10 @@ PLAY_REPLAY_OUTPUTS_DIFF: Final = "기록의 출력 채널({recorded})이 이 �
 
 # ---- 신경망·유전자 (policy/) ----
 POLICY_BRAIN_SIZE: Final = "뇌 파라미터가 {got}개인데 이 신경망({shape})에는 {want}개가 필요합니다."
-POLICY_GENOME_SIZE: Final = "유전자 길이가 {got}인데 이 환경에는 {want}이 필요합니다(몸 수치 {body}개 + 뇌 파라미터 {brain}개)."
+POLICY_GENOME_SIZE: Final = "유전자 길이가 {got}개인데 이 환경에는 {want}개(몸 수치 {body}개 + 뇌 파라미터 {brain}개)가 필요합니다."
 POLICY_LAYOUT_BROKEN: Final = "유전자 구조 정보가 잘못되었습니다 ({detail})."
+POLICY_GENOME_NAN: Final = "유전자에 숫자가 아닌 값(NaN)이 있어 몸 수치를 정할 수 없습니다 (몸 유전자 '{gene}')."
+POLICY_BODY_RANGE_HUGE: Final = "몸 유전자 '{id}'의 범위({low} ~ {high})가 너무 넓어 계산할 수 없습니다. 최솟값과 최댓값을 줄이세요."
 
 # ---- 학습 방법 (learners/) ----
 LEARNER_ERR_POPSIZE: Final = "개체 수는 2 이상의 정수여야 합니다 (지금 {value})."
@@ -286,3 +288,24 @@ LEARNER_ERR_STATE_KIND: Final = "다른 학습 방법('{got}')의 상태라 '{wa
 LEARNER_ERR_STATE_FORMAT: Final = "학습 방법 상태 형식({got})을 읽을 수 없습니다."
 LEARNER_ERR_STATE_DIM: Final = "저장된 학습 방법 상태의 유전자 차원({got})이 지금 환경의 차원({want})과 다릅니다."
 LEARNER_ERR_STATE_BROKEN: Final = "저장된 학습 방법 상태를 읽을 수 없습니다 (다른 버전에서 만들었거나 손상됨: {reason})."
+
+# ---- 실행 기록 저장소 (runs/) ----
+RUNS_DEFAULT_FOLDER_NAME: Final = "실행"
+RUNS_NOT_A_RUN: Final = "실행 기록 폴더가 아닙니다(run.json이 없습니다): {path}"
+RUNS_INFO_BROKEN: Final = "실행 정보 파일을 읽을 수 없습니다: {path} ({detail})"
+RUNS_NEWER_FORMAT: Final = "새 버전 프로그램에서 만든 실행 기록입니다(형식 {got}, 이 프로그램은 {want}까지 읽음). 프로그램을 업데이트하세요."
+RUNS_BAD_POLICY: Final = "체크포인트 보관 설정이 잘못되었습니다. 최근 개수는 1 이상, 주기는 0 이상의 정수여야 합니다 (지금 최근 {keep_last}, 주기 {keep_every})."
+RUNS_BAD_GENERATION: Final = "세대 번호는 0 이상의 정수여야 합니다 (지금 {value})."
+RUNS_FILE_BUSY: Final = "다른 프로그램이 파일을 쓰고 있어 바꿀 수 없습니다: {path}. 잠시 뒤 다시 시도하세요."
+RUNS_ENV_VERSION_MISSING: Final = "환경 버전 '{version}'이 이 실행 기록에 없습니다."
+RUNS_ENV_VERSION_CHANGED: Final = "환경 사본의 내용이 기록된 해시와 다릅니다: {path}. 실행 폴더 안의 환경 사본은 고치지 마세요."
+RUNS_STATS_KEYS: Final = "통계 열이 첫 줄과 다릅니다. 빠진 열: {missing} / 새 열: {extra}"
+RUNS_STATS_NOT_UTF8: Final = "통계 파일이 UTF-8이 아닙니다: {path}. 엑셀에서 저장했다면 'CSV UTF-8(쉼표로 분리)' 형식으로 다시 저장하세요."
+RUNS_STATS_LOCKED: Final = "통계 파일이 다른 프로그램(엑셀 등)에서 열려 있어 고칠 수 없습니다: {path}. 그 프로그램을 닫고 다시 시도하세요."
+RUNS_STATS_PENDING: Final = "stats.csv가 다른 프로그램(엑셀 등)에서 열려 있어 통계 {count}줄을 stats.csv.pending에 따로 모아 두었습니다. 그 프로그램을 닫으면 다음 세대에 이어 씁니다."
+RUNS_NO_CHECKPOINT: Final = "이어 갈 체크포인트가 없습니다: {path}"
+RUNS_CHECKPOINT_MISSING: Final = "{generation}세대 체크포인트가 없습니다. 남아 있는 세대: {available}"
+RUNS_CHECKPOINT_BROKEN: Final = "체크포인트 파일을 읽을 수 없습니다(손상되었거나 다른 버전에서 만듦): {path} ({detail})"
+RUNS_CHAMPION_KIND_LABELS: Final = {"representative": "세대 대표", "champion": "챔피언"}
+RUNS_CHAMPION_MISSING: Final = "{generation}세대 {kind} 파일이 없습니다."
+RUNS_CHAMPION_BROKEN: Final = "챔피언 파일을 읽을 수 없습니다: {path} ({detail})"
