@@ -83,7 +83,7 @@
       "base_y": 0.0,
       "amplitude": 0.5,
       "growth": 0.03,
-      "roughness": 0.7,
+      "roughness": 0.6,
       "slope": 0.06,
       "flat_start": 25.0,
       "friction": 0.9
@@ -206,7 +206,7 @@
       "id": "m_r",
       "label": "뒷바퀴 모터",
       "joint": "j_r",
-      "max_torque": 150.0,
+      "max_torque": 300.0,
       "max_speed": 15.0,
       "keys_pos": [
         "Left",
@@ -222,7 +222,7 @@
       "id": "m_f",
       "label": "앞바퀴 모터",
       "joint": "j_f",
-      "max_torque": 150.0,
+      "max_torque": 300.0,
       "max_speed": 15.0,
       "keys_pos": [
         "Left",
