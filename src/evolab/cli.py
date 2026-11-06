@@ -34,6 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--target", type=float, default=None, help=S.CLI_HELP_TARGET)
     train.add_argument("--stagnation", type=int, default=None, help=S.CLI_HELP_STAGNATION)
     train.add_argument("--validate-every", type=int, default=None, help=S.CLI_HELP_VALIDATE_EVERY)
+    train.add_argument("--diagonal-threshold", type=int, default=None, help=S.CLI_HELP_DIAGONAL)
 
     bench = sub.add_parser("bench", help=S.CLI_HELP_BENCH)
     bench.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)

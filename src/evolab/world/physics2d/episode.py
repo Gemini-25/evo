@@ -196,6 +196,10 @@ class _Thruster:
     """최대 출력에서 물체 좌표계 힘."""
     tank: str | None
     fuel_per_s: float
+    slot: int = 0
+    """힘을 모으는 물체 칸 번호(_force_bodies)."""
+    torque: float = 0.0
+    """최대 출력에서 무게중심에 대한 토크."""
 
 
 @dataclass
@@ -247,7 +251,7 @@ class Episode:
         self._regions: dict[str, _Region] = {}
         self._region_geoms: list[RegionGeom] = []
         self._agent_ids: list[str] = []
-        self._drag: list[tuple[pymunk.Body, float, pymunk.Vec2d]] = []
+        self._drag: list[tuple[str, float]] = []
         self._start_pos: dict[str, geo.Point] = {}
 
         self._build_generators()
@@ -325,13 +329,10 @@ class Episode:
         self._u = u
 
         self._apply_actuators()
-        wx, wy = self.wind
-        for body, k, cog in self._drag:
-            vx, vy = body.velocity
-            fx, fy = geo.rotate((k * (wx - vx), k * (wy - vy)), -body.angle)
-            body.apply_force_at_local_point((fx, fy), cog)  # 무게중심에 걸어 가짜 토크가 없게
+        self._apply_forces()
         self.space.step(self.dt)
         self._cache.clear()
+        self._pos_cache.clear()
         self.steps += 1
         self.time = self.steps * self.dt
 
@@ -635,7 +636,7 @@ class Episode:
             if drag != 0.0 and b.type == "dynamic":
                 # 선형 항력을 한 스텝 동안 정확히 적분한 계수: v가 바람 속도를 넘어서 진동·발산하지 않는다.
                 k = body.mass * (1.0 - math.exp(-drag * self.dt / body.mass)) / self.dt
-                self._drag.append((body, k, body.center_of_gravity))
+                self._drag.append((b.id, k))
             self._start_pos[b.id] = (body.position.x, body.position.y)
         self._body_id = {v: k for k, v in self.bodies.items()}
 
@@ -699,6 +700,45 @@ class Episode:
                                                  (f * math.cos(d), f * math.sin(d)), a.tank,
                                                  max(0.0, self._num(a.fuel_per_s, "agent"))))
         self._thruster_channels = {t.channel_index for t in self._thrusters}
+        # 물체마다 힘·토크를 모아 스텝마다 한 번에 넣는다(pymunk 호출을 줄인다).
+        slot_of: dict[str, int] = {}
+        self._force_bodies: list[tuple[str, pymunk.Body]] = []
+        for t in self._thrusters:
+            bid = self._body_id[t.body]
+            if bid not in slot_of:
+                slot_of[bid] = len(self._force_bodies)
+                self._force_bodies.append((bid, t.body))
+            t.slot = slot_of[bid]
+            cog = t.body.center_of_gravity
+            rx, ry = t.at[0] - cog.x, t.at[1] - cog.y
+            t.torque = rx * t.force[1] - ry * t.force[0]
+        self._drag_slots: list[tuple[int, float]] = []
+        for bid, k in self._drag:
+            if bid not in slot_of:
+                slot_of[bid] = len(self._force_bodies)
+                self._force_bodies.append((bid, self.bodies[bid]))
+            self._drag_slots.append((slot_of[bid], k))
+        self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
+
+    def _apply_forces(self) -> None:
+        """모은 추진기 힘(물체 좌표)과 바람 항력(세계 좌표, 무게중심)을 물체마다 한 번에 넣는다."""
+        acc = self._acc
+        wx, wy = self.wind
+        drag = [(0.0, 0.0)] * len(acc)
+        for slot, k in self._drag_slots:
+            st = self._bstate(self._force_bodies[slot][0])
+            drag[slot] = (k * (wx - st[3]), k * (wy - st[4]))
+        for slot, (bid, body) in enumerate(self._force_bodies):
+            a = acc[slot]
+            fx, fy, tq = a
+            dx, dy = drag[slot]
+            if fx == 0.0 and fy == 0.0 and tq == 0.0 and dx == 0.0 and dy == 0.0:
+                continue
+            ang = self._bstate(bid)[2]
+            c, s_ = math.cos(ang), math.sin(ang)
+            body.force = (fx * c - fy * s_ + dx, fx * s_ + fy * c + dy)
+            body.torque = tq
+            a[0] = a[1] = a[2] = 0.0
 
     def _apply_actuators(self) -> None:
         u = self._u
@@ -720,7 +760,10 @@ class Episode:
                     need = tank.remaining
                 tank.remaining = max(0.0, tank.remaining - need)
             applied[t.channel_index] = x
-            t.body.apply_force_at_local_point((t.force[0] * x, t.force[1] * x), t.at)
+            acc = self._acc[t.slot]
+            acc[0] += t.force[0] * x
+            acc[1] += t.force[1] * x
+            acc[2] += t.torque * x
         self._u_applied = applied
         sums = self._abs_sum
         for i, x in enumerate(applied):
@@ -737,6 +780,7 @@ class Episode:
         self._debounce = float(self.env.world.contact_debounce)
         self._contacts_dirty = True
         self._cache: dict[str, tuple[float, float, float, float, float, float]] = {}
+        self._pos_cache: dict[str, tuple[float, float]] = {}
 
     def _contact_channel(self, body: str, selectors: Sequence[str]) -> _ContactChannel:
         key = (body, tuple(selectors))
@@ -795,10 +839,25 @@ class Episode:
                 ch.value = True
             else:
                 ch.value = (t - ch.last_true) <= limit
+        v = self._values
+        for ch, name in self._contact_values:
+            v[name] = ch.value
 
     # ------------------------------------------------------------------
     # 센서와 값
     # ------------------------------------------------------------------
+
+    def _bpos(self, body_id: str) -> tuple[float, float]:
+        """위치만. 경계 검사·거리·영역 판정은 속도가 필요 없으므로 pymunk 속성을 하나만 읽는다."""
+        c = self._cache.get(body_id)
+        if c is not None:
+            return (c[0], c[1])
+        p = self._pos_cache.get(body_id)
+        if p is None:
+            v = self.bodies[body_id].position
+            p = (v.x, v.y)
+            self._pos_cache[body_id] = p
+        return p
 
     def _bstate(self, body_id: str) -> tuple[float, float, float, float, float, float]:
         """(x, y, 각도, vx, vy, 각속도). 스텝마다 물체당 한 번만 pymunk에서 읽는다."""
@@ -834,19 +893,17 @@ class Episode:
     def _target_point(self, ref: str) -> geo.Point:
         if ref in self._regions:
             return self._regions[ref].center
-        c = self._bstate(ref)
-        return (c[0], c[1])
+        return self._bpos(ref)
 
     def _distance(self, body_id: str, ref: str) -> float:
-        c = self._bstate(body_id)
+        c = self._bpos(body_id)
         if ref in self._regions:
-            return geo.dist_point_polygon((c[0], c[1]), self._regions[ref].points)
-        q = self._bstate(ref)
+            return geo.dist_point_polygon(c, self._regions[ref].points)
+        q = self._bpos(ref)
         return math.hypot(c[0] - q[0], c[1] - q[1])
 
     def _inside(self, body_id: str, ref: str) -> bool:
-        c = self._bstate(body_id)
-        return geo.point_in_polygon((c[0], c[1]), self._regions[ref].points)
+        return geo.point_in_polygon(self._bpos(body_id), self._regions[ref].points)
 
     def _sensor_fn(self, s: m.Sensor) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
         """센서 하나: (채널 이름들, scale들, 원래 값을 한 번에 돌려주는 함수)."""
@@ -956,7 +1013,18 @@ class Episode:
         # 사건 값은 _update_events가 채운다.
         event_names = {e for e in [*sy.BUILTIN_EVENTS, *(ev.id for ev in self.env.events)]}
         event_keys = {f"{e}{suffix}" for e in event_names for suffix in ("", ".count", ".since")}
-        self._value_getters = [(n, getters[n]) for n in sorted(needed) if n in getters and n not in event_keys]
+        # 접촉 질의 값은 _update_contacts가 바로 써 넣는다.
+        self._contact_values: list[tuple[_ContactChannel, str]] = []
+        for q in self.spec.queries.values():
+            if q.func == "contact" and q.channel in needed:
+                self._contact_values.append((self._contact_channel(q.a, (q.b,)), q.channel))
+        direct = {name for _, name in self._contact_values}
+        self._value_getters = [
+            (n, getters[n]) for n in sorted(needed) if n in getters and n not in event_keys and n not in direct
+        ]
+        block_events = [b.event for b in self.env.scoring.blocks if isinstance(b, m.EventBlock)]
+        self._count_needed = {e for e in event_names if f"{e}.count" in needed or e in block_events}
+        self._since_needed = {e for e in event_names if f"{e}.since" in needed}
         self._values_static = {**self._build_env["agent"]}
 
     def _refresh_values(self) -> None:
@@ -967,6 +1035,8 @@ class Episode:
                 v[e] = False
                 v[f"{e}.count"] = 0.0
                 v[f"{e}.since"] = 0.0
+            for ch, name in self._contact_values:
+                v[name] = ch.value
         for name, g in self._value_getters:
             v[name] = g()
 
@@ -989,15 +1059,17 @@ class Episode:
             st.consec = 0
         v = self._values
         v[st.id] = st.occurred
-        v[f"{st.id}.count"] = float(st.count)
-        v[f"{st.id}.since"] = self.time - st.last_time if st.last_time is not None else self.time
+        if st.id in self._count_needed:
+            v[f"{st.id}.count"] = float(st.count)
+        if st.id in self._since_needed:
+            v[f"{st.id}.since"] = self.time - st.last_time if st.last_time is not None else self.time
 
     def _update_events(self) -> None:
         self._fire(self._builtin["timeout"], self.steps >= self.max_steps)
         x0, y0, x1, y1 = self.bounds
         oob = False
         for bid in self._agent_ids:
-            px, py = self._bstate(bid)[:2]
+            px, py = self._bpos(bid)
             if not (x0 <= px <= x1 and y0 <= py <= y1):  # NaN도 여기서 걸린다
                 oob = True
                 break

@@ -90,7 +90,7 @@ def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig
         ("method", "method"), ("run_seed", "seed"), ("popsize", "popsize"), ("sigma0", "sigma"),
         ("max_generations", "max_generations"), ("max_evaluations", "max_evaluations"), ("max_time", "max_time"),
         ("target_score", "target"), ("stagnation_generations", "stagnation"), ("trials", "trials"),
-        ("validate_every", "validate_every"),
+        ("validate_every", "validate_every"), ("diagonal_threshold", "diagonal_threshold"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -106,7 +106,7 @@ def _progress(trainer: Trainer, state: dict[str, float]) -> Any:
         state["last"] = now
         champ = row["champion_score"]
         say(S.TRAIN_PROGRESS.format(
-            gen=row["generation"] + 1,
+            gen=row["generation"],
             evals=row["evaluations"],
             best=row["score_best"],
             mean=row["score_mean"],
