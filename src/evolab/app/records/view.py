@@ -149,9 +149,12 @@ class RecordsView(QWidget):
         self.memo_button = button(S.REC_EDIT_MEMO, self._on_edit_memo)
         self.delete_button = button(S.REC_DELETE, self._on_delete, S.REC_DELETE_TIP)
         self.compare_button = button(S.CMP_RECORDS_BUTTON, self._on_compare, S.CMP_RECORDS_BUTTON_TIP)
+        self.bundle_button = button(S.REC_BUNDLE, self._on_bundle, S.REC_BUNDLE_TIP)
+        self.csv_button = button(S.REC_CSV, self._on_csv, S.REC_CSV_TIP)
 
         buttons = QHBoxLayout()
-        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.compare_button):
+        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.compare_button,
+                  self.bundle_button, self.csv_button):
             buttons.addWidget(b)
         buttons.addStretch(1)
         buttons.addWidget(self.delete_button)
@@ -275,6 +278,43 @@ class RecordsView(QWidget):
         rows = sorted({i.row() for i in self.table.selectedItems()})
         return [s for s in (self._summary_at(r) for r in rows) if s is not None]
 
+    def export_bundle(self, run: Path, out: Path) -> Path:
+        from evolab.runs.bundle import export_bundle
+
+        return export_bundle(run, out)
+
+    def export_csv(self, run: Path, out: Path) -> Path:
+        from evolab.runs.bundle import export_csv
+
+        return export_csv(run, out)
+
+    def _export(self, what: str) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        s = self.selected_run()
+        if s is None or not s.ok:
+            return
+        if what == "bundle":
+            default, flt, fn = s.path / "exports" / S.BUNDLE_FILE_NAME.format(run=s.path.name), S.REC_ZIP_FILTER, \
+                self.export_bundle
+        else:
+            default, flt, fn = s.path / "exports" / "stats.csv", S.REC_CSV_FILTER, self.export_csv
+        chosen, _ = QFileDialog.getSaveFileName(self, S.REC_BUNDLE if what == "bundle" else S.REC_CSV, str(default), flt)
+        if not chosen:
+            return
+        try:
+            out = fn(s.path, Path(chosen))
+        except (OSError, ValueError) as exc:
+            self.show_error(f"{S.REC_EXPORT_FAILED}: {exc}")
+            return
+        QMessageBox.information(self, S.REC_TITLE, S.REC_EXPORT_DONE.format(path=out))
+
+    def _on_bundle(self) -> None:
+        self._export("bundle")
+
+    def _on_csv(self) -> None:
+        self._export("csv")
+
     def _on_compare(self) -> None:
         runs = [s.path for s in self.selected_runs() if s.ok]
         if runs:
@@ -301,7 +341,8 @@ class RecordsView(QWidget):
     def _update_buttons(self) -> None:
         s = self.selected_run()
         ok = s is not None and s.ok
-        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button):
+        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.bundle_button,
+                  self.csv_button):
             b.setEnabled(ok)
         self.delete_button.setEnabled(s is not None and not self.is_busy(s.path))
         self.compare_button.setEnabled(any(r.ok for r in self.selected_runs()))

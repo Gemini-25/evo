@@ -65,11 +65,40 @@ def documents_dir() -> Path:
     return Path.home() / "Documents"
 
 
+PATHS_FILE = "paths.ini"
+"""데이터 폴더 위치 설정. 화면 설정(settings.ini, Qt 형식)과 따로 둔다: Qt 없이(명령줄, 학습 프로세스) 같은 값을 읽기 위해."""
+
+
+def custom_data_dir() -> Path | None:
+    """설정에서 바꾼 데이터 폴더(없으면 None)."""
+    import configparser
+
+    cfg = configparser.ConfigParser(interpolation=None)
+    try:
+        cfg.read(user_state_dir() / PATHS_FILE, encoding="utf-8")
+    except (OSError, configparser.Error, UnicodeDecodeError):
+        return None
+    value = cfg.get("paths", "data_dir", fallback="").strip()
+    return Path(value) if value else None
+
+
+def set_custom_data_dir(folder: Path | None) -> None:
+    """데이터 폴더를 바꾼다(None이면 기본 문서\\진화실험실로)."""
+    import configparser
+
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg["paths"] = {"data_dir": str(folder) if folder is not None else ""}
+    path = user_state_dir() / PATHS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        cfg.write(f)
+
+
 def data_dir() -> Path:
-    """사용자 데이터 폴더: 문서\\진화실험실"""
+    """사용자 데이터 폴더: 기본은 문서\\진화실험실, 설정에서 바꿀 수 있다(명세: 저장, 기록, 내보내기)."""
     from evolab.app import strings as S
 
-    return documents_dir() / S.DATA_DIR_NAME
+    return custom_data_dir() or documents_dir() / S.DATA_DIR_NAME
 
 
 def runs_dir() -> Path:

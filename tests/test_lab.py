@@ -123,3 +123,19 @@ def test_video_of_versus_replay(qtbot: Any, lab: LabView, tmp_path: Path) -> Non
     assert out is not None and out.exists()
     with Image.open(out) as im:
         assert im.format == "GIF" and im.n_frames > 10 and im.size == (640, 400)
+
+
+def test_other_platform_warning(qtbot: Any, lab: LabView, tmp_path: Path) -> None:
+    lab.rb_fast.setChecked(True)
+    lab.max_generations.setValue(1)
+    assert lab.start_new()
+    wait_state(qtbot, lab, "finished")
+    run_dir = lab.run_dir
+    lab.end_session()
+    assert lab.open_run(run_dir)
+    assert lab.platform_warning == []
+    store = RunStore.open(run_dir)
+    info = store.read_run_info()
+    store.update_run_info(platform={**info["platform"], "cpu": "다른 CPU"})
+    assert lab.open_run(run_dir)
+    assert lab.platform_warning == ["cpu"] and "비트 단위 재현" in lab.status.text()

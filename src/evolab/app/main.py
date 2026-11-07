@@ -66,6 +66,9 @@ class MainWindow(QMainWindow):
         act.triggered.connect(lambda: self.open_play(paths.builtin_env_dir() / "lander.evoenv"))
         act_open = menu.addAction(S.MENU_PLAY_OPEN)
         act_open.triggered.connect(self._choose_and_play)
+        settings_menu = self.menuBar().addMenu(S.MENU_SETTINGS)
+        settings_menu.addAction(S.MENU_DATA_DIR).triggered.connect(self.choose_data_dir)
+        settings_menu.addAction(S.MENU_DATA_DIR_RESET).triggered.connect(lambda: self.set_data_dir(None))
         help_menu = self.menuBar().addMenu(S.MENU_HELP)
         help_menu.addAction(S.MENU_ABOUT).triggered.connect(self.show_about)
         help_menu.addAction(S.MENU_OPEN_DATA).triggered.connect(self._open_data_dir)
@@ -120,6 +123,22 @@ class MainWindow(QMainWindow):
         lay.addWidget(buttons)
         dlg.resize(640, 480)
         dlg.exec()
+
+    def choose_data_dir(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, S.MENU_DATA_DIR, str(paths.data_dir()))
+        if folder:
+            self.set_data_dir(Path(folder))
+
+    def set_data_dir(self, folder: Path | None) -> None:
+        """데이터 폴더(환경 파일, 실행 기록)를 바꾼다. 새 실행부터 그 폴더에 저장한다(예전 실행은 옮기지 않는다)."""
+        paths.set_custom_data_dir(folder)
+        try:
+            paths.install_examples()
+        except OSError:
+            pass
+        self.records.refresh()
+        self.compare.refresh()
+        self.statusBar().showMessage(S.MAIN_DATA_DIR_SET.format(path=paths.data_dir()), 8000)
 
     def _open_data_dir(self) -> None:
         folder = paths.data_dir()

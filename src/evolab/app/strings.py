@@ -1184,3 +1184,18 @@ ED_PASTE_NOTHING: Final = "붙여 넣을 부품이 없습니다(진화 실험실
 ED_HAS_ERRORS: Final = "환경에 오류가 있습니다. 아래 '검사 결과' 탭을 보고 고친 뒤 다시 하세요."
 MAIN_ENV_SENT: Final = "에디터에서 고친 환경을 멈춘 학습에 보냈습니다. 적용되면 '이어서'를 누르세요."
 SPEC_CHECKPOINTS_LOOP_MIN: Final = "순환 체크포인트 '{id}'에는 선이 3개 이상 있어야 합니다(앞뒤로 흔들어 바퀴를 세지 못하게)."
+
+# 설정 (lead)
+MENU_SETTINGS: Final = "설정"
+MENU_DATA_DIR: Final = "데이터 폴더 바꾸기…"
+MENU_DATA_DIR_RESET: Final = "데이터 폴더를 기본(문서\\진화실험실)으로"
+MAIN_DATA_DIR_SET: Final = "데이터 폴더: {path} (새 실행부터 이 폴더에 저장합니다. 예전 실행은 그대로 둡니다)"
+LAB_OTHER_PLATFORM: Final = "이 실행은 다른 PC나 다른 버전에서 만들어졌습니다({what}). 이어서 학습할 수 있지만 비트 단위 재현은 보장되지 않습니다."
+REC_BUNDLE: Final = "재현 묶음…"
+REC_BUNDLE_TIP: Final = "이 실행을 같은 조건으로 다시 돌릴 수 있는 zip(설정, 시드, 환경 버전, 변경 기록)을 만듭니다."
+REC_CSV: Final = "통계 CSV…"
+REC_CSV_TIP: Final = "세대별 통계 전체를 CSV로 저장합니다(엑셀에서 바로 열림)."
+REC_EXPORT_DONE: Final = "저장했습니다: {path}"
+REC_EXPORT_FAILED: Final = "저장하지 못했습니다"
+REC_ZIP_FILTER: Final = "재현 묶음 (*.zip)"
+REC_CSV_FILTER: Final = "CSV (*.csv)"

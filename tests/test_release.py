@@ -42,3 +42,13 @@ def test_collect_licenses(tmp_path: Path) -> None:
         assert name.lower() in notices.lower()
     pyside = [p for p in out.iterdir() if p.name.lower().startswith("pyside6")]
     assert pyside and (pyside[0] / "LGPL-3.0.txt").is_file()
+
+
+def test_custom_data_dir(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(paths, "user_state_dir", lambda: tmp_path / "state")
+    assert paths.custom_data_dir() is None
+    target = tmp_path / "내 데이터 폴더"
+    paths.set_custom_data_dir(target)
+    assert paths.data_dir() == target and paths.runs_dir() == target / "runs"
+    paths.set_custom_data_dir(None)
+    assert paths.custom_data_dir() is None

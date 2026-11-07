@@ -322,6 +322,7 @@ class LabView(QWidget):
         self.sigma.setValue(0.5)
         self.trials = _spin(0, 1000, 0, special=S.LAB_TRIALS_ENV)
         self.workers = _spin(1, 256, default_workers())
+        self.workers.valueChanged.connect(lambda _v: self._save_settings())
         # 방법마다 화면에서 바꿀 수 있는 값(명세: 학습 방법 표)
         self.ipop = QCheckBox(S.LAB_IPOP)
         self.ga_elites = _spin(0, 1000, 2)
@@ -441,6 +442,9 @@ class LabView(QWidget):
     def _restore_settings(self) -> None:
         s = self.settings
         try:
+            w = int(s.value("lab/workers", 0) or 0)
+            if w > 0:
+                self.workers.setValue(w)
             speed = int(s.value("lab/speed", 1))
             if speed in SPEEDS:
                 self.speed_combo.setCurrentIndex(SPEEDS.index(speed))
@@ -454,6 +458,7 @@ class LabView(QWidget):
         self.settings.setValue("lab/speed", self.speed)
         self.settings.setValue("lab/mode", "spectate" if self.rb_spectate.isChecked() else "fast")
         self.settings.setValue("lab/fast_interval", self.fast_interval.value())
+        self.settings.setValue("lab/workers", self.workers.value())
 
     # ------------------------------------------------------------------
     # 환경과 설정
@@ -717,9 +722,29 @@ class LabView(QWidget):
         self._form_from_config(msg.get("config") or {})
         self._setup_dashboard()
         self.dashboard.set_rows(self.rows)
+        self._warn_other_platform()
         self.timeline.setMaximum(max(1, self.generation))
         self.timeline.setValue(max(1, self.generation))
         self._show_still_scene()
+
+    def _warn_other_platform(self) -> None:
+        """다른 PC·다른 빌드에서 만든 실행이면 비트 재현이 보장되지 않는다고 알린다(명세: 재현 범위)."""
+        from evolab import __version__
+        from evolab.engine.runsetup import platform_info
+
+        then = dict(self.run_info.get("platform") or {})
+        if not then:
+            return
+        now = platform_info(0)
+        keys = ("python", "numpy", "pymunk", "cma", "os", "cpu")
+        diff = [k for k in keys if k in then and str(then[k]) != str(now.get(k))]
+        if str(self.run_info.get("version", __version__)) != __version__:
+            diff.insert(0, "evolab")
+        if diff:
+            self.status.setText(S.LAB_OTHER_PLATFORM.format(what=", ".join(diff)))
+            self.platform_warning = diff
+        else:
+            self.platform_warning = []
 
     def _setup_dashboard(self) -> None:
         if self.spec is None:
@@ -822,8 +847,11 @@ class LabView(QWidget):
             evals = int(float(last.get("evaluations", 0)))
         except (TypeError, ValueError):
             champ_text, evals = "-", 0
-        self.status.setText(S.LAB_STATUS.format(state=S.LAB_STATE_NAMES.get(self.state, self.state),
-                                                gen=self.generation, evals=evals, champ=champ_text))
+        text = S.LAB_STATUS.format(state=S.LAB_STATE_NAMES.get(self.state, self.state), gen=self.generation,
+                                   evals=evals, champ=champ_text)
+        if getattr(self, "platform_warning", None):
+            text += "\n" + S.LAB_OTHER_PLATFORM.format(what=", ".join(self.platform_warning))
+        self.status.setText(text)
 
     def _update_buttons(self) -> None:
         active = self.client.active
