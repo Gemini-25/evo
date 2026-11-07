@@ -78,8 +78,8 @@ class Session:
         self.stop_logged = False
         self.change_saved = False
         """설정 변경·환경 교체 중에 바뀐 상태의 체크포인트를 쓰기 시작했는지(실패하면 되돌려 써야 한다)."""
-        self.observe_warned = False
-        """관찰 기록 실패(trainer.observe_problem)를 화면에 이미 알렸는지(세션에서 한 번만)."""
+        self.observe_sent: str | None = None
+        """화면에 마지막으로 알린 관찰 기록 실패 글(trainer.observe_problem). 글이 바뀔 때만(더 무거운 실패) 다시 알린다."""
 
     # ------------------------------------------------------------------
     def main(self) -> None:
@@ -405,8 +405,8 @@ class Session:
             "observation": self.trainer.last_observation,
         })
         problem = getattr(self.trainer, "observe_problem", None)
-        if problem and not self.observe_warned:
-            self.observe_warned = True
+        if problem and problem != self.observe_sent:
+            self.observe_sent = problem
             # notice: 학습은 그대로 이어지므로 화면은 막는 상자 대신 상태 글로 알린다(설계 D9)
             self._send({"type": "error", "fatal": False, "notice": True, "message": problem})
 

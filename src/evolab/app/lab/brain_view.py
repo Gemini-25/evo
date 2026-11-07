@@ -149,6 +149,12 @@ def _forget_job(job: QThread) -> None:
     job.deleteLater()
 
 
+def wait_jobs() -> None:
+    """프로그램을 끝낼 때: 도는 연결선 그리기를 끝날 때까지 기다린다(주인 없는 QThread가 돌던 중에 지워지면 abort)."""
+    for job in list(_LIVE_JOBS):
+        job.wait()
+
+
 class BrainView(QWidget):
     """신경망 하나의 그림. set_network(구조, 뇌 파라미터, 입출력 이름) → set_trace(추적) → set_time(재생 시각)."""
 

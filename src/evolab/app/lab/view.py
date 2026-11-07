@@ -390,6 +390,10 @@ class LabView(QWidget):
         (가장 나중에 청한 것부터: 지금 보는 세대가 먼저)."""
         self.last_notice = ""
         """상태 글 끝에 덧붙인 마지막 알림(지도 점 재생의 GMAP_INEXACT 등)."""
+        self._map_notice = ""
+        """상태 글 끝줄: 지금 재생에 대한 알림(지도 점 재생의 GMAP_INEXACT). 다음 재생·실시간 보기·다른 실행에서 지움."""
+        self._brain_job: dict[str, Any] | None = None
+        """도는 뇌 추적 작업의 원천(_brain_play 또는 _brain_live 사전)."""
 
         self._build_ui()
         self._restore_settings()
@@ -1008,6 +1012,7 @@ class LabView(QWidget):
             self.playing = None
             self._brain_live = None  # 관전·고속을 바꾸면 앞 원천은 캔버스에서 사라진다(고속은 새 챔피언 재생이 ①)
             self._brain_play = None
+            self._set_follow(None)
             if not on:
                 self._fast_last = 0
                 self._maybe_fast_replay(force=True)
@@ -1024,6 +1029,8 @@ class LabView(QWidget):
     def _reset_run_view(self) -> None:
         self.rows = []
         self._session_note = ""
+        self._map_notice = ""
+        self.last_notice = ""
         self.events = []
         self.champion = None
         self._switch_at = None
@@ -1219,7 +1226,10 @@ class LabView(QWidget):
     def _update_status(self) -> None:
         if not self.rows:
             text = S.LAB_STATE_NAMES.get(self.state, self.state)
-            self.status.setText(text + ("\n" + self._session_note if self._session_note else ""))
+            for note in (self._session_note, self._map_notice):
+                if note:
+                    text += "\n" + note
+            self.status.setText(text)
             return
         last = self.rows[-1]
         champ = last.get("champion_score", "")
@@ -1239,6 +1249,8 @@ class LabView(QWidget):
             text += "\n" + S.LAB_OTHER_PLATFORM.format(what=", ".join(self.platform_warning))
         if self._session_note:
             text += "\n" + self._session_note
+        if self._map_notice:
+            text += "\n" + self._map_notice
         self.status.setText(text)
 
     def _learner_status(self, row: Mapping[str, Any]) -> str | None:
@@ -1355,6 +1367,10 @@ class LabView(QWidget):
         self.canvas.set_scene(geometry, agents, channels=list(spec.actuator_channels))
         self.canvas.set_population(list(msg["trajectories"]), ranks=ranks, champion=int(msg["representative"]))
         self.canvas.set_overlay([])
+        if self._brain_play is not None and self._brain_play.get("inspect"):
+            # 앞 세대에서 클릭 검사한 개체: 캔버스가 더는 그 개체를 재생하지 않는다(뇌는 이 세대 대표 ②로)
+            self._brain_play = None
+        self._set_follow(msg)
         self._start_clock()
         self._live_brain_for(msg, spec)
 
@@ -1434,6 +1450,12 @@ class LabView(QWidget):
                 self._play_next()
             else:
                 self._timer.stop()
+                live = self._brain_live
+                if live is not None and live["rep"] is None and self._brain_job is not live:
+                    # 재생이 끝날 때까지 추적이 없었다(뇌 그림이 안 보였다 등): 늦게 보여도 다시 돌 수 없으니 ②를 놓고
+                    # 보는 세대까지의 챔피언 멈춘 그림(③)으로(설계 D24)
+                    self._brain_live = None
+                    self._update_brain_source()
         elif self.loop_overlay:
             self.play_t = 0.0
         else:
@@ -1470,6 +1492,7 @@ class LabView(QWidget):
 
     def _run_replays(self, tag: Any, jobs: list[ReplayJob]) -> None:
         self._replay_tag += 1
+        self._notice("")  # 앞 재생의 알림(지도 점 재생은 이 뒤에 다시 정한다)
         brain, self._next_brain = self._next_brain, None
         if brain is not None and jobs:  # 마지막 개체가 뇌 원천 ① 후보(겹쳐 보기는 "지금" 쪽)
             spec, _layout, genome, trial, _trace = jobs[-1]
@@ -1545,6 +1568,9 @@ class LabView(QWidget):
             out = export_gif(items, path, title=label, progress=progress)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, str(exc))
+            return None
+        except MemoryError:
+            QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, S.VIDEO_NO_MEMORY)
             return None
         finally:
             dlg.close()
@@ -1625,6 +1651,7 @@ class LabView(QWidget):
         """관전 재생을 그만 볼 때 기다리는 학습이 멈추지 않게 받은 세대를 다 봤다고 알린다."""
         self.loop_overlay = False
         self._brain_live = None  # 관전 재생을 그만 본다: 뇌 원천 ②도 없다
+        self._set_follow(None)  # 보는 재미 그래프도 관전 세대 대신 타임라인(맨 끝이면 최신)을 따른다
         if self.playing is not None:
             self.client.send({"type": "played", "generation": int(self.playing["generation"])})
             self.playing = None
@@ -1641,9 +1668,11 @@ class LabView(QWidget):
         self._replay_tag += 1  # 아직 도는 타임라인·겹쳐 보기 결과가 실시간 화면을 덮지 않게
         self.canvas.set_overlay([])
         self._close_inspect()
+        self._notice("")
         self._brain_play = None  # 캔버스가 그 재생을 그만 보인다
         self._update_brain_source()
         self.view_mode = "live" if self.rb_spectate.isChecked() else "fast"
+        self._set_follow(self.playing if self.view_mode == "live" else None)
         if self.view_mode == "fast":
             self._maybe_fast_replay(force=True)
         elif self.playing is None:
@@ -1704,7 +1733,18 @@ class LabView(QWidget):
     def _update_timeline_label(self) -> None:
         total = self.timeline.maximum() if self.generation > 0 else 0
         gen = min(self.timeline.value(), total)
+        follow = self.dashboard.follow
+        if follow is not None and gen >= total > 0:  # 맨 끝(따라가기): 관전 중이면 재생 중인 세대
+            gen = min(follow, total)
         self.timeline_label.setText(S.LAB_TIMELINE_OF.format(gen=gen, total=total))
+
+    def _set_follow(self, msg: Mapping[str, Any] | None) -> None:
+        """보는 재미 그래프가 따라갈 세대(타임라인이 맨 끝일 때): 관전 중이면 캔버스가 재생 중인 세대 메시지, None이면
+        기록의 마지막 세대. 학습은 재생 중인 세대보다 한 세대 앞서 계산하므로(관전) 이것이 없으면 그래프·궤적 밀도가
+        캔버스·뇌 그림보다 한 세대 앞선다."""
+        gen = _int_value(msg.get("generation")) if msg is not None else None
+        self.dashboard.set_follow(gen)
+        self._update_timeline_label()
 
     def _timeline_moved(self, _value: int) -> None:
         self._update_timeline_label()
@@ -1740,7 +1780,7 @@ class LabView(QWidget):
         self._flip_timer.setInterval(max(1, round(1000.0 / self.flip_rate)))
         self._flip_timer.start()
         self.btn_flip.setChecked(True)
-        self.btn_flip.setText(S.LAB_FLIP_STOP)
+        self.btn_flip.setText(S.LAB_FLIP_STOP_V2)  # 학습 「멈춤」 단추와 헷갈리지 않게
         return True
 
     def stop_flip(self) -> None:
@@ -1848,6 +1888,7 @@ class LabView(QWidget):
         if job is None:
             return
         job["tried"] = True
+        self._brain_job = job
         self._brain_tag += 1
         th = _ReplayThread(("brain", self._brain_tag, which, job),
                            [(job["spec"], self.layout, job["genome"], job["trial"], TRACE_BRAIN)], self)
@@ -1860,17 +1901,28 @@ class LabView(QWidget):
     def _brain_thread_finished(self, th: _ReplayThread) -> None:
         if self._brain_thread is th:
             self._brain_thread = None
+            self._brain_job = None
         self._forget_thread(th)
 
     def _brain_done(self, tag: Any, result: Any) -> None:
         _kind, seq, which, job = tag
-        if seq != self._brain_tag or isinstance(result, Exception):
-            return  # 더 새로운 작업·다른 실행이거나 실패(뇌 그림은 덧붙이는 것이라 재생은 그대로 두고 알리지 않는다)
-        rep: Replay = result[0]
-        if which == "play" and self._brain_play is job:
-            job["rep"] = rep
-        elif which == "live" and self._brain_live is job and self.view_mode == "live" and self.playing is job["msg"]:
-            job["rep"] = rep  # 끝났을 때 같은 세대가 아직 재생 중이면 붙인다
+        if self._brain_job is job:
+            self._brain_job = None
+        if seq != self._brain_tag:
+            return  # 더 새로운 작업·다른 실행
+        if which == "live" and self._brain_live is job:
+            # 같은 세대가 아직 재생 중이거나, 재생이 끝나 그 세대의 마지막 장면이 캔버스에 남아 있으면 붙인다
+            showing = self.playing is job["msg"] or (self.playing is None and self._last_played is job["msg"])
+            if isinstance(result, Exception) or self.view_mode != "live" or not showing:
+                # 실패(뇌 그림은 덧붙이는 것이라 알리지 않는다)했거나 그 세대가 캔버스에서 사라졌다: 「계산하는 중」에
+                # 머물지 않게 ②를 놓는다(재생 중이 아니면 ③ 챔피언 멈춘 그림)
+                if self.playing is not job["msg"]:
+                    self._brain_live = None
+                    self._update_brain_source()
+                return
+            job["rep"] = result[0]
+        elif which == "play" and self._brain_play is job and not isinstance(result, Exception):
+            job["rep"] = result[0]
         else:
             return
         self._update_brain_source()
@@ -1882,9 +1934,14 @@ class LabView(QWidget):
 
     # -- 지도 점 재생(D19), 궤적 밀도 세계, 세대끼리 경주 ----------------------------
     def _notice(self, text: str) -> None:
+        """지금 재생에 대한 알림(빈 글이면 지움): 상태 글 끝줄 자리 하나라 쌓이지 않는다."""
         self.last_notice = text
-        if text:
-            self.status.setText(self.status.text() + "\n" + text)
+        if text == self._map_notice:
+            return
+        self._map_notice = text
+        self._update_status()
+        if self.state == "finished" and self._stopped_line:
+            self.status.setText(self.status.text() + "\n" + self._stopped_line)
 
     def play_individual(self, generation: int, index: int) -> bool:
         """유전자 지도 점을 두 번 눌렀다: 그 개체를 전시 시드로 재생한다. 학습 중 받은 최근 64세대는 정확한 유전자,
@@ -2033,6 +2090,12 @@ class LabView(QWidget):
                 th.requestInterruption()
             for th in list(self._threads):
                 th.wait()
+            # 주인이 이 화면이 아닌 배경 스레드(보는 재미 읽기·PCA·뇌 연결선, 경주 준비)도 끝날 때까지 기다린다: 주 창이
+            # 닫혀도 경주 창은 남아 있고(닫힘 알림을 받지 않음), 프로그램이 끝날 때 돌던 QThread가 지워지면 abort
+            from evolab.app.race.view import shutdown_race
+
+            self.dashboard.shutdown()
+            shutdown_race(self._race_dialog)
         finally:
             self._closing = False
 

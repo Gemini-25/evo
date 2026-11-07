@@ -35,6 +35,9 @@ from evolab.runs.observe import GridFrame, Observation
 
 KEEP_EXACT: Final = 64
 """학습 중 받은 정확한 float64 집단을 화면 메모리에 두는 최근 세대 수(D19)."""
+EXACT_BUDGET: Final = 64 * 1024 * 1024
+"""정확한 float64 집단에 쓰는 화면 메모리 상한(바이트). 세대 수(KEEP_EXACT)와 함께 지킨다: 큰 신경망·큰 집단이면 더
+적은 세대만 둔다(내장 환경 기본값은 64세대가 3~8MB). 한 세대만으로 넘으면 두지 않는다(지도 점 재생은 세대 대표로 대신)."""
 LOAD_CHUNK: Final = 64
 """배경 읽기가 한 번에 보내는 세대 수."""
 PCA_SMALL_DIM: Final = 256
@@ -206,15 +209,21 @@ def live_entry(generation: int, observation: Mapping[str, Any] | None, populatio
     rep = obs.representative if obs is not None else int(representative)
     if population is not None:
         try:
-            pop = np.array(population, dtype=np.float64)
-        except (TypeError, ValueError):
-            pop = None
+            pop = np.asarray(population)
+            # 화면 메모리 상한(EXACT_BUDGET)을 넘는 집단은 통째로 복사하지 않는다: 세대 대표 줄만
+            keep = pop.ndim == 2 and pop.shape[0] * pop.shape[1] * 8 <= EXACT_BUDGET
+            pop = np.array(pop if keep else pop[rep:rep + 1], dtype=np.float64)
+        except (TypeError, ValueError, IndexError):
+            pop, keep = None, False
         if pop is not None and pop.ndim == 2 and pop.shape[1] == layout.dim and pop.shape[0] > 0 and \
                 np.isfinite(pop).all():
             pop.flags.writeable = False
-            exact = pop
-            if 0 <= rep < pop.shape[0]:
-                rep64 = pop[rep]
+            if keep:
+                exact = pop
+                if 0 <= rep < pop.shape[0]:
+                    rep64 = pop[rep]
+            elif 0 <= rep:
+                rep64 = pop[0]
     if obs is None and rep64 is None:
         return None, exact
     score = float(obs.scores[obs.representative]) if obs is not None else _finite_float(rep_score)
@@ -501,10 +510,12 @@ class RunHistory:
         else:
             self._pca_stale = True
         if exact is not None:
-            self._exact[g] = exact
-            self._exact.move_to_end(g)
-            while len(self._exact) > KEEP_EXACT:
-                self._exact.popitem(last=False)
+            self._exact.pop(g, None)
+            if exact.nbytes <= EXACT_BUDGET:
+                self._exact[g] = exact
+            total = sum(a.nbytes for a in self._exact.values())
+            while self._exact and (len(self._exact) > KEEP_EXACT or total > EXACT_BUDGET):
+                total -= self._exact.popitem(last=False)[1].nbytes
 
     def add_champion(self, generation: int, genome: Any, score: float = math.nan) -> None:
         """챔피언 (뽑힌 세대, 유전자 float64, 검증 점수). 같은 세대면 바꾼다."""
@@ -540,13 +551,18 @@ class RunHistory:
     def latest(self) -> int | None:
         return self.gens[-1] if self.gens else None
 
-    def _cached(self, key: Any, make: Any) -> Any:
+    def _cached(self, key: Any, make: Any, tag: Any = None) -> Any:
+        """기록 판(version)과 tag가 같으면 저장해 둔 값. 열쇠마다 값 하나만 둔다(세대처럼 많아지는 것은 tag로)."""
         hit = self._cache.get(key)
-        if hit is not None and hit[0] == self.version:
-            return hit[1]
+        if hit is not None and hit[0] == self.version and hit[1] == tag:
+            return hit[2]
         value = make()
-        self._cache[key] = (self.version, value)
+        self._cache[key] = (self.version, tag, value)
         return value
+
+    def exact_bytes(self) -> int:
+        """정확한 float64 집단이 쓰는 화면 메모리(바이트)."""
+        return sum(a.nbytes for a in self._exact.values())
 
     @property
     def first_observed(self) -> int | None:
@@ -745,7 +761,8 @@ class RunHistory:
                 cannot_merge=window != "one" and len(merged) == 1 and len(with_density) > 1,
             )
 
-        return self._cached(("dens", gen, window, recent), make)
+        # 보는 세대는 tag로: 세대마다 열쇠를 따로 두면 학습·넘겨 보기 동안 밀도 격자가 세대 수만큼 쌓인다
+        return self._cached(("dens", window, recent), make, tag=gen)
 
 
 # ---------------------------------------------------------------------------
@@ -867,3 +884,15 @@ class HistoryLoader(QThread):
 
 _LIVE_LOADERS: set[HistoryLoader] = set()
 """도는 중인 읽기 스레드를 끝날 때까지 붙잡아 둔다(대시보드가 먼저 사라져도 QThread가 돌던 중에 지워지지 않게)."""
+
+
+def stop_loaders() -> None:
+    """프로그램을 끝낼 때: 도는 배경 읽기를 모두 멈추라고 하고 끝날 때까지 기다린다. 읽기 스레드는 주인이 없는 파이썬
+    객체라 프로그램이 끝나며 지워지는데, 그때 아직 돌고 있으면 Qt가 프로세스를 끝내 버린다(QThread 오류로 abort).
+    멈추라고 하면 세대 대표 파일 하나(약 0.6ms)를 읽는 사이에 끝난다."""
+    loaders = list(_LIVE_LOADERS)
+    for loader in loaders:
+        loader.requestInterruption()
+    for loader in loaders:
+        loader.wait()
+        _LIVE_LOADERS.discard(loader)

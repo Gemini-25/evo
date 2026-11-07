@@ -313,6 +313,58 @@ def test_recent_64_generations_keep_exact_genomes(tmp_path: Path) -> None:
     assert h.champion_at(70)[1].tobytes() == pops[30][1][1].tobytes()
 
 
+def test_density_cache_keeps_one_view_per_window_while_flipping_generations() -> None:
+    """궤적 밀도 캐시는 창(이 세대만·최근·처음부터)마다 하나: 학습 중 최신 세대를 따라가거나 세대를 넘겨 봐도 밀도
+    격자가 세대 수만큼 쌓이지 않는다. 같은 세대·같은 기록이면 같은 객체(다시 계산하지 않음)."""
+    lay = meta_for("lander").layout
+    frame = ob.GridFrame(-10.0, -5.0, 0.8, 32, 24)
+    h = hs.RunHistory()
+    h.set_layout(lay)
+    for g in range(1, 121):
+        obs, X = fake_generation(g, lay, frame=frame, world_key=TRACK_KEY)
+        h.add(entry_of(obs, X, lay))
+        assert h.density(g, "one") is not None  # 학습 중 최신 세대를 따라감
+    for g in range(1, 121):  # 세대 넘겨 보기
+        for window in hs.DENSITY_WINDOWS:
+            assert h.density(g, window).generation == g
+    dens = [k for k in h._cache if isinstance(k, tuple) and k[0] == "dens"]
+    assert len(dens) == len(hs.DENSITY_WINDOWS)
+    a = h.density(50, "recent")
+    assert h.density(50, "recent") is a and h.density(51, "recent") is not a
+
+
+def test_exact_populations_stay_within_the_memory_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최근 64세대 정확한 집단은 세대 수와 바이트(EXACT_BUDGET) 둘 다로 줄인다. 한 세대만으로 넘으면 두지 않고(지도 점
+    재생은 세대 대표로 대신), 그 세대의 대표 유전자는 그대로 정확하다."""
+    lay = meta_for("lander").layout
+    per_gen = 8 * lay.dim * 8  # 개체 8
+    monkeypatch.setattr(hs, "EXACT_BUDGET", 10 * per_gen)  # 10세대만 들어가는 상한
+    h = hs.RunHistory()
+    h.set_layout(lay)
+    pops = {}
+    for g in range(1, 31):
+        obs, X = fake_generation(g, lay, pop=8)
+        entry, exact = hs.live_entry(g, obs.to_arrays(), X, obs.representative, lay)
+        h.add(entry, exact=exact)
+        pops[g] = (obs, X)
+        assert h.exact_bytes() <= hs.EXACT_BUDGET
+    assert [g for g in range(1, 31) if h.has_exact(g)] == list(range(21, 31))
+    assert h.exact_genome(30, 5).tobytes() == pops[30][1][5].tobytes() and h.exact_genome(20, 5) is None
+    # 한 세대만으로 상한을 넘으면 두지 않는다(메시지 집단을 통째로 복사하지도 않는다)
+    monkeypatch.setattr(hs, "EXACT_BUDGET", per_gen // 2)
+    h2 = hs.RunHistory()
+    h2.set_layout(lay)
+    obs, X = fake_generation(31, lay, pop=8)
+    entry, exact = hs.live_entry(31, obs.to_arrays(), X, obs.representative, lay)
+    assert exact is None and entry is not None
+    h2.add(entry, exact=X.copy())  # 상한을 넘는 집단을 직접 넘겨도 두지 않는다
+    assert not h2.has_exact(31) and h2.exact_bytes() == 0 and h2.exact_genome(31, 0) is None
+    # 관찰이 없는 세대 메시지도 대표 유전자(float64 줄 하나)는 그대로
+    entry2, exact2 = hs.live_entry(32, None, X, 3, lay)
+    assert exact2 is None and entry2 is not None and entry2.rep_index == 3
+    assert np.array_equal(entry2.map_genomes[0], X[3].astype(np.float16))
+
+
 # ---------------------------------------------------------------------------
 # 배경 읽기 (T28)
 def _collect(loader: hs.HistoryLoader) -> dict[str, Any]:

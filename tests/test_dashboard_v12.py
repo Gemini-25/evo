@@ -16,6 +16,7 @@ from pytestqt.qtbot import QtBot
 from test_dashboard import make_dashboard, synthetic_rows
 from test_history import TRACK_KEY, fake_generation, meta_for, stats_row, write_run
 
+from evolab import paths
 from evolab.app import strings as S
 from evolab.app.lab import dashboard as D
 from evolab.app.lab import watch_tiles as W
@@ -382,6 +383,149 @@ def test_gene_map_of_a_v10_run_shows_representatives_only(qtbot: QtBot, tmp_path
         tile.click_at(float(p[0]), float(p[1]), double=True)
     assert sig.args == [4, -1]
     assert dash.rep_genome(4).tobytes() == store.load_champion(4, "representative")["genome"].tobytes()
+
+
+def test_gene_map_trail_stops_at_the_viewed_generation(qtbot: QtBot, tmp_path: Path) -> None:
+    """「집단 가운데가 지나온 길」은 보는 세대까지만 그린다. 그 뒤 길은 보이지 않는 선으로 화면 범위에만 들어가 세대를
+    넘겨 봐도 지도 범위가 그대로다."""
+    dash = fun_dashboard(qtbot, tmp_path)
+    feed(dash, "lander", range(1, 9))
+    tile = dash.tile("genemap")
+    assert isinstance(tile, W.GeneMapTile)
+    tx, _ = tile.trail.getData()
+    rx, _ = tile.trail_rest.getData()
+    assert len(tx) == 8 and len(rx) == 0
+    dash.set_focus(2)
+    assert tile.shown_generation == 2
+    tx, ty = tile.trail.getData()
+    rx, ry = tile.trail_rest.getData()
+    assert len(tx) == 2 and len(rx) == 7  # 1·2세대 + (2세대에서 이어) 3~8세대
+    assert (rx[0], ry[0]) == (tx[-1], ty[-1])
+    assert tile.trail_rest.opts["pen"].style() == Qt.PenStyle.NoPen
+    rest_bounds = tile.trail_rest.dataBounds(0)
+    assert rest_bounds[0] is not None and np.isfinite(rest_bounds).all()
+
+
+def test_gene_map_note_for_v12_generations_without_records(qtbot: QtBot, tmp_path: Path) -> None:
+    """관찰을 끈 학습(--no-observe)·요약 실패처럼 v1.2 세대에 기록이 없으면 'v1.2보다 먼저'라고 하지 않는다."""
+    lay = meta_for("lander").layout
+    root = tmp_path / "run"
+    rows = write_run(root, [fake_generation(g, lay) for g in range(1, 4)], with_obs=False)
+    dash = fun_dashboard(qtbot, tmp_path)
+    dash.set_rows(rows)  # v1.1 열 머리(learner 열 있음)
+    dash.load_history(root, rows)
+    assert dash.wait_history()
+    dash.flush()
+    tile = dash.tile("genemap")
+    assert tile.shown_generation == 3
+    assert S.DASH_NO_OBS_NOTE in tile.note.text() and S.DASH_OLD_RUN_NOTE not in tile.note.text()
+
+
+def _open_with_page(qtbot: QtBot, tmp_path: Path, name: str, root: Path, rows: list[dict[str, str]],
+                    page: str) -> tuple[Any, str]:
+    """화면에 띄운 대시보드에서 page 쪽을 보며 기록을 다 읽은 뒤 「보는 재미」로 와서 유전자 지도를 그린다."""
+    dash = make_dashboard(qtbot, tmp_path, f"{name}.ini")
+    dash.resize(1200, 700)
+    dash.show()
+    qtbot.waitExposed(dash)
+    dash.set_page(page)
+    dash.set_watch_meta(meta_for("lander"))
+    seen: list[int] = []
+    tile = dash.tile("genemap")
+    real = tile.update_data
+
+    def spy() -> None:
+        if dash.history_loading is not None:
+            seen.append(len(dash.history))
+        real()
+
+    tile.update_data = spy  # type: ignore[method-assign]
+    dash.load_history(root, rows)
+    assert dash.wait_history(60000)
+    dash.set_page("fun")
+    qtbot.wait(100)
+    dash.flush()
+    if page == "fun":
+        assert seen  # 읽는 동안 지도가 갱신됐다(임시 첫 축)
+    return dash.history.pca, tile.note.text()
+
+
+def test_gene_map_axes_of_an_opened_run_do_not_depend_on_the_page_during_loading(qtbot: QtBot,
+                                                                                  tmp_path: Path) -> None:
+    """다시 연 실행의 지도 축은 읽는 동안 어느 쪽을 봤는지와 상관없다(설계 2.5·11.2): 읽는 동안에는 첫 축만 임시로
+    맞추고, 다 읽은 뒤 읽은 모든 세대로 한 번 맞춘다(알림 없음). 두 배 규칙은 거기서부터 이어진다."""
+    lay = meta_for("lander").layout
+    root = tmp_path / "run"
+    rows = write_run(root, [fake_generation(g, lay) for g in range(1, 201)])
+    fun, fun_note = _open_with_page(qtbot, tmp_path, "fun", root, rows, "fun")
+    learn, learn_note = _open_with_page(qtbot, tmp_path, "learn", root, rows, "learning")
+    assert fun.fitted_generations == learn.fitted_generations == 200
+    assert np.array_equal(fun.axes, learn.axes) and np.array_equal(fun.explained, learn.explained)
+    refit_head = S.GMAP_REFITTED.split("{", 1)[0]
+    assert refit_head not in fun_note and refit_head not in learn_note
+    assert not fun.wants_fit()
+
+
+def test_stale_big_pca_job_does_not_forget_the_running_one(qtbot: QtBot, tmp_path: Path,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """큰 신경망(차원 > 256)의 배경 PCA: 앞 기록(되감기·다른 실행)의 작업이 늦게 끝나도 지금 도는 작업을 잊지 않는다
+    (같은 축을 맞추는 작업이 겹쳐 뜨거나 '다시 맞췄습니다' 알림이 잘못 나오지 않게)."""
+    import threading
+
+    from evolab.app.lab import history as hs
+
+    text = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8").replace(
+        '"hidden": [16]', '"hidden": [64, 64]', 1)
+    meta = WatchMeta.from_spec(compile_env(text))
+    assert meta.layout.dim > hs.PCA_SMALL_DIM
+    gates = [threading.Event(), threading.Event()]
+    calls: list[int] = []
+    real = hs.randomized_axes
+
+    def gated(sample: Any) -> Any:
+        k = len(calls)
+        calls.append(k)
+        if k < 2:
+            gates[k].wait(60)
+        return real(sample)
+
+    monkeypatch.setattr(hs, "randomized_axes", gated)
+    dash = make_dashboard(qtbot, tmp_path)
+    dash.set_watch_meta(meta)
+    dash.set_page("fun")
+    tile = dash.tile("genemap")
+    assert isinstance(tile, W.GeneMapTile)
+
+    def feed_big(gens: range) -> None:
+        for g in gens:
+            obs, X = fake_generation(g, meta.layout)
+            dash.add_row(stats_row(obs))
+            dash.add_generation(g, obs.to_arrays(), X, obs.representative, None)
+
+    try:
+        feed_big(range(1, 4))
+        qtbot.waitUntil(lambda: len(calls) == 1, timeout=10000)
+        j1 = tile._job
+        dash.load_history(None, [])  # 되감기: 앞 작업이 도는 중에 기록을 비운다
+        feed_big(range(1, 4))
+        qtbot.waitUntil(lambda: len(calls) == 2, timeout=10000)
+        j2 = tile._job
+        assert j1 is not None and j2 is not None and j2 is not j1
+        gates[0].set()  # 앞 작업이 끝난다
+        qtbot.waitUntil(j1.isFinished, timeout=10000)
+        qtbot.wait(50)
+        assert tile._job is j2
+        feed_big(range(4, 5))
+        qtbot.wait(100)
+        assert len(calls) == 2  # 겹쳐 뜬 작업이 없다
+    finally:
+        gates[0].set()
+        gates[1].set()
+    # J2(1세대 기준)가 끝나면 두 배 규칙대로 한 번만 더 맞춘다(4세대 ≥ 2 × 1): 앞 작업의 결과는 쓰지 않았다
+    qtbot.waitUntil(lambda: len(calls) == 3 and tile._job is None, timeout=20000)
+    qtbot.wait(100)
+    pca = dash.history.ensure_pca()
+    assert len(calls) == 3 and pca.fits == 2 and pca.fitted_generations == 4
 
 
 # ---------------------------------------------------------------------------

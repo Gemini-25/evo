@@ -762,7 +762,7 @@ def test_summary_failure_keeps_training(straight: Straight, tmp_path: Path, monk
     with WorkerPool(0) as pool:
         t = Trainer(LANDER_TEXT, config(), pool, store)
         t.run()
-    assert t.observe_problem == S.TRAIN_OBSERVE_FAILED.format(reason="boom 3")
+    assert t.observe_problem == S.TRAIN_OBSERVE_FAILED_ONWARD.format(reason="boom 3")
     _same_training(store, t, straight.store, straight.trainer)
     for g in range(1, GENS + 1):
         if g in (3, 5):
@@ -788,10 +788,59 @@ def test_summary_failure_is_reported_once_by_the_session(tmp_path: Path, monkeyp
         s.close()
     errors = s.of("error")
     assert errors == [{"type": "error", "fatal": False, "notice": True,
-                       "message": S.TRAIN_OBSERVE_FAILED.format(reason="boom")}]
+                       "message": S.TRAIN_OBSERVE_FAILED_ONWARD.format(reason="boom")}]
     gens = s.of("generation")
     assert [m["generation"] for m in gens] == [1, 2, 3]
     assert all("observation" in m and m["observation"] is None for m in gens)
+
+
+def test_frame_failure_notice_names_only_density_and_a_later_summary_failure_upgrades_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D9 알림 글: 세계 범위(격자 틀)만 못 만들면 그 세대는 궤적 밀도만 빠지므로 그렇게 알리고, 나중에 요약이 실패하면
+    더 무거운 글(이 세대부터 빠지는 세대가 있음)로 바꿔 세션이 한 번 더 알린다. 같은 종류는 다시 알리지 않는다."""
+    real_summary = observing.summarize
+
+    def no_frame(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("frame boom")
+
+    def flaky(**kw: Any) -> dict[str, np.ndarray]:
+        if kw["generation"] >= 3:
+            raise ValueError("summary boom")
+        return real_summary(**kw)
+
+    monkeypatch.setattr(observing, "world_frame", no_frame)
+    monkeypatch.setattr(observing, "summarize", flaky)
+    req = SessionRequest(kind="new", env_text=LANDER_TEXT, runs_dir=str(tmp_path), workers=0, spectate=False,
+                         config=config(max_generations=4, qualify_entrants=1, restart_patience=None).to_dict())
+    s = InProcessSession(req)
+    try:
+        s.wait(_finished)
+    finally:
+        s.close()
+    assert [m["message"] for m in s.of("error")] == [
+        S.TRAIN_OBSERVE_FRAME_FAILED.format(reason="frame boom"),
+        S.TRAIN_OBSERVE_FAILED_ONWARD.format(reason="summary boom"),
+    ]
+    assert all(m["notice"] and not m["fatal"] for m in s.of("error"))
+    gens = {m["generation"]: m["observation"] for m in s.of("generation")}
+    # 틀이 없는 세대도 관찰 기록은 있다(궤적 밀도 키만 빠짐), 요약이 실패한 세대는 통째로 없다
+    for g in (1, 2):
+        assert gens[g] is not None and fmt.GENOMES in gens[g] and not DENSITY_KEYS & set(gens[g])
+    assert gens[3] is None and gens[4] is None
+
+
+def test_cli_train_warns_once_when_observation_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    """evolab train도 관찰 기록 실패를 한 번 알린다(학습은 끝까지, 결과는 같음)."""
+
+    def broken(**kw: Any) -> dict[str, np.ndarray]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(observing, "summarize", broken)
+    store = _cli_train(tmp_path / "runs")
+    err = capsys.readouterr().err
+    assert err.count(S.TRAIN_OBSERVE_FAILED_ONWARD.format(reason="boom")) == 1
+    assert len(store.read_stats()) == 3 and all(store.load_observation(g) is None for g in (1, 2, 3))
 
 
 def test_session_generation_message_carries_the_observation(tmp_path: Path) -> None:

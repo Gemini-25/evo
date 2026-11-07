@@ -1508,3 +1508,16 @@ RACE_NO_GENERATIONS: Final = "아직 끝낸 세대가 없습니다"
 RACE_FAILED: Final = "경주를 준비하지 못했습니다: {reason}"
 RACE_HUD: Final = "코스 {n} · {t:.1f}초 · {speed:g}배"
 VIDEO_RACE_TITLE: Final = "나란히 경주 · 코스 {n}"
+
+# ---------------------------------------------------------------------------
+# v1.2 검토 뒤 고침 (관찰 기록 알림, 세대 넘겨 보기 단추, 기록 없는 세대, 가로축 도움말, 경주 칸 이름, 영상 메모리)
+TRAIN_OBSERVE_FAILED_ONWARD: Final = ("그래프용 관찰 기록을 만들지 못했습니다. 학습은 그대로 이어지지만 이 세대부터 새 그래프에 "
+                                      "빠지는 세대가 있을 수 있습니다: {reason}")
+TRAIN_OBSERVE_FRAME_FAILED: Final = ("궤적 밀도 그래프에 쓸 세계 범위를 만들지 못했습니다. 학습과 다른 그래프는 그대로입니다: "
+                                     "{reason}")
+LAB_FLIP_STOP_V2: Final = "넘겨 보기 멈춤"
+DASH_NO_OBS_NOTE: Final = "이 세대는 집단 기록이 없어 세대 대표만 보입니다."
+DASH_AXIS_TOOLTIP_V12: Final = "점수 추이, 탐색 폭, 종료 원인, 처리 성능, 몸 수치 추이 그래프의 가로축을 바꿉니다."
+RACE_LANE_DUP: Final = "{name} ({tag})"
+RACE_LANE_BRANCH_TAG: Final = "{gen}세대에서 분기"
+VIDEO_NO_MEMORY: Final = "메모리가 모자라 영상을 저장하지 못했습니다."

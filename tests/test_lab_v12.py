@@ -179,6 +179,78 @@ def test_spectate_feeds_history_and_live_brain_without_cancelling_user_replay(
 
 
 # ---------------------------------------------------------------------------
+# 관전 중 보는 재미 그래프는 캔버스가 재생 중인 세대를 따른다(학습은 한 세대 앞서 계산한다). 클릭 검사한 개체는 다음
+# 세대 재생이 시작되면 뇌 원천에서 빠진다
+# ---------------------------------------------------------------------------
+
+
+def test_spectating_fun_tiles_follow_the_played_generation_and_inspect_ends_with_it(
+        qtbot: Any, lab: LabView, message_boxes: list[tuple[str, str]]) -> None:
+    dash = lab.dashboard
+    lab.rb_spectate.setChecked(True)
+    lab.speed_combo.setCurrentIndex(0)  # 1배: 1세대를 보는 동안 2세대가 계산되어 온다
+    lab.max_generations.setValue(3)
+    assert lab.start_new()
+
+    def ahead() -> bool:
+        p = lab.playing
+        return p is not None and dash.history.latest is not None and dash.history.latest > int(p["generation"])
+
+    qtbot.waitUntil(ahead, timeout=240000)
+    qtbot.waitUntil(lambda: dash.brain_source is not None and dash.brain_source.kind == "live", timeout=60000)
+    dash.flush()
+    p = int(lab.playing["generation"])
+    assert lab.timeline.value() == lab.timeline.maximum() and dash.focus is None
+    assert dash.follow == p and dash.view_generation() == p
+    gm, dens = dash.tile("genemap"), dash.tile("density")
+    assert gm.shown_generation == p
+    assert dens.density_view is not None and dens.density_view.generation == p
+    assert dens.density_view.world_key == dash.observation(p).world_key  # 관전 화면과 같은 세계
+    assert dash.brain_source.generation == p
+    assert lab.timeline_label.text() == S.LAB_TIMELINE_OF.format(gen=p, total=lab.timeline.maximum())
+
+    # 재생 중인 세대의 개체를 클릭 검사하면 뇌는 그 개체(①), 다음 세대 재생이 시작되면 그 세대 대표(②)
+    lab._inspect(2)
+    qtbot.waitUntil(lambda: dash.brain_source is not None and dash.brain_source.kind == "playing", timeout=60000)
+    assert dash.brain_source.label == S.GMAP_LABEL_INDIVIDUAL.format(gen=p, index=2)
+    lab.speed_combo.setCurrentIndex(lab.speed_combo.count() - 1)
+    qtbot.waitUntil(lambda: lab.playing is not None and int(lab.playing["generation"]) > p, timeout=240000)
+    src = dash.brain_source
+    assert src is not None and src.kind == "live" and src.generation == int(lab.playing["generation"])
+    assert dash.follow == int(lab.playing["generation"])
+    # 타임라인으로 다른 세대를 고르면 그쪽이 먼저(사용자가 고른 세대)
+    lab.timeline.setValue(1)
+    qtbot.waitUntil(lambda: dash.focus == 1, timeout=5000)
+    assert dash.view_generation() == 1
+    lab.client.send({"type": "pause"})
+    assert message_boxes == []
+
+
+def test_brain_tile_does_not_stay_preparing_after_spectating_on_the_learning_page(qtbot: Any,
+                                                                                 lab: LabView) -> None:
+    """뇌 타일이 안 보이는 동안(학습 그래프 쪽) 마지막 관전 세대 재생이 끝났으면, 나중에 「보는 재미」를 열어도
+    「계산하는 중」에 머물지 않고 챔피언 멈춘 그림(③)을 보인다."""
+    dash = lab.dashboard
+    dash.set_tile_visible("genemap", False)
+    dash.set_page("learning")
+    assert not dash.brain_visible()
+    lab.rb_spectate.setChecked(True)
+    lab.speed_combo.setCurrentIndex(lab.speed_combo.count() - 1)
+    lab.max_generations.setValue(2)
+    assert lab.start_new()
+    wait_state(qtbot, lab, "finished")
+    qtbot.waitUntil(lambda: lab.playing is None and not lab.queue and not lab._scene_jobs and lab._last_played
+                    is not None, timeout=120000)
+    dash.set_page("fun")
+    qtbot.wait(300)
+    dash.flush()
+    tile = dash.tile("brain")
+    assert isinstance(tile, BrainTile)
+    assert S.BRAIN_PREPARING not in tile._notes
+    assert dash.brain_source is None and tile.source_kind in ("champion", "rep")
+
+
+# ---------------------------------------------------------------------------
 # T38: 고속 모드 — 챔피언 재생 뒤 뇌가 「재생 중」이고 play_t에 따라 뉴런이 바뀐다. 타임라인·세대 넘겨 보기
 # ---------------------------------------------------------------------------
 
@@ -222,7 +294,7 @@ def test_fast_mode_brain_timeline_focus_and_flip(qtbot: Any, lab: LabView) -> No
     assert lab.btn_flip.isEnabled()
     lab.btn_flip.click()
     assert lab.flipping and dash.flipping and lab.timeline.value() == 1 and dash.focus == 1
-    assert lab.flip_rate == 2.0 and lab.btn_flip.text() == S.LAB_FLIP_STOP  # clamp(3 ÷ 20, 2, 15)
+    assert lab.flip_rate == 2.0 and lab.btn_flip.text() == S.LAB_FLIP_STOP_V2  # clamp(3 ÷ 20, 2, 15)
     seen: list[int | None] = []
     dash_set_focus = dash.set_focus
 
@@ -296,12 +368,18 @@ def measure_open(run: Path, settings_dir: Path) -> dict[str, Any]:
         probe = QTimer()
         probe.setInterval(10)
         probe.timeout.connect(lambda: gaps.append(clock.restart()))
+        # 탐침은 열기 전에 켠다: 화면 스레드에서 도는 open_run(통계·사건 읽기, 화면 다시 만들기)도 틈에 들어간다
+        clock.start()
+        probe.start()
+        warm = QElapsedTimer()
+        warm.start()
+        while warm.elapsed() < 100:
+            QCoreApplication.processEvents()
+        before = len(gaps)
         t0 = QElapsedTimer()
         t0.start()
         assert view.open_run(run)
         open_ms = t0.elapsed()
-        clock.start()
-        probe.start()
         assert dash.wait_history(60000)
         load_ms = t0.elapsed()
         settle = QElapsedTimer()
@@ -309,7 +387,9 @@ def measure_open(run: Path, settings_dir: Path) -> dict[str, Any]:
         while settle.elapsed() < 800:  # 펌프가 보이는 타일을 하나씩 그린다
             QCoreApplication.processEvents()
         probe.stop()
+        gaps = gaps[before:]  # 열기 직전 틈부터(열기를 덮는 틈 포함)
         return {"open_ms": open_ms, "load_ms": load_ms, "worst": max(gaps), "p99": float(np.percentile(gaps, 99)),
+                "worst_after_open": max(gaps[1:]) if len(gaps) > 1 else 0.0,
                 "n": len(gaps), "gens": len(dash.history), "observed": dash.history.load_summary.get("observed"),
                 "maximum": view.timeline.maximum(), "focus": dash.focus, "pump": dash.pump_steps}
     finally:
@@ -333,14 +413,17 @@ def test_opening_a_750_generation_run_keeps_the_event_loop_responsive(tmp_path: 
     assert out.returncode == 0, out.stderr[-4000:]
     m = json.loads(out.stdout.strip().splitlines()[-1])
     print(f"\n[lab] open 750-generation run: open_run {m['open_ms']} ms (synchronous), history loaded at "
-          f"{m['load_ms']} ms, event-loop gap after open: worst {m['worst']:.0f} ms, p99 {m['p99']:.0f} ms, "
-          f"n={m['n']}, pump steps {m['pump']}")
+          f"{m['load_ms']} ms, event-loop gap including the open: worst {m['worst']:.0f} ms, p99 {m['p99']:.0f} ms, "
+          f"worst after the open {m['worst_after_open']:.0f} ms, n={m['n']}, pump steps {m['pump']}")
     assert m["gens"] == 750 and m["observed"] == 750 and m["maximum"] == 750 and m["focus"] is None
     # 기록은 배경에서 읽는다: 여는 동안에도 이벤트 루프가 돈다(세대 대표 파일 750개를 화면 스레드에서 읽으면 한 번에
-    # 0.5~2초가 막힌다). 설계 T39 목표(최대 틈 100ms)는 한가한 PC에서 잰다(마무리 단계 M8). 다른 학습이 도는 이 공유
-    # 기계에서는 최대 틈이 170~600ms로 크게 흔들려서(보고서) 여기서는 큰 퇴행만 잡는다.
+    # 0.5~2초가 막힌다). 최대 틈에는 화면 스레드에서 도는 open_run도 들어간다. 다른 학습이 도는 이 공유 기계에서는 틈이
+    # 크게 흔들려서 여기서는 큰 퇴행만 잡는다. 설계 T39·M8 목표(최대 틈 100ms 미만, p99 50ms 미만)는 한가한 PC에서
+    # EVOLAB_STRICT_LATENCY=1로 잰다(마무리 단계).
     assert m["open_ms"] < 1000 and m["n"] >= 20
     assert m["worst"] < 1000
+    if os.environ.get("EVOLAB_STRICT_LATENCY") == "1":
+        assert m["worst"] < 100 and m["p99"] < 50, m
 
 
 # ---------------------------------------------------------------------------
@@ -400,13 +483,20 @@ def test_gene_map_point_replay_race_and_world_geometry(qtbot: Any, lab: LabView,
     assert tag[0] == "individual" and np.array_equal(jobs[0][2], rep2_genome)
     assert lab.last_notice == S.GMAP_INEXACT.format(gen=2) and S.GMAP_INEXACT.format(gen=2) in lab.status.text()
     assert lab._replay_label == S.LAB_LABEL_REP.format(gen=2) and lab.view_mode == "replay"
+    dash.individual_requested.emit(2, other)  # 알림은 한 자리: 다시 눌러도 쌓이지 않는다
+    assert lab.status.text().count(S.GMAP_INEXACT.format(gen=2)) == 1
     qtbot.waitUntil(lambda: lab._last_video is not None and lab._last_video[1] == S.LAB_LABEL_REP.format(gen=2),
                     timeout=60000)
     # 대표 점 자신(정확함): 알림 없음
     dash.individual_requested.emit(2, rep2)
     tag, jobs = calls[-1]
     assert np.array_equal(jobs[0][2], rep2_genome) and lab.last_notice == ""
+    assert S.GMAP_INEXACT.format(gen=2) not in lab.status.text()  # 정확한 재생이면 앞 알림을 지운다
     assert lab._replay_label == S.GMAP_LABEL_INDIVIDUAL.format(gen=2, index=rep2)
+    dash.individual_requested.emit(3, (dash.rep_index(3) + 1) % 6)
+    assert lab.status.text().endswith("\n" + S.GMAP_INEXACT.format(gen=3))
+    lab.back_to_live()  # 실시간 보기로 돌아가면 재생 알림도 지운다
+    assert S.GMAP_INEXACT.format(gen=3) not in lab.status.text() and lab.last_notice == ""
     # 집단 기록이 없는 세대의 대표 점(-1)
     dash.individual_requested.emit(1, -1)
     tag, jobs = calls[-1]
@@ -503,9 +593,80 @@ def test_observation_summary_failure_is_a_status_notice_not_a_box(
     assert note not in lab.status.text()
 
 
-if __name__ == "__main__":  # test_opening_a_750_generation_run_keeps_the_event_loop_responsive의 측정 프로세스
+# ---------------------------------------------------------------------------
+# 프로그램 끝내기: 기록을 읽는 중이거나 경주를 준비하는 중에 닫아도 프로세스가 abort하지 않는다
+# ---------------------------------------------------------------------------
+
+
+def quit_while_busy(run: Path, settings_dir: Path) -> dict[str, Any]:
+    """실험실에서 run을 열어 배경 읽기가 도는 동안 세대끼리 경주 창을 열고(준비 중), 주 창을 닫을 때처럼 shutdown한 뒤
+    이벤트 루프를 끝낸다. 읽기·준비를 느리게 해 닫는 순간 둘 다 돌고 있게 한다. 이 프로세스가 정상 종료(0)해야 한다:
+    돌던 QThread가 프로그램이 끝날 때 지워지면 Qt가 abort한다(종료 코드 134)."""
+    import time
+
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from evolab.app.lab import history as hs
+    from evolab.app.race import view as race_view
+
+    app = QApplication.instance() or QApplication([])
+    real_load = hs.load_generation
+    real_replay = race_view.replay
+
+    def slow_load(*a: Any, **k: Any) -> Any:
+        time.sleep(0.4)
+        return real_load(*a, **k)
+
+    def slow_replay(*a: Any, **k: Any) -> Any:
+        time.sleep(0.3)
+        return real_replay(*a, **k)
+
+    hs.load_generation = slow_load
+    race_view.replay = slow_replay
+    view = LabView(settings=QSettings(str(settings_dir / "settings.ini"), QSettings.Format.IniFormat))
+    view.resize(1280, 800)
+    view.show()
+    for _ in range(10):
+        app.processEvents()
+    assert view.load_env(LANDER)
+    view.dashboard.set_page("fun")
+    assert view.open_run(run)
+    dlg = view.race_generations()
+    assert dlg is not None
+    clock = QElapsedTimer()
+    clock.start()
+    while clock.elapsed() < 150:
+        QCoreApplication.processEvents()
+    busy = {"loading": view.dashboard.history_loading is not None, "racing": bool(race_view._LIVE_THREADS)}
+    view.shutdown()  # 주 창 closeEvent와 같다(경주 창은 닫히지 않고 남는다)
+    view.hide()
+    QTimer.singleShot(0, app.quit)
+    app.exec()
+    return busy
+
+
+def test_quitting_while_loading_history_or_preparing_a_race_exits_cleanly(tmp_path: Path) -> None:
+    import json
+    import os
+    import subprocess
+    import sys
+
+    store = train_run(tmp_path / "runs", 3)
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    out = subprocess.run([sys.executable, __file__, "quit-while-busy", str(store.root), str(tmp_path)], env=env,
+                         capture_output=True, text=True, timeout=300, check=False)
+    assert out.returncode == 0, (out.returncode, out.stderr[-4000:])
+    busy = json.loads(out.stdout.strip().splitlines()[-1])
+    assert busy == {"loading": True, "racing": True}  # 닫는 순간 둘 다 돌고 있었다
+    assert "QThread: Destroyed" not in out.stderr
+
+
+if __name__ == "__main__":  # 측정·종료 시험의 자식 프로세스
     import json
     import sys
 
     if len(sys.argv) == 4 and sys.argv[1] == "measure-open":
         print(json.dumps(measure_open(Path(sys.argv[2]), Path(sys.argv[3]))))
+    elif len(sys.argv) == 4 and sys.argv[1] == "quit-while-busy":
+        print(json.dumps(quit_while_busy(Path(sys.argv[2]), Path(sys.argv[3]))), flush=True)

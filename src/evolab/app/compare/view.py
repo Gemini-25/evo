@@ -1496,9 +1496,13 @@ class CompareView(QWidget):
                 self.unsetCursor()
 
     def shutdown(self) -> None:
-        """프로그램을 닫을 때: 도는 반복 실행을 깨끗이 멈춘다."""
+        """프로그램을 닫을 때: 도는 반복 실행을 깨끗이 멈추고, 경주 창의 준비 스레드도 끝날 때까지 기다린다(주 창이
+        닫혀도 경주 창은 남아 있고, 프로그램이 끝날 때 돌던 QThread가 지워지면 abort)."""
+        from evolab.app.race.view import shutdown_race
+
         if self.runner is not None:
             self.runner.shutdown()
+        shutdown_race(self.race_dialog)
 
     def _on_repeat_run_started(self, index: int, run_dir: Path) -> None:
         gid = self._follow_group

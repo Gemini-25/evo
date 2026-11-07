@@ -18,7 +18,7 @@
 재현 묶음에는 챔피언 파일이 없다), 워커 관찰기는 상태를 읽기만 하며, 요약은 이미 계산된 값으로만 만든다. 그래서 통계,
 챔피언, 세대 대표 유전자, 체크포인트의 학습 상태는 관찰을 켜도 끄도 비트 단위로 같다(pycma 객체 피클 안의 벽시계
 타이머는 원래 실행마다 다르다). 요약이 실패해도(코드 결함) 학습은 이어지고 그 세대 대표는 관찰 키 없이 써진다
-(observe_problem에 한 번 남김).
+(observe_problem에 남김: 세계 범위만 못 만든 실패와 요약 실패를 따로, 무거운 쪽으로 한 번씩).
 """
 
 from __future__ import annotations
@@ -81,6 +81,10 @@ class Evaluator(Protocol):
 
 TIME_COLUMNS = ("gen_seconds", "elapsed", "steps_per_second", "worker_utilization")
 """시간에 따라 달라지는 통계 열. 결정성 비교에서 뺀다."""
+OBSERVE_FAILED_FRAME = 1
+"""관찰 기록 실패 종류: 시험 0번 세계 범위(격자 틀)만 못 만듦. 그 세대는 궤적 밀도만 빠진다."""
+OBSERVE_FAILED_SUMMARY = 2
+"""관찰 기록 실패 종류: 세대 요약 실패. 그 세대 대표는 관찰 키 없이 써진다(더 무거움)."""
 
 LIVE_CONFIG_KEYS = (
     "max_generations", "max_evaluations", "max_time", "target_score", "stagnation_generations",
@@ -460,7 +464,10 @@ class Trainer:
         self.last_observation: dict[str, np.ndarray] | None = None
         """마지막 세대의 관찰 기록(obs_ 키 사전). 세션이 세대 메시지 "observation"으로 화면에 보낸다."""
         self.observe_problem: str | None = None
-        """관찰 기록을 처음 만들지 못한 이유(한국어, 한 번만 남김). 학습은 그대로 이어진다(D9)."""
+        """관찰 기록을 만들지 못한 이유(한국어). 종류마다 처음 한 번만 남기고, 더 무거운 실패가 오면 그 글로 바꾼다
+        (_observe_failed). 학습은 그대로 이어진다(D9)."""
+        self._observe_level = 0
+        """observe_problem의 종류(0 없음, OBSERVE_FAILED_FRAME, OBSERVE_FAILED_SUMMARY)."""
         self._header: list[str] | None = None
         if store is not None:
             self._header = store.stats_columns() if hasattr(store, "stats_columns") else None
@@ -532,7 +539,7 @@ class Trainer:
             try:
                 frame, world_key = observing.world_frame(self.spec, self.env_version, trials[0])
             except Exception as exc:  # 파생 자료의 결함이 학습을 멈추지 않게(D9): 틀 없이 행동만 센다
-                self._observe_failed(exc)
+                self._observe_failed(exc, OBSERVE_FAILED_FRAME)
             kw["observe"] = [OBSERVE_POSITIONS if k == 0 else OBSERVE_ACTIONS
                              for _ in range(X.shape[0]) for k in range(len(trials))]
             kw["frame"] = None if frame is None else tuple(frame)
@@ -584,7 +591,7 @@ class Trainer:
                                           learner=cur.index, qualifying=s.qualifying, layout=self.layout,
                                           end_ids=self.end_ids, trial0=trials[0], frame=frame, world_key=world_key)
             except Exception as exc:  # 파생 자료의 결함이 학습을 멈추지 않게(D9): 이 세대 대표는 관찰 없이 쓴다
-                self._observe_failed(exc)
+                self._observe_failed(exc, OBSERVE_FAILED_SUMMARY)
         self.last_observation = obs
         self.last_generation = Generation(label, X, agg, rep, trials[0], traj, self.env_version,
                                           s.champion.generation != champion_before, obs)
@@ -598,12 +605,19 @@ class Trainer:
             self.checkpoint()  # 바꾼 뒤 상태(새 학습 방법)가 담긴다
         return row
 
-    def _observe_failed(self, exc: BaseException) -> None:
-        """관찰 기록을 만들지 못했다: 처음 한 번만 이유를 남긴다(세션이 화면에 한 번 알린다)."""
-        if self.observe_problem is None:
-            from evolab.app import strings as S
+    def _observe_failed(self, exc: BaseException, level: int) -> None:
+        """관찰 기록을 만들지 못했다: 그 종류(level)의 처음 이유만 남긴다(세션·명령줄이 바뀔 때만 한 번씩 알린다).
 
-            self.observe_problem = S.TRAIN_OBSERVE_FAILED.format(reason=str(exc).strip() or type(exc).__name__)
+        OBSERVE_FAILED_FRAME(세계 범위만 못 만듦: 그 세대는 궤적 밀도만 빠짐)보다 OBSERVE_FAILED_SUMMARY(요약 실패: 그 세대
+        관찰 기록이 통째로 빠짐)가 무겁다. 더 무거운 실패가 나중에 오면 그 글로 바꾼다(같거나 가벼우면 그대로).
+        """
+        if level <= self._observe_level:
+            return
+        from evolab.app import strings as S
+
+        text = S.TRAIN_OBSERVE_FRAME_FAILED if level == OBSERVE_FAILED_FRAME else S.TRAIN_OBSERVE_FAILED_ONWARD
+        self._observe_level = level
+        self.observe_problem = text.format(reason=str(exc).strip() or type(exc).__name__)
 
     def _validate(self, X: np.ndarray, agg: np.ndarray) -> float:
         """후보를 검증 세트로 평가해 챔피언을 고른다. 이번 검증의 최고 점수를 돌려준다."""

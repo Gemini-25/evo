@@ -120,9 +120,41 @@ class _RaceThread(QThread):
         self.finished_job.emit(self.tag, out)
 
 
+_LIVE_THREADS: set[_RaceThread] = set()
+"""도는 중인 준비 스레드(프로그램을 끝낼 때 멈추고 기다린다: wait_threads)."""
+
+
 def _start_thread(th: _RaceThread) -> None:
+    _LIVE_THREADS.add(th)
+    th.finished.connect(lambda t=th: _LIVE_THREADS.discard(t))  # deleteLater보다 먼저: 지워진 객체를 붙잡지 않게
     th.finished.connect(th.deleteLater)  # 주인이 프로그램이라 창을 닫아도 도는 중에 지워지지 않는다
     th.start()
+
+
+def wait_threads() -> None:
+    """프로그램을 끝낼 때: 도는 경주 준비를 모두 멈추라고 하고 끝날 때까지 기다린다. 준비 스레드의 주인은 프로그램
+    (QApplication)이라, 프로그램이 끝날 때 아직 돌고 있으면 Qt가 프로세스를 끝내 버린다(abort). 칸 하나를 다시
+    시뮬레이션하는 동안(길어야 수백 ms)만 기다린다."""
+    threads = list(_LIVE_THREADS)
+    for th in threads:
+        th.cancel.set()
+    for th in threads:
+        try:
+            th.wait()
+        except RuntimeError:  # 이미 끝나 지워졌다
+            pass
+        _LIVE_THREADS.discard(th)
+
+
+def shutdown_race(dialog: Any) -> None:
+    """프로그램을 끝낼 때(실험실·비교 화면의 shutdown): 경주 창의 시계와 준비를 멈추고(경주 창은 주 창이 닫혀도 남아
+    있어 닫힘 알림을 받지 않는다) 도는 준비 스레드가 끝날 때까지 기다린다. dialog는 None이거나 이미 지워졌어도 된다."""
+    if dialog is not None:
+        try:
+            dialog.view.shutdown()
+        except RuntimeError:  # 창이 이미 지워졌다
+            pass
+    wait_threads()
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +793,9 @@ class RaceView(QWidget):
         except (OSError, ValueError) as exc:
             self.show_error(str(exc))
             return None
+        except MemoryError:  # 프레임은 쌓지 않지만 메모리가 아주 모자란 PC: 프로그램을 끝내지 않고 알린다
+            self.show_error(S.VIDEO_NO_MEMORY)
+            return None
         finally:
             dlg.close()
             dlg.deleteLater()
@@ -849,4 +884,4 @@ def show_race(parent: QWidget | None, entries: list[RaceEntry], *, title: str, w
     return dlg
 
 
-__all__ = ["RaceDialog", "RaceView", "show_race"]
+__all__ = ["RaceDialog", "RaceView", "show_race", "shutdown_race", "wait_threads"]

@@ -208,22 +208,32 @@ class _PCAJob(QThread):
 
     done = Signal(object)
 
-    def __init__(self, blocks: list[np.ndarray], generations: int, epoch: int, max_rows: int) -> None:
+    def __init__(self, blocks: list[np.ndarray], generations: int, epoch: int, max_rows: int,
+                 canonical: bool = False) -> None:
         super().__init__()
         self.blocks = blocks
         self.generations = generations
         self.epoch = epoch
         self.max_rows = max_rows
+        self.canonical = canonical
+        """다시 연 실행을 다 읽은 뒤 모든 세대로 맞추는 축(앞 축의 부호를 따르지 않고 알림도 없음)."""
 
     def run(self) -> None:
         sample = hs.sample_rows(self.blocks, self.max_rows)
         result = hs.randomized_axes(sample) if len(sample) else None
-        self.done.emit((self.epoch, self.generations, result))
+        self.done.emit((self, self.epoch, self.generations, result))
 
 
 def _forget_job(job: QThread) -> None:
     job.wait(2000)
     _LIVE_JOBS.discard(job)
+
+
+def wait_jobs() -> None:
+    """프로그램을 끝낼 때: 도는 배경 PCA를 끝날 때까지 기다린다(주인 없는 QThread가 돌던 중에 지워지면 abort)."""
+    for job in list(_LIVE_JOBS):
+        job.wait()
+        _LIVE_JOBS.discard(job)
 
 
 class GeneMapTile(_WatchTile):
@@ -260,6 +270,9 @@ class GeneMapTile(_WatchTile):
         self.trail = _curve(_pen(t.muted, 1))
         self.trail.setZValue(0)
         self.plot.addItem(self.trail)
+        self.trail_rest = _curve(pg.mkPen(None))  # 보는 세대 뒤의 길: 그리지 않고 화면 범위에만 넣는다
+        self.trail_rest.setZValue(0)
+        self.plot.addItem(self.trail_rest)
         self.ghosts: list[pg.ScatterPlotItem] = []
         for k, a in enumerate(GHOST_ALPHA):
             g = pg.ScatterPlotItem(size=5, pen=pg.mkPen(None), brush=_qcolor(t.muted, a))
@@ -298,6 +311,10 @@ class GeneMapTile(_WatchTile):
         self.shown_generation: int | None = None
         """지금 점을 찍은 세대(보는 세대에 유전자가 없으면 가장 가까운 기록 세대)."""
         self._job: _PCAJob | None = None
+        self._fit_all = False
+        """다시 연 실행의 기록을 다 읽었다: 다음 갱신에서 읽은 모든 세대로 축을 맞춘다(_fit canonical). 읽는 동안에는
+        첫 축만 임시로 맞추고 두 배 규칙으로 다시 맞추지 않는다: 읽는 동안 어느 쪽을 보고 있었는지에 따라 축이 달라지지
+        않게(설계 2.5 '학습 중 그림 = 다시 연 그림', 11.2)."""
         self._refit_note = ""
         self._refit_timer = QTimer(self)
         self._refit_timer.setSingleShot(True)
@@ -327,7 +344,12 @@ class GeneMapTile(_WatchTile):
         self._trail_proj.clear()
         self._proj_version = -1
         self._job = None
+        self._fit_all = False
         self._clear_refit_note()
+
+    def history_loaded(self) -> None:
+        """배경 읽기가 끝났다(Dashboard._on_history_loaded): 다음 갱신에서 읽은 모든 세대로 축을 맞춘다."""
+        self._fit_all = True
 
     def sync_marks(self) -> None:
         pass  # 지도에는 세대 세로선이 없다
@@ -341,30 +363,41 @@ class GeneMapTile(_WatchTile):
         self._fit(pca, force=True)
         self.refresh()
 
-    def _fit(self, pca: hs.GenePCA, *, force: bool = False) -> None:
-        refitting = pca.axes is not None
+    def _fit(self, pca: hs.GenePCA, *, force: bool = False, canonical: bool = False) -> None:
+        """축을 맞춘다. canonical: 다시 연 실행을 다 읽은 뒤 모든 세대로(앞 축의 부호를 따르지 않아 읽는 동안 임시 축을
+        맞췄든 아니든 같은 축, 알림 없음)."""
+        refitting = pca.axes is not None and not canonical
         if not pca.big:
+            if canonical:
+                pca.axes = None  # 부호를 처음 맞출 때 규칙으로(임시 축을 따르지 않음)
+                self._fit_all = False
             if pca.fit() and refitting:
                 self._note_refit(pca.generations)
             return
         if self._job is not None:
-            return
+            return  # 도는 작업이 끝나면 다시 갱신한다(canonical이면 _fit_all이 남아 그때 맞춘다)
+        if canonical:
+            self._fit_all = False
         blocks = [b for g in self.history.genome_gens() if (b := self.history.entry(g).map_genomes) is not None]
         rows = max(64, min(hs.PCA_SAMPLE_ROWS, PCA_BIG_VALUES // max(1, pca.dim)))
-        job = _PCAJob(blocks, pca.generations, self.history.epoch, rows)
+        job = _PCAJob(blocks, pca.generations, self.history.epoch, rows, canonical)
         job.done.connect(self._big_fit_done)
         job.finished.connect(lambda j=job: _forget_job(j))
         self._job = job
         _LIVE_JOBS.add(job)
         job.start()
 
-    def _big_fit_done(self, payload: tuple[int, int, Any]) -> None:
-        epoch, generations, result = payload
+    def _big_fit_done(self, payload: tuple[_PCAJob, int, int, Any]) -> None:
+        job, epoch, generations, result = payload
+        if job is not self._job:
+            return  # 앞 기록(되감기·다른 실행)의 작업: 지금 도는 작업을 잊지 않는다
         self._job = None
         pca = self.history.ensure_pca()
         if result is None or pca is None or epoch != self.history.epoch:
             return
-        refitting = pca.axes is not None
+        refitting = pca.axes is not None and not job.canonical
+        if job.canonical:
+            pca.axes = None
         mean, axes, explained = result
         pca.set_axes(mean, axes, explained, generations=generations)
         if refitting:
@@ -383,6 +416,7 @@ class GeneMapTile(_WatchTile):
     # -- 그리기 ---------------------------------------------------------------
     def _clear_items(self) -> None:
         self.trail.setData([], [])
+        self.trail_rest.setData([], [])
         for item in (*self.ghosts, self.points, self.rep_ring, self.champion, self.start):
             item.clear()
         self._drawn = []
@@ -429,7 +463,10 @@ class GeneMapTile(_WatchTile):
             return
         pca = h.ensure_pca()
         assert pca is not None
-        if pca.axes is None or (pca.wants_fit() and not self.dash.flipping):
+        loading = self.dash.history_loading is not None
+        if self._fit_all and not loading:
+            self._fit(pca, canonical=True)
+        elif pca.axes is None or (pca.wants_fit() and not self.dash.flipping and not loading):
             self._fit(pca)
         if pca.axes is None:
             self._clear_items()
@@ -461,7 +498,7 @@ class GeneMapTile(_WatchTile):
                 continue
             self.ghosts[k].setData(pos=gp)
             self._drawn.append((g, gp, np.arange(len(gp)) if ge.obs is not None else np.array([-1]), "ghost"))
-        self._draw_trail(pca)
+        self._draw_trail(pca, target)
         self._special = []
         champ = h.champion_entry_at(gen)
         if champ is not None:
@@ -490,27 +527,36 @@ class GeneMapTile(_WatchTile):
         focus_entry = h.entry(gen)
         if target != gen and focus_entry is not None and focus_entry.obs is not None:
             notes.append(S.DASH_GENOME_STRIDE.format(k=focus_entry.obs.genome_stride, gen=target))
-        if e.obs is None:
-            notes.append(S.DASH_OLD_RUN_NOTE)
         first_obs = h.first_observed
+        if e.obs is None:
+            # 'v1.2보다 먼저'라고 말할 수 있는 것은 v1.0 열 머리(learner 열 없음) 실행의 첫 기록 앞 세대뿐이다. 관찰을 끈
+            # 학습(--no-observe), 요약 실패, 검사에서 떨어진 세대는 v1.2 세대라도 기록이 없다
+            old = not math.isfinite(self.dash.learner_max) and (first_obs is None or target < first_obs)
+            notes.append(S.DASH_OLD_RUN_NOTE if old else S.DASH_NO_OBS_NOTE)
         if first_obs is not None and h.unobserved_count and h.gens and first_obs > h.gens[0]:
             notes.append(S.DASH_OBSERVE_FROM.format(gen=first_obs))
         notes.append(self._refit_note)
         notes.append(self.loading_note())
         self.set_notes(notes)
 
-    def _draw_trail(self, pca: hs.GenePCA) -> None:
+    def _draw_trail(self, pca: hs.GenePCA, upto: int) -> None:
+        """집단 가운데가 지나온 길: upto세대(보이는 점의 세대)까지. 그 뒤 길은 보이지 않는 선으로만 두어(trail_rest) 화면
+        범위가 전체 길을 담게 한다: 「세대 넘겨 보기」 동안 길이 자라도 지도가 들썩이지 않는다."""
         trail = self.history.trail()
         missing = [(g, mean) for g, _learner, mean in trail if g not in self._trail_proj]
         if missing:  # 축이 바뀐 뒤 처음이면 모든 세대를 한 번에 투영
             proj = pca.project(np.vstack([m for _g, m in missing]))
             for (g, _m), p in zip(missing, proj, strict=True):
                 self._trail_proj[g] = p
-        xs: list[float] = []
-        ys: list[float] = []
+        parts: tuple[tuple[list[float], list[float]], tuple[list[float], list[float]]] = (([], []), ([], []))
         prev: int | None = None
+        last: tuple[float, float] | None = None
         for g, learner, _mean in trail:
             p = self._trail_proj[g]
+            xs, ys = parts[0] if g <= upto else parts[1]
+            if g > upto and not xs and last is not None:
+                xs.append(last[0])  # 뒤 길은 보이는 길 끝에서 잇는다
+                ys.append(last[1])
             if prev is not None and learner is not None and learner != prev:
                 xs.append(math.nan)
                 ys.append(math.nan)
@@ -518,7 +564,10 @@ class GeneMapTile(_WatchTile):
                 prev = learner
             xs.append(float(p[0]))
             ys.append(float(p[1]))
-        self.trail.setData(np.array(xs), np.array(ys))
+            if g <= upto:
+                last = (float(p[0]), float(p[1]))
+        self.trail.setData(np.array(parts[0][0]), np.array(parts[0][1]))
+        self.trail_rest.setData(np.array(parts[1][0]), np.array(parts[1][1]))
 
     def entries(self) -> list[_Entry]:
         t = self.theme

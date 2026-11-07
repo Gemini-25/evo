@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import math
 import os
 import threading
@@ -336,6 +337,41 @@ def _pick(run: _Run, who: str, budget: float | None, name: str) -> tuple[RaceEnt
     return entry, note
 
 
+def _branch_or_time_tag(run: _Run) -> str:
+    """같은 이름의 칸을 가르는 꼬리말: 분기한 실행이면 「g세대에서 분기」, 아니면 만든 때(월-일 시:분), 없으면 폴더 이름."""
+    parent = run.info.get("parent")
+    if isinstance(parent, dict):
+        g = parent.get("generation")
+        if isinstance(g, int) and not isinstance(g, bool):
+            return S.RACE_LANE_BRANCH_TAG.format(gen=g)
+    created = run.info.get("created")
+    if isinstance(created, str):
+        try:
+            return dt.datetime.fromisoformat(created).strftime("%m-%d %H:%M")
+        except ValueError:
+            pass
+    return run.path.name
+
+
+def _unique_names(names: Sequence[str], runs: Sequence[_Run]) -> list[str]:
+    """칸 이름이 겹치면(분기와 그 부모, 방법·시드가 같은 두 실행) 꼬리말을 붙여 가른다: 분기 세대·만든 때 → 폴더 이름 →
+    순번. 칸 제목, 결과 줄, 겹쳐 보기 범례, 경주 영상이 모두 이 이름을 쓴다."""
+    out = list(names)
+    tags = (_branch_or_time_tag, lambda r: r.path.name)
+    for tag in tags:
+        dup = {n for n in out if out.count(n) > 1}
+        if not dup:
+            return out
+        out = [S.RACE_LANE_DUP.format(name=base, tag=tag(r)) if cur in dup else cur
+               for base, cur, r in zip(names, out, runs, strict=True)]
+    seen: dict[str, int] = {}
+    final = []
+    for n in out:
+        seen[n] = seen.get(n, 0) + 1
+        final.append(n if out.count(n) == 1 else S.RACE_LANE_DUP.format(name=n, tag=seen[n]))
+    return final
+
+
 def entries_from_runs(runs: Sequence[tuple[Path, str]], who: str) -> tuple[list[RaceEntry], list[str], int | None]:
     """비교 화면의 실행 경주 칸. runs = (실행 폴더, 그래프 색) 목록(그래프 순서).
 
@@ -360,12 +396,10 @@ def entries_from_runs(runs: Sequence[tuple[Path, str]], who: str) -> tuple[list[
         values = [v for r in loaded if math.isfinite(v := r.last_evaluations())]
         budget = int(min(values)) if values else None
     several_envs = len({r.env_name for r in loaded}) > 1
+    names = [S.RACE_LANE_RUN_ENV.format(env=r.env_name, method=r.method_name, seed=r.seed) if several_envs
+             else S.RACE_LANE_RUN.format(method=r.method_name, seed=r.seed) for r in loaded]
     entries: list[RaceEntry] = []
-    for r in loaded:
-        if several_envs:
-            name = S.RACE_LANE_RUN_ENV.format(env=r.env_name, method=r.method_name, seed=r.seed)
-        else:
-            name = S.RACE_LANE_RUN.format(method=r.method_name, seed=r.seed)
+    for r, name in zip(loaded, _unique_names(names, loaded), strict=True):
         try:
             entry, note = _pick(r, who, budget, name)
         except _Skip as exc:

@@ -167,11 +167,16 @@ def _progress_suffix(trainer: Trainer, row: dict[str, Any]) -> str:
     return S.TRAIN_PROGRESS_ATTEMPT.format(n=row["restarts"] + 1)
 
 
-def _progress(trainer: Trainer, state: dict[str, float]) -> Any:
+def _progress(trainer: Trainer, state: dict[str, Any]) -> Any:
     def on_generation(row: dict[str, Any]) -> None:
         note = _switch_text(trainer, row)
         if note is not None:  # 학습 방법 교체는 진행 줄 간격과 상관없이 바로 알린다
             say(note)
+        problem = trainer.observe_problem
+        if problem and problem != state.get("observe"):
+            # 관찰 기록 실패(D9): 학습은 그대로 이어진다. 처음 한 번(더 무거운 실패로 바뀌면 한 번 더) 바로 알린다
+            state["observe"] = problem
+            warn(problem)
         now = time.perf_counter()
         if now - state["last"] < 2.0:
             return

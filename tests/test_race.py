@@ -256,6 +256,46 @@ def test_old_runs_too_many_and_unreadable(runs: Runs, tmp_path: Path) -> None:
         M.entries_from_runs([], "first")
 
 
+def test_branch_and_parent_get_distinct_lane_names(tmp_path: Path) -> None:
+    """분기한 실행은 부모와 방법·시드가 같다: 칸 이름(칸 제목, 결과 줄, 겹쳐 보기 범례, 경주 영상)에 꼬리말을 붙여
+    가른다. 방법·시드가 같은 남남 실행도 만든 때로 가른다. 이름이 겹치지 않으면 그대로."""
+    import json
+
+    from evolab.runs.catalog import branch_run
+
+    config = TrainConfig(method="cmaes", run_seed=7, popsize=4, trials=2, validate_every=1000, validation_seeds=2,
+                         validation_candidates=1, checkpoint_every=2, max_generations=2)
+    base = tmp_path / "runs"
+    store = create_run(base, LANDER_TEXT, compile_env(LANDER_TEXT), config, 0)
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, config, pool, store, observe=False)
+        t.run()
+    parent = store.root
+    child = branch_run(parent, 2, base)
+    entries, warnings, _ = M.entries_from_runs([(parent, COLORS[0]), (child, COLORS[1])], "last")
+    base_name = S.RACE_LANE_RUN.format(method=S.METHOD_NAMES["cmaes"], seed=7)
+    labels = [e.label for e in entries]
+    assert len(set(labels)) == 2 and all(label.startswith(base_name) for label in labels)
+    assert labels[1] == S.RACE_LANE_DUP.format(name=base_name, tag=S.RACE_LANE_BRANCH_TAG.format(gen=2))
+    assert warnings == [S.RACE_NO_CHAMPION.format(name=label, gen=2) for label in labels]  # 알림도 가른 이름으로
+    # 방법·시드가 같은 남남 실행 둘(분기 아님): 만든 때로, 그것도 같으면 폴더 이름으로
+    twin = base / "twin"
+    shutil.copytree(parent, twin)
+    info = json.loads((twin / "run.json").read_text(encoding="utf-8-sig"))
+    info["created"] = "2026-01-02T03:04:05"
+    (twin / "run.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+    entries, _, _ = M.entries_from_runs([(parent, COLORS[0]), (twin, COLORS[1])], "last")
+    assert entries[1].label == S.RACE_LANE_DUP.format(name=base_name, tag="01-02 03:04")
+    assert entries[0].label != entries[1].label
+    same = base / "same"
+    shutil.copytree(parent, same)
+    entries, _, _ = M.entries_from_runs([(parent, COLORS[0]), (same, COLORS[1])], "last")
+    assert [e.label for e in entries] == [S.RACE_LANE_DUP.format(name=base_name, tag=r.name) for r in (parent, same)]
+    # 겹치지 않으면 꼬리말이 없다
+    entries, _, _ = M.entries_from_runs([(parent, COLORS[0])], "last")
+    assert entries[0].label == base_name
+
+
 def test_ranks_with_ties() -> None:
     def entry(h: str) -> RaceEntry:
         return RaceEntry("x", "", "#fff", "", h, np.zeros(3), 1)
@@ -503,6 +543,65 @@ def test_race_gif_frames_and_grid(qtbot: Any, runs: Runs, tmp_path: Path) -> Non
     with Image.open(path) as im:
         assert im.size == (640, 200)
         assert im.n_frames == race_frame_count(max(durations[:2]))
+
+
+def test_gif_frames_are_written_one_by_one_not_kept(qtbot: Any, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """GIF 쓰기는 프레임을 쌓아 두지 않는다: 프레임 하나를 만들면 바로 팔레트 색으로 바꿔 파일에 쓴다(6칸 60초 경주의
+    RGB32 프레임을 다 쌓으면 2GB가 넘었다). 같은 프레임이 이어지면 앞 프레임 시간에 더한다(전과 같은 결과)."""
+    from PIL import Image
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    from evolab.app.export import video as V
+
+    path = tmp_path / "s.gif"
+    tmp = path.with_name(path.name + ".tmp")
+    written: list[int] = []
+    real_add = V._GifWriter.add
+
+    def add(self: Any, img: Any) -> None:
+        real_add(self, img)
+        written.append(self.count)
+
+    monkeypatch.setattr(V._GifWriter, "add", add)
+
+    def frames() -> Any:
+        for k in range(12):
+            assert len(written) == k  # 앞 프레임은 모두 이미 GIF에 썼다(만들고 쓰기가 한 장씩 번갈아)
+            img = QImage(64, 40, QImage.Format.Format_RGB32)
+            img.fill(QColor(0, 0, 0))
+            p = QPainter(img)
+            p.fillRect(4 * (k // 2), 10, 6, 6, QColor(255, 255, 255))  # 두 장씩 같은 그림(상자가 옮겨 간다)
+            p.end()
+            yield img
+
+    assert V.save_gif(frames(), path) == path and not tmp.exists()
+    assert written == list(range(1, 13))
+    with Image.open(path) as im:
+        assert im.n_frames == 6 and im.info["duration"] == 100  # 같은 두 장은 하나로(50ms × 2)
+    with pytest.raises(ValueError):
+        V.save_gif(iter(()), tmp_path / "none.gif")
+    assert not (tmp_path / "none.gif").exists() and not (tmp_path / "none.gif.tmp").exists()
+
+
+def test_race_view_reports_memory_error_instead_of_crashing(qtbot: Any, runs: Runs, owner: QWidget, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    from evolab.app.export import video as V
+
+    (a, b), _, _ = M.entries_from_runs([(runs.a, COLORS[0]), (runs.b, COLORS[1])], "last")
+    dlg = show_race(owner, [a, b], title=S.RACE_TITLE)
+    view = dlg.view
+    wait_ready(qtbot, view)
+    errors: list[str] = []
+    view.show_error = errors.append  # type: ignore[method-assign]
+
+    def no_memory(*_a: Any, **_k: Any) -> Any:
+        raise MemoryError
+
+    monkeypatch.setattr(V, "export_race_gif", no_memory)
+    assert view.save_gif(tmp_path / "x.gif") is None
+    assert errors == [S.VIDEO_NO_MEMORY]
+    dlg.close()
 
 
 def test_race_view_saves_gif(qtbot: Any, runs: Runs, owner: QWidget, tmp_path: Path) -> None:

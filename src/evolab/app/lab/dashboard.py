@@ -1326,6 +1326,9 @@ class Dashboard(QWidget):
         self.brain_source: BrainSource | None = None
         self.focus: int | None = None
         """보는 세대(None = 최신 따라가기)."""
+        self.follow: int | None = None
+        """따라가는 세대(보는 세대가 None일 때 타일이 보이는 세대): 관전 중이면 캔버스가 재생 중인 세대. None이면 기록의
+        마지막 세대(set_follow)."""
         self.play_time = 0.0
         """show_time으로 받은 마지막 재생 시각(초)."""
         self.flipping = False
@@ -1357,7 +1360,7 @@ class Dashboard(QWidget):
         self.axis_box = QComboBox()
         for a in AXES:
             self.axis_box.addItem(S.DASH_AXIS_NAMES[a], a)
-        self.axis_box.setToolTip(S.DASH_AXIS_TOOLTIP)
+        self.axis_box.setToolTip(S.DASH_AXIS_TOOLTIP_V12)  # 몸 수치 추이도 가로축을 따른다(v1.2)
         self.axis_box.currentIndexChanged.connect(lambda _i: self.set_axis(str(self.axis_box.currentData())))
         bar.addWidget(self.axis_box)
         bar.addStretch(1)
@@ -1470,6 +1473,7 @@ class Dashboard(QWidget):
         self._clear_learner()
         self._clear_history()
         self.focus = None
+        self.follow = None
         self.brain_source = None
         self._refresh_all()
 
@@ -1666,6 +1670,20 @@ class Dashboard(QWidget):
             self._loader.requestInterruption()
             self._loader = None
 
+    def shutdown(self) -> None:
+        """창을 닫을 때: 배경 읽기·유전자 지도 PCA·뇌 연결선 스레드를 멈추고 끝날 때까지 기다린다. 이 스레드들은 주인이
+        없는 파이썬 객체라 프로그램이 끝나며 지워질 때 아직 돌면 Qt가 프로세스를 끝내 버린다(abort). 앞서 놓은 읽기
+        (_stop_loader는 참조만 놓는다)까지 모두 기다린다. 남은 결과는 꼬리표가 달라 버려진다."""
+        from evolab.app.lab import brain_view, history, watch_tiles
+
+        self._load_tag += 1
+        self._stop_loader()
+        self._pending_load = None
+        self.history_loading = None
+        history.stop_loaders()
+        watch_tiles.wait_jobs()
+        brain_view.wait_jobs()
+
     def _clear_history(self) -> None:
         self._load_tag += 1  # 아직 도는 앞 읽기의 결과는 버린다(되감기·다른 실행)
         self._stop_loader()
@@ -1697,6 +1715,10 @@ class Dashboard(QWidget):
         self.history.load_summary = dict(summary)
         self.history_loading = None
         self._loader = None
+        for tid in FUN_TILE_IDS:
+            hook = getattr(self._tiles[tid], "history_loaded", None)
+            if callable(hook):  # 유전자 지도: 읽은 모든 세대로 축을 맞춘다(읽는 동안 보던 쪽과 상관없이 같은 축)
+                hook()
         self._invalidate(FUN_TILE_IDS)
 
     def wait_history(self, timeout_ms: int = 10000) -> bool:
@@ -1748,9 +1770,24 @@ class Dashboard(QWidget):
         self.focus = g
         self._invalidate(FUN_TILE_IDS)
 
+    def set_follow(self, gen: int | None) -> None:
+        """따라가는 세대(실험실: 관전 중 캔버스가 재생 중인 세대). 보는 세대(set_focus)가 있으면 그쪽이 먼저다."""
+        g = None if gen is None else int(gen)
+        if g == self.follow:
+            return
+        self.follow = g
+        if self.focus is None:
+            self._invalidate(FUN_TILE_IDS)
+
     def view_generation(self) -> int | None:
-        """타일이 보여 줄 세대: 보는 세대, 따라가는 중이면 기록의 마지막 세대(없으면 None)."""
-        return self.focus if self.focus is not None else self.history.latest
+        """타일이 보여 줄 세대: 보는 세대, 따라가는 중이면 따라가는 세대(관전 중 재생 세대), 그것도 없으면 기록의 마지막
+        세대(없으면 None)."""
+        if self.focus is not None:
+            return self.focus
+        latest = self.history.latest
+        if self.follow is not None and latest is not None:
+            return min(self.follow, latest)
+        return latest
 
     def set_flipping(self, on: bool) -> None:
         """「세대 넘겨 보기」 중이면 True(그동안 유전자 지도 축을 다시 맞추지 않는다)."""
