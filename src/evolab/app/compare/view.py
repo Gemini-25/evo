@@ -1252,13 +1252,15 @@ class CompareView(QWidget):
             if partial.any():
                 any_value = True
                 part = np.where(partial, curve.mean, _NAN)
-                # 실선 평균과 이어지게 경계 점을 넣는다
+                # 실선 평균과 이어지게, 일부 구간이 있는 쪽의 경계 점을 넣는다
                 if full.any():
                     a, b = int(np.flatnonzero(full)[0]), int(np.flatnonzero(full)[-1])
-                    part[a] = curve.mean[a]
-                    part[b] = curve.mean[b]
+                    if partial[:a].any():
+                        part[a] = curve.mean[a]
+                    if partial[b + 1:].any():
+                        part[b] = curve.mean[b]
                 x, y = step_xy(curve.x, part) if step else (curve.x, part)
-                dashed = pg.PlotCurveItem(x, y, pen=_pen(_blend(s.color, t.surface, 0.7), 1.3, Qt.PenStyle.DashLine),
+                dashed = pg.PlotCurveItem(x, y, pen=_pen(_blend(s.color, t.surface, 0.85), 1.6, Qt.PenStyle.DashLine),
                                           connect="finite")
                 dashed.setZValue(5)
                 p.addItem(dashed)
@@ -1266,7 +1268,7 @@ class CompareView(QWidget):
             if curve.n > 1:
                 legend.append(self._legend_entry(_blend(s.color, t.surface, 0.35), GLYPH_FILL, S.CMP_LEGEND_BAND))
             if partial.any():
-                legend.append(self._legend_entry(_blend(s.color, t.surface, 0.7), GLYPH_DASH, S.CMP_LEGEND_PARTIAL))
+                legend.append(self._legend_entry(_blend(s.color, t.surface, 0.85), GLYPH_DASH, S.CMP_LEGEND_PARTIAL))
         self._target_line = pg.InfiniteLine(
             angle=0,
             movable=False,

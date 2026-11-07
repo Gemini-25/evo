@@ -50,6 +50,8 @@ a = Analysis(
     runtime_hooks=[],
     excludes=EXCLUDES,
     noarchive=False,
+    # 에디터 속성 패널이 칸 설명(풍선 도움말)을 모델 소스의 docstring에서 읽으므로 소스도 넣는다.
+    module_collection_mode={"evolab.spec.model": "pyz+py"},
 )
 pyz = PYZ(a.pure)
 

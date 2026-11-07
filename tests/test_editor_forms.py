@@ -115,7 +115,7 @@ def test_panel_hint_selection_and_header(qtbot: Any, lander: EnvDocument) -> Non
     assert lander.find(("actuators", "main")) is None and panel.ref is None and panel.hint.isVisible()
 
 
-def S_kind(kind: str) -> str:  # noqa: N802
+def S_kind(kind: str) -> str:
     from evolab.app.editor.forms import kind_name
 
     return kind_name(kind)
@@ -577,3 +577,36 @@ def test_undo_while_panel_open_updates_in_place(qtbot: Any, lander: EnvDocument)
     assert panel.ref is None
     lander.undo_stack.undo()  # 되돌려도 선택은 비어 있다(문서 규칙)
     assert lander.find(("actuators", "main")) is not None
+
+
+def test_track_car_rays_and_region_shape(qtbot: Any, car: EnvDocument) -> None:
+    panel = _panel(qtbot, car)
+    tabs = _tabs(qtbot, car)
+    car.select([("sensors", "ray")])
+    s = car.find(("sensors", "ray"))
+    count = panel.form.field("count")
+    assert count is not None
+    count.editor.setValue(9)  # type: ignore[union-attr]
+    assert car.get(("sensors", s, "count")) == 9
+    hits = panel.form.field("hits")
+    assert hits is not None and hits.pick is not None  # type: ignore[attr-defined]
+    menu = hits.pick.menu()  # type: ignore[attr-defined]
+    menu.aboutToShow.emit()
+    names = [a.text() for a in menu.actions()]
+    assert "tag.wall" in names and "track.walls" in names
+    next(a for a in menu.actions() if a.text() == "tag.car").trigger()
+    assert car.get(("sensors", s, "hits")) == ["tag.wall", "tag.car"]
+    car.run_check()
+    assert tabs.brain_tab.param_count == 11 * 16 + 16 + 16 * 2 + 2
+    # 영역: 모양 하나를 고르는 묶음
+    ref = car.add("regions", {"id": "goal", "kind": "goal", "shape": {"kind": "box", "w": 4.0, "h": 2.0}})
+    assert panel.ref == ref
+    i = car.find(ref)
+    kind = panel.form.field("shape", "kind")
+    assert isinstance(kind, UnionKindField)
+    _choose(kind.editor, "circle")  # type: ignore[arg-type]
+    assert car.get(("regions", i, "shape")) == {"kind": "circle", "r": 0.5}
+    r = panel.form.field("shape", "r")
+    _type(qtbot, r.editor, "3")  # type: ignore[union-attr, arg-type]
+    assert car.get(("regions", i, "shape", "r")) == 3.0
+    assert compile_env(car.data)

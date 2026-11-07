@@ -99,6 +99,8 @@ class RecordsView(QWidget):
     resume_requested = Signal(Path, int)
     """(실행 폴더, 체크포인트 세대)에서 이어 간다. 최신이 아닌 체크포인트였다면 이미 분기한 새 폴더다."""
     clone_requested = Signal(Path)
+    compare_requested = Signal(list)
+    """고른 실행 폴더들(list[Path])을 비교 화면에 겹쳐 그린다."""
     """이 실행의 환경과 설정으로 새 실행을 만든다(catalog.clone_settings)."""
 
     def __init__(self, runs_dir_provider: Callable[[], Path] = paths.runs_dir, parent: QWidget | None = None) -> None:
@@ -118,7 +120,8 @@ class RecordsView(QWidget):
         self.table = QTableWidget(0, len(COLUMN_TITLES))
         self.table.setHorizontalHeaderLabels(list(COLUMN_TITLES))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 여러 줄을 골라 '비교'할 수 있다. 열기·이어하기 같은 단일 동작은 한 줄만 골랐을 때 된다.
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         # 메모 칸만 고칠 수 있다(두 번 누르기 또는 F2). 다른 칸을 두 번 누르면 연다.
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
@@ -145,9 +148,10 @@ class RecordsView(QWidget):
         self.clone_button = button(S.REC_CLONE, self._on_clone, S.REC_CLONE_TIP)
         self.memo_button = button(S.REC_EDIT_MEMO, self._on_edit_memo)
         self.delete_button = button(S.REC_DELETE, self._on_delete, S.REC_DELETE_TIP)
+        self.compare_button = button(S.CMP_RECORDS_BUTTON, self._on_compare, S.CMP_RECORDS_BUTTON_TIP)
 
         buttons = QHBoxLayout()
-        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button):
+        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.compare_button):
             buttons.addWidget(b)
         buttons.addStretch(1)
         buttons.addWidget(self.delete_button)
@@ -267,6 +271,15 @@ class RecordsView(QWidget):
             return None
         return self._summary_at(rows.pop())
 
+    def selected_runs(self) -> list[RunSummary]:
+        rows = sorted({i.row() for i in self.table.selectedItems()})
+        return [s for s in (self._summary_at(r) for r in rows) if s is not None]
+
+    def _on_compare(self) -> None:
+        runs = [s.path for s in self.selected_runs() if s.ok]
+        if runs:
+            self.compare_requested.emit(runs)
+
     def select_run(self, path: Path) -> bool:
         """이 폴더의 줄을 고른다. 목록에 없으면 False."""
         for row in range(self.table.rowCount()):
@@ -291,6 +304,7 @@ class RecordsView(QWidget):
         for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button):
             b.setEnabled(ok)
         self.delete_button.setEnabled(s is not None and not self.is_busy(s.path))
+        self.compare_button.setEnabled(any(r.ok for r in self.selected_runs()))
 
     # ------------------------------------------------------------------
     # 동작 (대화상자 없이 부를 수 있는 것)

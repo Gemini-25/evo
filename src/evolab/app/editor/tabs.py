@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QPushButton,
     QScrollArea,
     QSplitter,
     QStyle,
@@ -38,7 +37,14 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
-from evolab.app.editor.document import EnvDocument, JsonPath, Ref, get_path, set_path, where_to_ref
+from evolab.app.editor.document import (
+    EnvDocument,
+    JsonPath,
+    Ref,
+    get_path,
+    set_path,
+    where_to_ref,
+)
 from evolab.app.editor.forms import (
     ISSUE_COLOR,
     FieldWidget,
@@ -48,10 +54,9 @@ from evolab.app.editor.forms import (
     UnionKindField,
     field_name,
     field_tip,
-    fields_of,
     issues_at,
-    kinds_of,
     kind_name,
+    kinds_of,
     make_field,
     model_for,
     new_item,
@@ -425,10 +430,14 @@ class _MasterDetail(QWidget):
         inner_lay.setContentsMargins(0, 0, 4, 0)
         inner_lay.addWidget(self.detail)
         inner_lay.addStretch(1)
-        box_lay.addWidget(_scroll(inner), 1)
+        area = _scroll(inner)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        box_lay.addWidget(area, 1)
+        box.setMinimumWidth(self.fontMetrics().averageCharWidth() * 52)
         split.addWidget(box)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
         self.splitter = split
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -641,6 +650,28 @@ class EvaluationTab(QWidget):
         self.note.setVisible(n is not None)
 
 
+_CHANNEL_CACHE: list[Any] = [None, {}]
+"""[마지막으로 읽은 doc.data 사전, {"inputs"/"outputs": 채널 목록 또는 None}]. 문서는 편집마다 새 사전을 쓴다."""
+
+
+def _channel_table(doc: EnvDocument) -> dict[str, list[tuple[str, str]] | None]:
+    """뇌 입력·출력 후보 채널. 같은 내용이면 다시 읽지 않는다(입력·출력 목록이 편집마다 함께 묻는다)."""
+    if _CHANNEL_CACHE[0] is doc.data:
+        return _CHANNEL_CACHE[1]  # type: ignore[no-any-return]
+    out: dict[str, list[tuple[str, str]] | None]
+    try:
+        env = parse_env(doc.data)
+    except EnvFileError:
+        out = {"inputs": None, "outputs": None}
+    else:
+        sensors = {o.id: o.label for o in env.sensors}
+        actuators = {o.id: o.label for o in env.actuators}
+        out = {"inputs": [(c.name, sensors.get(c.owner, "")) for c in sy.sensor_channels(env)],
+               "outputs": [(c.name, actuators.get(c.owner, "")) for c in sy.actuator_channels(env)]}
+    _CHANNEL_CACHE[0] = doc.data
+    _CHANNEL_CACHE[1] = out
+    return out
+
 class ChannelList(QWidget):
     """뇌 입력 또는 출력 순서: 채널 목록(체크 = 씀) + 위로·아래로, 또는 '전부(선언 순서)'."""
 
@@ -695,14 +726,8 @@ class ChannelList(QWidget):
 
     def _channels(self) -> list[tuple[str, str]] | None:
         """(채널 이름, 그 센서·구동기의 표시 이름)."""
-        try:
-            env = parse_env(self.doc.data)
-        except EnvFileError:
-            return None
-        owners = env.sensors if self.key == "inputs" else env.actuators
-        labels = {o.id: o.label for o in owners}
-        chans = sy.sensor_channels(env) if self.key == "inputs" else sy.actuator_channels(env)
-        return [(c.name, labels.get(c.owner, "")) for c in chans]
+        return _channel_table(self.doc).get(self.key)
+
 
     def value(self) -> Any:
         return self.doc.get(self.path, "all")

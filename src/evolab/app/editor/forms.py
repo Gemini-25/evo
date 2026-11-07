@@ -699,11 +699,11 @@ def rename(doc: EnvDocument, ref: Ref, new_id: str) -> bool:
     esc = re.escape(old)
     if section == "params":
         rx_expr = re.compile(rf"(?<![A-Za-z0-9_.])p\.{esc}(?![A-Za-z0-9_])")
-        expr_sub: Callable[[str], str] = lambda s: rx_expr.sub(f"p.{new_id}", s)  # noqa: E731
+        expr_sub: Callable[[str], str] = lambda s: rx_expr.sub(f"p.{new_id}", s)
         plain_sub: Callable[[str], str] | None = None
     elif section == "randomize":
         rx_expr = re.compile(rf"(?<![A-Za-z0-9_.])r\.{esc}(?![A-Za-z0-9_])")
-        expr_sub = lambda s: rx_expr.sub(f"r.{new_id}", s)  # noqa: E731
+        expr_sub = lambda s: rx_expr.sub(f"r.{new_id}", s)
         plain_sub = None
     else:
         rx_word = re.compile(rf"(?<![A-Za-z0-9_.])(gen\.)?{esc}(?![A-Za-z0-9_])")
@@ -817,7 +817,7 @@ def _mark(w: QWidget, invalid: bool, issue: bool) -> None:
 class _NoWheelSpin(QSpinBox):
     """포커스가 없을 때는 휠을 무시한다(스크롤하다 값이 바뀌지 않게)."""
 
-    def wheelEvent(self, e: Any) -> None:  # noqa: N802
+    def wheelEvent(self, e: Any) -> None:
         if self.hasFocus():
             super().wheelEvent(e)
         else:
@@ -825,7 +825,7 @@ class _NoWheelSpin(QSpinBox):
 
 
 class _NoWheelCombo(QComboBox):
-    def wheelEvent(self, e: Any) -> None:  # noqa: N802
+    def wheelEvent(self, e: Any) -> None:
         if self.hasFocus():
             super().wheelEvent(e)
         else:
@@ -1058,6 +1058,12 @@ class NumField(FieldWidget):
         return S.EDP_EVOLVE_PARAM_LABEL.format(owner=label or owner, field=name)
 
     def refresh(self) -> None:
+        extra_before = getattr(self, "_tip_extra", "")
+        self._refresh_value()
+        if getattr(self, "_tip_extra", "") != extra_before:
+            self._restyle()
+
+    def _refresh_value(self) -> None:
         value = self.value()
         pid = self.doc.evolve_param(self.path) if self.evolve_box is not None else None
         self._pid = pid
@@ -2465,7 +2471,7 @@ class _FocusRelay(QObject):
         super().__init__(parent)
         self._callback = callback
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.FocusIn:
             self._callback()
         return False

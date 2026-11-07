@@ -41,6 +41,7 @@ GROUP_LABELS = {
 }
 _INSTANT_HINTS = {
     "terrain_auto": S.EDC_HINT_TERRAIN_AUTO,
+    "hills_auto": S.EDC_HINT_HILLS_AUTO,
     "track_auto": S.EDC_HINT_TRACK_AUTO,
     "sensor_time": S.EDC_HINT_SENSOR_TIME,
 }
@@ -89,6 +90,13 @@ def _draw_icon(p: QPainter, tool_id: str, fg: QColor) -> None:
         p.drawPolygon(poly((2, 17), (2, 13), (6, 9), (9, 12), (13, 6), (18, 11), (18, 17)))
         use(_GREEN, 2.0)
         p.drawLine(QPointF(7, 10.5), QPointF(11, 10.5))
+    elif t == "hills_auto":
+        use(QColor("#8a93a6"), 1.2, QColor("#2a2f3a"))
+        p.drawPolygon(poly((2, 17), (2, 15), (7, 14), (10, 11), (13, 9), (16, 5), (18, 4), (18, 17)))
+    elif t == "motor":
+        p.drawEllipse(QRectF(4, 4, 12, 12))
+        p.drawLine(QPointF(10, 10), QPointF(15, 6))
+        p.drawEllipse(QRectF(8.5, 8.5, 3, 3))
     elif t in ("track_draw", "track_auto"):
         p.drawEllipse(QRectF(2, 4, 16, 12))
         p.drawEllipse(QRectF(6, 7.5, 8, 5))

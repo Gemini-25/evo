@@ -6,16 +6,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget, QWidget
 
 from evolab import __version__, paths
 from evolab.app import strings as S
-
-
-def _placeholder(text: str) -> QWidget:
-    label = QLabel(text)
-    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    return label
 
 
 class MainWindow(QMainWindow):
@@ -30,24 +24,38 @@ class MainWindow(QMainWindow):
 
             self.setWindowIcon(QIcon(str(paths.icon_path())))
 
+        from evolab.app.compare.view import CompareView
+        from evolab.app.editor.view import EditorView
         from evolab.app.lab.view import LabView
         from evolab.app.records.view import RecordsView
 
         self.tabs = QTabWidget()
+        self.editor = EditorView()
         self.lab = LabView()
+        self.compare = CompareView()
         self.records = RecordsView()
-        self.tabs.addTab(_placeholder(S.PLACEHOLDER_EDITOR), S.TAB_EDITOR)
+        self.tabs.addTab(self.editor, S.TAB_EDITOR)
         self.tabs.addTab(self.lab, S.TAB_LAB)
-        self.tabs.addTab(_placeholder(S.PLACEHOLDER_COMPARE), S.TAB_COMPARE)
+        self.tabs.addTab(self.compare, S.TAB_COMPARE)
         self.tabs.addTab(self.records, S.TAB_RECORDS)
+        self.editor.send_to_lab.connect(self._editor_to_lab)
+        self.editor.play_requested.connect(self.open_play_spec)
+        self.editor.title_changed.connect(
+            lambda t: self.tabs.setTabText(self.tabs.indexOf(self.editor), f"{S.TAB_EDITOR} · {t}"))
+        self.lab.edit_env_requested.connect(self._lab_to_editor)
+        self.records.compare_requested.connect(self._compare_runs)
         self.tabs.setCurrentWidget(self.lab)
         self.setCentralWidget(self.tabs)
         self.records.open_requested.connect(self._open_run)
         self.records.resume_requested.connect(self._resume_run)
         self.records.clone_requested.connect(self._clone_run)
-        # 학습 중인 실행은 기록 화면에서 지우거나 최신 체크포인트에서 이어 할 수 없다.
-        self.lab.run_started.connect(lambda p: (self.records.set_busy_runs([p]), self.records.refresh()))
-        self.lab.client.closed.connect(lambda: (self.records.set_busy_runs([]), self.records.refresh()))
+        # 학습 중인 실행(실험실, 반복 실행)은 기록 화면에서 지우거나 최신 체크포인트에서 이어 할 수 없다.
+        self._busy_lab: Path | None = None
+        self._busy_repeat: Path | None = None
+        self.lab.run_started.connect(lambda p: self._set_busy(lab=p))
+        self.lab.client.closed.connect(lambda: self._set_busy(lab=None))
+        self.compare.repeat_run_started.connect(lambda p: self._set_busy(repeat=p))
+        self.compare.repeat_finished.connect(lambda _ok: self._set_busy(repeat=None))
         builtin = paths.builtin_env_dir() / "lander.evoenv"
         if builtin.exists():
             self.lab.load_env(builtin)
@@ -121,6 +129,50 @@ class MainWindow(QMainWindow):
     def _forget(self, window: QWidget) -> None:
         self._play_windows = [w for w in self._play_windows if w is not window]
 
+    def _set_busy(self, **changes: Path | None) -> None:
+        if "lab" in changes:
+            self._busy_lab = changes["lab"]
+        if "repeat" in changes:
+            self._busy_repeat = changes["repeat"]
+        self.records.set_busy_runs([p for p in (self._busy_lab, self._busy_repeat) if p is not None])
+        self.records.refresh()
+
+    def _editor_to_lab(self, text: str) -> None:
+        if self.lab.can_take_env():
+            if self.lab.send_env_text(text):
+                self.tabs.setCurrentWidget(self.lab)
+                self.statusBar().showMessage(S.MAIN_ENV_SENT, 8000)
+            return
+        if self.lab.client.active:
+            QMessageBox.information(self, S.APP_NAME, S.MAIN_LAB_BUSY)
+            return
+        if self.lab.send_env_text(text):
+            self.tabs.setCurrentWidget(self.lab)
+
+    def _lab_to_editor(self, text: str, _name: str) -> None:
+        if self.editor.load_text(text, from_lab=self.lab.can_take_env()):
+            self.tabs.setCurrentWidget(self.editor)
+
+    def _compare_runs(self, runs: list) -> None:
+        self.compare.set_selected_runs(runs)
+        self.tabs.setCurrentWidget(self.compare)
+
+    def open_play_spec(self, spec: object) -> QWidget | None:
+        """컴파일한 환경으로 직접 조종 창을 연다(에디터에서)."""
+        from evolab.app.play.window import PlayWindow
+        from evolab.world.physics2d.episode import EpisodeBuildError
+
+        try:
+            window = PlayWindow(spec)  # type: ignore[arg-type]
+        except EpisodeBuildError as exc:
+            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, str(exc))
+            return None
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._play_windows.append(window)
+        window.destroyed.connect(lambda _=None, w=window: self._forget(w))
+        window.show()
+        return window
+
     def _busy(self) -> bool:
         if self.lab.client.active:
             QMessageBox.information(self, S.APP_NAME, S.MAIN_LAB_BUSY)
@@ -149,7 +201,11 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentWidget(self.lab)
 
     def closeEvent(self, event: object) -> None:  # noqa: N802
+        if not self.editor.maybe_save():
+            event.ignore()  # type: ignore[attr-defined]
+            return
         self.lab.shutdown()
+        self.compare.shutdown()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 

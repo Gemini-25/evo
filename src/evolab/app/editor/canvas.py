@@ -526,7 +526,8 @@ class _SceneBuilder:
             segment=float(g.get("segment", 1.0)), base_y=ev.num(g.get("base_y", 0.0)),
             amplitude=max(0.0, ev.num(g.get("amplitude", 4.0))),
             roughness=min(1.0, max(0.0, ev.num(g.get("roughness", 0.5)))),
-            pad_x=ev.num(pad.get("x", 0.0)) if pad else None, pad_width=ev.num(pad.get("width", 8.0), 8.0) if pad else None,
+            pad_x=ev.num(pad.get("x", 0.0)) if pad else None,
+            pad_width=ev.num(pad.get("width", 8.0), 8.0) if pad else None,
         )
         self._terrain_body(gid, hm.xs, hm.ys, float(g.get("radius", 0.1)))
         if hm.pad is not None and pad is not None:
@@ -543,7 +544,8 @@ class _SceneBuilder:
         ev = self.ev
         xr = g.get("x_range", [-20.0, 400.0])
         xs, ys = terrain.generate_hills(  # type: ignore[attr-defined]
-            int(ev.num(g.get("seed", 0.0))) & 0x7FFFFFFFFFFFFFFF, x_min=ev.num(xr[0], -20.0), x_max=ev.num(xr[1], 400.0),
+            int(ev.num(g.get("seed", 0.0))) & 0x7FFFFFFFFFFFFFFF,
+            x_min=ev.num(xr[0], -20.0), x_max=ev.num(xr[1], 400.0),
             segment=float(g.get("segment", 2.0)), base_y=ev.num(g.get("base_y", 0.0)),
             amplitude=max(0.0, ev.num(g.get("amplitude", 0.5))), growth=max(0.0, ev.num(g.get("growth", 0.01))),
             roughness=min(1.0, max(0.0, ev.num(g.get("roughness", 0.5)))), slope=ev.num(g.get("slope", 0.03)),
@@ -644,7 +646,8 @@ class _SceneBuilder:
             result: Pose
             if j is not None and str(j.get("b")) == bid:
                 parent = pose(str(j.get("a")), depth + 1)
-                pp: Pose = parent if parent is not None else (spawn if b.get("owner", "agent") == "agent" else (0.0, 0.0, 0.0))
+                fallback: Pose = spawn if b.get("owner", "agent") == "agent" else (0.0, 0.0, 0.0)
+                pp: Pose = parent if parent is not None else fallback
                 angle = pp[2] + ev.num(j.get("rest_angle", 0.0))
                 aw = geo.transform(ev.vec(j.get("anchor_a")), (pp[0], pp[1]), pp[2])
                 ab = geo.rotate(ev.vec(j.get("anchor_b")), angle)
@@ -789,8 +792,8 @@ class _SceneBuilder:
                 continue
             if kind == "fuel":
                 tank = str(s.get("tank"))
-                owner = next((str(t.get("body")) for t in acts if t.get("kind") == "thruster" and t.get("tank") == tank),
-                             None)
+                owner = next((str(t.get("body")) for t in acts
+                              if t.get("kind") == "thruster" and t.get("tank") == tank), None)
                 tb = next((b for b in self.scene.badges if b.ref == ("actuators", tank)), None)
                 body_id = owner if owner and self.scene.body(owner) else (tb.body if tb else None)
                 self.scene.badges.append(BadgeItem(ref, kind, body_id))
@@ -1362,7 +1365,8 @@ class EditorCanvas(QWidget):
                 anchor = self.world_to_screen(*joints[item.joint].pa) + QPointF(8, -18)
                 group: Any = ("j", item.joint)
             elif body is not None:
-                lo, hi = self.world_to_screen(body.bbox[0], body.bbox[1]), self.world_to_screen(body.bbox[2], body.bbox[3])
+                lo = self.world_to_screen(body.bbox[0], body.bbox[1])
+                hi = self.world_to_screen(body.bbox[2], body.bbox[3])
                 if math.hypot(hi.x() - lo.x(), hi.y() - lo.y()) < BADGE_MIN_BODY_PX:
                     continue  # 화면에서 너무 작은 물체: 확대하면 보인다
                 anchor = self.world_to_screen(*corner[body.id]) + QPointF(4, -2)

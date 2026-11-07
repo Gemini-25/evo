@@ -323,35 +323,13 @@ class EnvDocument(QObject):
         self.select([r for r in self.selection if r not in refs])
 
     def rename(self, ref: Ref, new_id: str) -> bool:
-        """id를 바꾸고, 이 id를 가리키는 곳(참조 칸, 수식, 태그 선택자 제외)도 함께 바꾼다."""
-        if not _ID_RE.match(new_id) or new_id in self.all_ids() or self.find(ref) is None:
-            return False
-        old = ref[1]
-        word = re.compile(rf"(?<![A-Za-z0-9_.]){re.escape(old)}(?![A-Za-z0-9_])")
+        """id를 바꾸고, 이 id를 가리키는 참조 칸과 수식(p.*, r.*, gen.*, 센서 채널 이름 포함)도 함께 바꾼다.
 
-        def fix(value: Any, top: bool) -> Any:
-            if isinstance(value, dict):
-                return {k: fix(v, False) for k, v in value.items()}
-            if isinstance(value, list):
-                return [fix(v, False) for v in value]
-            if isinstance(value, str):
-                if value == old:
-                    return new_id
-                if value.startswith("=") or (" " in value or "(" in value):
-                    return word.sub(new_id, value)
-            return value
+        종류(kind)·소유(owner) 같은 고정값 칸과 태그는 건드리지 않는다. 구현은 속성 패널과 같다(forms.rename).
+        """
+        from evolab.app.editor.forms import rename
 
-        def mutate(d: dict[str, Any]) -> None:
-            path = self.item_path(ref)
-            assert path is not None
-            get_path(d, path)["id"] = new_id
-            for section in [*SECTIONS, "scoring", "termination", "brain", "agent", "world"]:
-                if section in d:
-                    d[section] = fix(d[section], True)
-
-        self.edit(S.ED_UNDO_RENAME, mutate)
-        self.select([(ref[0], new_id) if r == ref else r for r in self.selection])
-        return True
+        return rename(self, ref, new_id)
 
     # ------------------------------------------------------------------
     # 진화 대상

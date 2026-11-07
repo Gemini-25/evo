@@ -39,15 +39,15 @@ Pose = tuple[float, float, float]
 TOOL_GROUPS: list[tuple[str, list[str]]] = [
     ("select", ["select"]),
     ("shapes", ["box", "circle", "poly"]),
-    ("terrain", ["terrain_line", "terrain_auto", "track_draw", "track_auto"]),
+    ("terrain", ["terrain_line", "terrain_auto", "hills_auto", "track_draw", "track_auto"]),
     ("joints", ["joint_pivot", "joint_rot_spring", "joint_weld", "joint_spring"]),
-    ("actuators", ["thruster", "fuel_tank", "vehicle"]),
+    ("actuators", ["thruster", "fuel_tank", "vehicle", "motor"]),
     ("sensors", ["sensor_rays", "sensor_body_state", "sensor_contact", "sensor_target", "sensor_joint_angle",
                  "sensor_fuel", "sensor_time"]),
     ("regions", ["region_goal", "region_hazard", "region_pad", "checkpoints", "spawn"]),
 ]
 TOOL_IDS: list[str] = [t for _, ids in TOOL_GROUPS for t in ids]
-INSTANT_TOOLS: frozenset[str] = frozenset({"terrain_auto", "track_auto", "sensor_time"})
+INSTANT_TOOLS: frozenset[str] = frozenset({"terrain_auto", "hills_auto", "track_auto", "sensor_time"})
 """고르면 바로 부품을 더하고 선택 도구로 돌아가는 도구."""
 
 TOOL_LABELS: dict[str, str] = {
@@ -57,6 +57,8 @@ TOOL_LABELS: dict[str, str] = {
     "poly": S.EDC_TOOL_POLY,
     "terrain_line": S.EDC_TOOL_TERRAIN_LINE,
     "terrain_auto": S.EDC_TOOL_TERRAIN_AUTO,
+    "hills_auto": S.EDC_TOOL_HILLS_AUTO,
+    "motor": S.EDC_TOOL_MOTOR,
     "track_draw": S.EDC_TOOL_TRACK_DRAW,
     "track_auto": S.EDC_TOOL_TRACK_AUTO,
     "joint_pivot": S.EDC_TOOL_JOINT_PIVOT,
@@ -94,6 +96,7 @@ TOOL_HINTS: dict[str, str] = {
     "thruster": S.EDC_HINT_THRUSTER,
     "fuel_tank": S.EDC_HINT_FUEL_TANK,
     "vehicle": S.EDC_HINT_VEHICLE,
+    "motor": S.EDC_HINT_MOTOR,
     "sensor_rays": S.EDC_HINT_SENSOR_BODY,
     "sensor_body_state": S.EDC_HINT_SENSOR_BODY,
     "sensor_contact": S.EDC_HINT_SENSOR_BODY,
@@ -455,6 +458,31 @@ def add_heightmap(doc: EnvDocument, pad: bool = True) -> Ref:
     if pad:
         item["pad"] = {**HEIGHTMAP_PAD, "x": clean(min(max(0.0, x0 + 10.0), x1 - 10.0))}
     return doc.add("generators", item, S.EDC_UNDO_ADD_GENERATOR)
+
+
+HILLS: dict[str, Any] = {"seed": 0, "x_range": [-20.0, 420.0], "segment": 1.0, "base_y": 0.0, "amplitude": 0.5,
+                         "growth": 0.03, "roughness": 0.6, "slope": 0.06, "flat_start": 25.0, "friction": 0.9}
+
+
+def add_hills(doc: EnvDocument) -> Ref:
+    """언덕 자동 생성: 오른쪽으로 갈수록 오르막과 굴곡이 커지는 언덕길(언덕 넘는 자동차와 같은 기본값)."""
+    item: dict[str, Any] = {"kind": "hills", "id": "ground", "label": S.EDC_LABEL_HILLS, **copy.deepcopy(HILLS)}
+    return doc.add("generators", item, S.EDC_UNDO_ADD_GENERATOR)
+
+
+def add_motor(doc: EnvDocument, joint: str, max_torque: float = 300.0, max_speed: float = 15.0) -> Ref:
+    """모터: 회전 관절(pivot, rot_spring)에 단다. 출력 +면 관절의 b 물체가 a에 대해 반시계로 돈다."""
+    j = doc.item(("joints", joint))
+    if j is None:
+        raise ToolError(S.EDC_ERR_NO_JOINT)
+    if j.get("kind") not in ("pivot", "rot_spring"):
+        raise ToolError(S.EDC_ERR_MOTOR_JOINT)
+    used = {k for a in doc.items("actuators") for key in ("keys", "keys_pos", "keys_neg", "keys_forward", "keys_back",
+                                                           "keys_left", "keys_right") for k in a.get(key, [])}
+    pos, neg = (["Left", "A"], ["Right", "D"]) if not ({"Left", "Right", "A", "D"} & used) else ([], [])
+    item = {"kind": "motor", "id": f"{joint}_motor", "label": S.EDC_LABEL_MOTOR, "joint": joint,
+            "max_torque": float(max_torque), "max_speed": float(max_speed), "keys_pos": pos, "keys_neg": neg}
+    return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
 
 
 def add_generated_track(doc: EnvDocument) -> Ref:
@@ -1435,6 +1463,21 @@ class JointAngleTool(Tool):
         pass
 
 
+class MotorTool(Tool):
+    tool_id = "motor"
+
+    def press(self, e: CanvasEvent) -> None:
+        joint = self.canvas.pick_joint(e.world)
+        if joint is None:
+            self.canvas.message(S.EDC_ERR_CLICK_JOINT)
+            return
+        self.run(lambda: add_motor(self.doc, joint))
+        self.canvas.update()
+
+    def double_click(self, e: CanvasEvent) -> None:
+        pass
+
+
 class FuelSensorTool(Tool):
     """탱크 표시나 물체를 누른다: 그 물체의 추진기가 쓰는 탱크, 없으면 첫 탱크."""
 
@@ -1632,6 +1675,10 @@ class SpawnTool(Tool):
 # ---- 선택·이동·회전 ----
 
 
+_MOVABLE = ("bodies", "regions", "checkpoints")
+"""끌어서 함께 옮기는 부품 구역(pos 또는 선 끝점)."""
+
+
 @dataclass
 class _Drag:
     kind: str
@@ -1709,7 +1756,7 @@ class SelectTool(Tool):
         doc = self.doc
         item = doc.item(hit.ref) if hit.ref else None
         if kind == "move":
-            return hit.ref is None or hit.ref[0] not in ("bodies", "regions", "checkpoints") or move_locked(doc, hit.ref)
+            return hit.ref is None or hit.ref[0] not in _MOVABLE or move_locked(doc, hit.ref)
         if kind == "rotate":
             return item is None or is_formula(item.get("angle", 0.0)) or bool(item.get("place_by"))
         if kind == "spawn":
@@ -1785,6 +1832,7 @@ class SelectTool(Tool):
     def _hover(self, e: CanvasEvent) -> None:
         hit = self.canvas.pick(e.world)
         cursor = Qt.CursorShape.ArrowCursor
+        tip = ""
         if hit is not None:
             kind = {"body": "move", "region": "move", "cp_line": "move", "rotate": "rotate", "spawn": "spawn",
                     "spawn_dir": "spawn_dir", "cp_end": "cp_end", "joint": "joint", "thruster": "thruster",
@@ -1793,9 +1841,12 @@ class SelectTool(Tool):
                 cursor = Qt.CursorShape.PointingHandCursor
             elif self._locked(kind, hit):
                 cursor = Qt.CursorShape.ForbiddenCursor
+                tip = S.EDC_LOCKED_PLACED if self._placed(hit) else S.EDC_LOCKED_FORMULA
             else:
                 cursor = Qt.CursorShape.SizeAllCursor
         self.canvas.set_hover_cursor(cursor)
+        if self.canvas.toolTip() != tip:
+            self.canvas.setToolTip(tip)
 
     # ---- 끌기 처리 ----
     def _snapper(self, e: CanvasEvent) -> Callable[[float], float] | None:
@@ -1821,7 +1872,7 @@ class SelectTool(Tool):
         assert d.pick is not None and d.pick.ref is not None
         doc = self.doc
         dw = self._world_delta(d, e)
-        refs = [d.pick.ref] + [r for r in doc.selection if r != d.pick.ref and r[0] in ("bodies", "regions", "checkpoints")]
+        refs = [d.pick.ref] + [r for r in doc.selection if r != d.pick.ref and r[0] in _MOVABLE]
         snap = self._snapper(e)
         # 누른 부품을 격자에 맞춘 이동량을 세계 좌표로 되돌려 나머지에 같은 이동을 준다.
         lead = d.pick.ref
@@ -2008,6 +2059,8 @@ def run_instant(tool_id: str, canvas: EditorCanvas) -> Ref | None:
     try:
         if tool_id == "terrain_auto":
             return add_heightmap(doc)
+        if tool_id == "hills_auto":
+            return add_hills(doc)
         if tool_id == "track_auto":
             return add_generated_track(doc)
         if tool_id == "sensor_time":
@@ -2028,6 +2081,7 @@ def make_tool(tool_id: str, canvas: EditorCanvas) -> Tool:
         "fuel_tank": FuelTankTool, "vehicle": VehicleTool, "sensor_rays": RaysTool,
         "sensor_body_state": BodyStateTool, "sensor_contact": ContactTool, "sensor_target": TargetTool,
         "sensor_joint_angle": JointAngleTool, "sensor_fuel": FuelSensorTool, "checkpoints": CheckpointTool,
+        "motor": MotorTool,
         "spawn": SpawnTool,
     }
     cls = classes.get(tool_id)

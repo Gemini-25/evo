@@ -15,10 +15,6 @@ TAB_LAB: Final = "실험실"
 TAB_COMPARE: Final = "비교"
 TAB_RECORDS: Final = "기록"
 
-PLACEHOLDER_EDITOR: Final = "환경 에디터는 M5a에서 만듭니다."
-PLACEHOLDER_LAB: Final = "실험실 화면은 M3에서 만듭니다."
-PLACEHOLDER_COMPARE: Final = "비교 화면은 M6에서 만듭니다."
-PLACEHOLDER_RECORDS: Final = "기록 화면은 M3에서 만듭니다."
 
 # 명령줄
 CLI_DESCRIPTION: Final = "진화 실험실. 명령 없이 실행하면 프로그램 창을 엽니다."
@@ -949,3 +945,239 @@ CMP_RECORDS_BUTTON_TIP: Final = "고른 실행들을 비교 화면에서 한 그
 LAB_ENV_EDIT: Final = "에디터에서 고치기"
 LAB_ENV_EDIT_TIP: Final = "이 환경을 에디터에서 엽니다. 멈춘 학습이면 고친 뒤 '실험실에 보내기'로 이어서 학습합니다."
 LAB_ENV_FROM_EDITOR: Final = "에디터에서 보낸 환경"
+# M5a 속성 패널과 아래 탭 (EDP: app/editor/forms.py, properties.py, tabs.py)
+EDP_FIELD_NAMES: Final = {
+    # 칸 이름 -> 화면 이름. "모델.칸"이 있으면 그것이 먼저다.
+    "id": "이름(id)", "label": "표시 이름", "kind": "종류", "name": "환경 이름", "description": "설명",
+    "gravity": "중력 (x, y)", "wind": "바람 (x, y)", "dt": "시간 간격(초)", "max_time": "최대 시간(초)",
+    "bounds": "경계 (왼쪽, 아래, 오른쪽, 위)", "contact_debounce": "접촉 디바운스(초)",
+    "value": "값", "evolve": "진화", "min": "최솟값", "max": "최댓값",
+    "dist": "분포", "low": "최솟값", "high": "최댓값", "mean": "평균", "std": "표준편차", "values": "고를 값들",
+    "w": "너비", "h": "높이", "offset": "중심 위치 (x, y)", "angle": "각도", "r": "반지름", "points": "꼭짓점",
+    "radii": "반지름들", "closed": "닫힌 선", "radius": "두께(반지름)",
+    "density": "밀도", "friction": "마찰", "elasticity": "탄성",
+    "owner": "소속", "type": "움직임", "pos": "위치 (x, y)", "place_by": "배치 관절", "shapes": "모양",
+    "material": "재질", "tags": "태그", "drag": "바람 항력",
+    "a": "물체 A (부모)", "b": "물체 B (자식)", "anchor_a": "A 쪽 앵커", "anchor_b": "B 쪽 앵커",
+    "rest_angle": "쉬는 각도", "stiffness": "강성", "damping": "감쇠", "rest_length": "쉬는 길이",
+    "limit": "각도 제한", "collide": "서로 부딪힘",
+    "capacity": "용량", "body": "물체", "at": "붙는 위치 (x, y)", "dir": "미는 방향(라디안)", "max_force": "최대 힘",
+    "tank": "연료 탱크", "fuel_per_s": "초당 연료", "keys": "조종 키",
+    "max_accel": "최대 가속", "max_steer": "최대 조향각", "lateral_grip": "옆미끄럼 마찰", "wheelbase": "축간 거리",
+    "max_lateral_accel": "최대 횡가속도", "keys_forward": "앞으로 키", "keys_back": "뒤로 키",
+    "keys_left": "왼쪽 키", "keys_right": "오른쪽 키",
+    "joint": "관절", "max_torque": "최대 토크", "max_speed": "최대 속도", "keys_pos": "+ 방향 키",
+    "keys_neg": "- 방향 키",
+    "fields": "항목", "frame": "좌표계", "scale": "정규화 크기", "target": "목표", "with": "닿는 대상",
+    "origin": "시작점 (x, y)", "count": "개수", "spread": "부채꼴 각도", "center": "가운데 방향",
+    "length": "길이", "hits": "감지 대상",
+    "shape": "모양", "lines": "선", "loop": "한 바퀴로 이어짐",
+    "x": "x", "y": "y", "vx": "x 속도", "vy": "y 속도", "omega": "각속도", "width": "폭",
+    "region_height": "영역 높이",
+    "seed": "시드", "x_range": "x 범위", "segment": "구간 길이", "base_y": "기준 높이", "amplitude": "높낮이",
+    "roughness": "거칠기", "pad": "착륙 패드",
+    "source": "트랙 만들기", "set_seed": "트랙 세트 시드", "set_size": "학습 트랙 수", "centerline": "중심선",
+    "segments": "구간 수", "curvature": "곡률", "length_range": "길이 범위", "checkpoints": "체크포인트",
+    "wall_radius": "벽 두께",
+    "spawn": "시작 위치", "when": "조건", "hold": "유지 시간(초)", "event": "사건", "outcome": "결과",
+    "weight": "가중치", "agg": "집계", "direction": "방향(라디안)", "actuators": "구동기", "expr": "수식",
+    "blocks": "블록", "formula": "점수 수식",
+    "inputs": "입력", "hidden": "은닉층 크기", "activation": "활성화 함수", "outputs": "출력",
+    "trials": "시험 횟수", "aggregate": "집계 방식", "target_score": "목표 점수",
+    "world": "세계", "agent": "에이전트", "scoring": "점수", "brain": "뇌", "evaluation": "평가",
+    "Joint.kind": "관절 종류", "Region.kind": "영역 종류", "Vehicle.drag": "구름 저항",
+    "HeightmapGen.radius": "지면 두께", "HeightmapGen.friction": "지면 마찰", "TrackGen.friction": "벽 마찰",
+    "TrackGen.width": "트랙 폭", "TrackGen.checkpoints": "체크포인트 수", "PadSpec.x": "패드 가운데 x",
+    "PadSpec.width": "패드 폭", "EventBlock.value": "값 종류", "Spawn.x": "x", "Spawn.y": "y",
+    "Spawn.angle": "각도", "Spawn.vx": "x 속도", "Spawn.vy": "y 속도", "Spawn.omega": "각속도",
+}
+EDP_FIELD_TIPS: Final = {
+    # 칸 도움말(모델 설명 앞에 붙는다). "모델.칸"이 있으면 그것이 먼저다.
+    "id": "다른 칸과 수식에서 이 부품을 가리키는 이름입니다.",
+    "label": "화면에 보이는 이름입니다.",
+    "dt": "물리 시간 간격(초). 기본 1/60초.",
+    "max_time": "이 시간이 지나면 timeout(시간 초과) 사건으로 끝납니다.",
+    "gravity": "중력 가속도 (x, y), m/s².",
+    "keys": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W). R, N, Space는 창 제어용이라 쓸 수 없습니다.",
+    "keys_forward": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W).",
+    "keys_back": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Down, S).",
+    "keys_left": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Left, A).",
+    "keys_right": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Right, D).",
+    "keys_pos": "직접 조종 키 이름을 쉼표로 나눠 씁니다.",
+    "keys_neg": "직접 조종 키 이름을 쉼표로 나눠 씁니다.",
+    "tags": "모양 태그를 쉼표로 나눠 씁니다. 조건과 센서에서 tag.<태그>로 가리킵니다.",
+    "with": "물체 id나 tag.<태그>를 쉼표로 나눠 씁니다.",
+    "hits": "레이가 맞는 물체 id나 tag.<태그>를 쉼표로 나눠 씁니다.",
+    "when": "참·거짓 수식('=' 없이). 예: contact(hull, tag.terrain) and hull.speed < 0.5",
+    "hold": "조건이 이 시간 동안 이어서 참이면 사건이 일어납니다.",
+    "weight": "점수 = 블록 값 × 가중치의 합(점수 수식이 없을 때). 벌점은 음수로 씁니다.",
+    "evolve": "켜면 몸 유전자가 됩니다(최솟값·최댓값이 있어야 합니다).",
+    "trials": "개체 하나를 몇 번 시험할지.",
+    "aggregate": "여러 시험 점수를 하나로 합치는 방법.",
+    "target_score": "이 점수에 이르면 학습을 멈춥니다(비우면 없음).",
+    "hidden": "은닉층마다 뉴런 수를 쉼표로 나눠 씁니다(예: 16 또는 32, 16).",
+    "fields": "읽을 상태 항목. 채널 이름은 <센서 id>.<항목>입니다.",
+    "values": "choice 분포에서 고를 값들(쉼표로 나눔).",
+    "expr": "매 스텝 계산하는 수식('=' 없이). 참은 1입니다.",
+    "inputs": "신경망 입력 순서. 켠 채널만 이 순서대로 넣습니다.",
+    "outputs": "신경망 출력 순서. 켠 채널만 이 순서대로 씁니다.",
+}
+EDP_VALUE_NAMES: Final = {
+    # 고르기 칸의 값 -> 화면 이름. "칸.값"이 있으면 그것이 먼저다.
+    "physics2d": "2D 물리", "grid": "격자",
+    "uniform": "균등", "int": "정수 균등", "normal": "정규분포", "choice": "목록에서 고르기",
+    "box": "사각형", "circle": "원", "poly": "다각형", "radial": "방사형", "chain": "선 체인",
+    "agent": "에이전트", "world": "세계", "dynamic": "움직임", "static": "고정", "kinematic": "정해진 움직임",
+    "pivot": "회전", "weld": "고정", "rot_spring": "회전 스프링", "spring": "거리 스프링",
+    "fuel_tank": "연료 탱크", "thruster": "추진기", "vehicle": "차량 구동기", "motor": "모터",
+    "body_state": "몸 상태", "target": "목표 위치", "contact": "접촉", "joint_angle": "관절 각도",
+    "fuel": "남은 연료", "time_left": "남은 시간", "rays": "레이",
+    "frame.world": "세계 좌표", "frame.body": "물체 좌표",
+    "goal": "목표", "hazard": "위험", "pad": "착륙 패드", "zone": "구역",
+    "heightmap": "지형 자동 생성", "track": "트랙", "generated": "자동 생성", "drawn": "직접 그림",
+    "success": "성공", "failure": "실패", "neutral": "중립",
+    "event": "사건 발생", "distance_to": "목표까지 거리", "progress": "진행 거리", "survival_time": "생존 시간",
+    "final_speed": "종료 속도", "tilt": "기울기", "energy": "에너지 사용", "fuel_used": "연료 사용",
+    "contact_time": "접촉 시간", "smoothness": "부드러움", "checkpoints": "체크포인트", "lap_time": "랩 시간",
+    "expr": "수식",
+    "occurred": "일어났나 (0/1)", "count": "횟수",
+    "final": "종료 시", "min": "최솟값", "mean": "평균", "max": "최댓값", "integral": "누적", "q25": "하위 25%",
+    "tanh": "tanh", "relu": "ReLU",
+    "timeout": "시간 초과", "out_of_bounds": "경계 이탈",
+    "x": "x 위치", "y": "y 위치", "vx": "x 속도", "vy": "y 속도", "speed": "속력", "angle": "각도",
+    "omega": "각속도", "v_fwd": "앞뒤 속도", "v_lat": "옆 속도",
+}
+EDP_SECTION_NAMES: Final = {
+    "bodies": "물체", "joints": "관절", "actuators": "구동기", "sensors": "센서", "regions": "영역",
+    "checkpoints": "체크포인트", "events": "사건", "generators": "생성기", "randomize": "랜덤 값",
+    "params": "매개변수", "scoring.blocks": "점수 블록", "termination": "종료 조건", "scoring": "점수",
+    "world": "세계", "agent": "시작 위치", "brain": "뇌", "evaluation": "평가",
+}
+EDP_BAD_NUMBER: Final = "숫자나 '='로 시작하는 수식을 쓰세요."
+EDP_BAD_PLAIN_NUMBER: Final = "숫자를 쓰세요(이 칸은 수식을 쓸 수 없습니다)."
+EDP_BAD_INT: Final = "정수를 쓰세요."
+EDP_BAD_CELL: Final = "표에 숫자나 수식이 아닌 칸이 있습니다."
+EDP_REQUIRED: Final = "비워 둘 수 없습니다."
+EDP_TOO_LONG: Final = "{n}자까지 쓸 수 있습니다."
+EDP_BAD_ID: Final = "이름(id)은 영문자나 _로 시작하고 영문자, 숫자, _만 쓸 수 있습니다."
+EDP_ID_TAKEN: Final = "'{id}'은(는) 이미 쓰는 이름입니다."
+EDP_BAD_REF: Final = "부품 이름(id)이나 tag.<태그>를 쓰세요."
+EDP_LIST_TIP: Final = "쉼표로 나눠 여러 개를 씁니다."
+EDP_BAD_LIST_ITEM: Final = "'{item}'은(는) 이 목록에 쓸 수 없는 값입니다."
+EDP_LIST_TOO_SHORT: Final = "적어도 {n}개는 있어야 합니다."
+EDP_UNKNOWN_VALUE: Final = "{value} (모르는 값)"
+EDP_BUILTIN_EVENT: Final = "내장 사건: {name}"
+EDP_EVOLVE: Final = "진화"
+EDP_EVOLVE_TIP: Final = "켜면 이 값이 몸 유전자가 되어 최솟값과 최댓값 사이에서 진화합니다."
+EDP_EVOLVE_ON_TIP: Final = "몸 유전자 p.{id}. 끄면 지금 초깃값으로 고정합니다."
+EDP_EVOLVE_FORMULA_TIP: Final = "수식 칸은 진화 대상으로 바꿀 수 없습니다. 숫자로 바꾸거나 매개변수 하나(=p.이름)만 가리키게 하세요."
+EDP_EVOLVE_VALUE_TIP: Final = "몸 유전자 p.{id}의 초깃값"
+EDP_EVOLVE_PARAM_LABEL: Final = "{owner} {field}"
+EDP_MIN: Final = "최소"
+EDP_MAX: Final = "최대"
+EDP_USE: Final = "사용"
+EDP_ALL: Final = "전부"
+EDP_PICK: Final = "목록에서 골라 더하기"
+EDP_ADD: Final = "추가"
+EDP_REMOVE: Final = "지우기"
+EDP_UP: Final = "위로"
+EDP_DOWN: Final = "아래로"
+EDP_ADD_ROW: Final = "줄 추가"
+EDP_REMOVE_ROW: Final = "줄 지우기"
+EDP_REMOVE_ITEM_TIP: Final = "이 {name}을(를) 지웁니다."
+EDP_COL_VALUE: Final = "값"
+EDP_ITEM_TITLE: Final = "{name} {n}"
+EDP_ADD_ITEM: Final = "{name} 추가"
+EDP_UNDO_FIELD: Final = "{name} 바꾸기"
+EDP_UNDO_KIND: Final = "종류 바꾸기"
+EDP_UNDO_ADD_ITEM: Final = "{name} 추가"
+EDP_UNDO_REMOVE_ITEM: Final = "{name} 지우기"
+EDP_UNDO_MOVE: Final = "순서 바꾸기"
+EDP_RENAME_TIP: Final = "Enter를 누르면 이름을 바꾸고, 이 이름을 가리키는 칸과 수식도 함께 고칩니다."
+EDP_RENAME_FAILED: Final = "이름을 바꾸지 못했습니다: {reason}"
+EDP_PANEL_TITLE_NONE: Final = "속성"
+EDP_PANEL_TITLE_KIND: Final = "{section} · {kind}"
+EDP_PANEL_HINT: Final = "캔버스나 아래 표에서 부품을 고르면 여기에서 속성을 고칩니다."
+EDP_PANEL_MULTI: Final = "{n}개를 골랐습니다. 첫 번째 부품을 보여 줍니다."
+EDP_PANEL_ID: Final = "이름(id)"
+EDP_PANEL_LABEL: Final = "표시 이름"
+EDP_PANEL_DELETE: Final = "지우기"
+EDP_PANEL_DELETE_TIP: Final = "이 부품을 지웁니다(되돌리기로 살릴 수 있습니다)."
+EDP_PANEL_ISSUES: Final = "이 부품의 검사 결과"
+EDP_TAB_WORLD: Final = "세계 설정"
+EDP_TAB_EVENTS: Final = "사건·종료 조건"
+EDP_TAB_SCORING: Final = "점수 블록과 수식"
+EDP_TAB_RANDOM: Final = "랜덤 범위"
+EDP_TAB_GENERATORS: Final = "생성기"
+EDP_TAB_EVAL: Final = "평가 설정"
+EDP_TAB_BRAIN: Final = "뇌 설정"
+EDP_TAB_PARAMS: Final = "매개변수"
+EDP_TAB_ISSUES: Final = "검사 결과"
+EDP_TAB_ISSUES_COUNT: Final = "검사 결과 ({n})"
+EDP_GROUP_ENV: Final = "환경"
+EDP_GROUP_WORLD: Final = "세계"
+EDP_GROUP_SPAWN: Final = "시작 위치 (에이전트 좌표의 원점)"
+EDP_GROUP_EVENTS: Final = "사건"
+EDP_GROUP_TERMINATION: Final = "종료 조건 (위가 먼저)"
+EDP_EVENTS_TIP: Final = "사건은 이름 붙은 조건입니다. 다른 수식에서 <id>, <id>.count, <id>.since로 씁니다. 내장 사건: timeout, out_of_bounds."
+EDP_TERMINATION_TIP: Final = "같은 스텝에 여러 종료 조건이 겹치면 목록 위쪽이 먼저입니다. timeout(시간 초과)이 없으면 자동으로 맨 뒤에 더합니다."
+EDP_GROUP_BLOCK: Final = "고른 블록의 설정"
+EDP_GROUP_GENERATOR: Final = "고른 생성기의 설정"
+EDP_DETAIL_PICK: Final = "표에서 줄을 고르면 종류별 설정이 여기에 나옵니다."
+EDP_DETAIL_NO_FIELDS: Final = "이 종류에는 따로 설정할 칸이 없습니다."
+EDP_FORMULA: Final = "점수 수식 (선택)"
+EDP_FORMULA_TIP: Final = "비워 두면 블록 값 × 가중치의 합이 점수입니다. 쓰면 수식이 먼저입니다: 블록 id(가중치 전 값), time, success, failure, 사건 이름을 쓸 수 있습니다."
+EDP_RANDOM_NOTE: Final = "시험마다 시험 시드로 뽑는 값입니다. 다른 칸의 수식에서 r.<id>로 씁니다(예: =r.pad_x)."
+EDP_PARAMS_NOTE: Final = "수식에서 p.<id>로 쓰는 값입니다. '진화'를 켜면 몸 유전자가 되어 최솟값~최댓값 사이에서 진화합니다."
+EDP_EVAL_TRACK_NOTE: Final = "학습 트랙 세트({n}개)가 있어 시험 횟수는 트랙 수로 정해집니다(트랙마다 한 번)."
+EDP_BRAIN_INPUTS: Final = "입력 (센서 채널)"
+EDP_BRAIN_OUTPUTS: Final = "출력 (구동기 채널)"
+EDP_BRAIN_ALL: Final = "전부 (선언 순서)"
+EDP_BRAIN_NET: Final = "신경망"
+EDP_BRAIN_PARAMS: Final = "신경망 {shape} · 뇌 파라미터 {brain}개 · 몸 유전자 {body}개 · 유전자 차원 {dim}"
+EDP_BRAIN_CHANNEL: Final = "{name}  ({label})"
+EDP_BRAIN_PARAMS_NONE: Final = "검사 오류가 있어 파라미터 수를 계산할 수 없습니다."
+EDP_BRAIN_NO_CHANNELS: Final = "파일 구조에 오류가 있어 채널 목록을 만들 수 없습니다. 검사 결과 탭을 보세요."
+EDP_BRAIN_UNKNOWN: Final = "{name} (없는 채널)"
+EDP_ISSUES_SEVERITY: Final = {"error": "오류", "warning": "경고"}
+EDP_ISSUES_HEADERS: Final = ("종류", "위치", "내용")
+EDP_ISSUES_NONE: Final = "문제가 없습니다."
+EDP_ISSUES_HINT: Final = "두 번 누르면 그 부품을 고르고 화면을 옮깁니다."
+EDP_WHERE_FILE: Final = "파일 전체"
+EDP_WHERE_REF: Final = "{section} '{id}' ({where})"
+EDP_WHERE_PATH: Final = "{section} ({where})"
+
+# M5b 에디터 도구 (lead)
+EDC_TOOL_HILLS_AUTO: Final = "언덕 자동 생성"
+EDC_TOOL_MOTOR: Final = "모터"
+EDC_HINT_HILLS_AUTO: Final = "오른쪽으로 갈수록 험해지는 언덕길을 더합니다. 수치는 아래 '생성기' 탭에서 고칩니다."
+EDC_HINT_MOTOR: Final = "회전 관절(회전, 회전 스프링)을 누르면 모터를 답니다. 출력 +는 반시계."
+EDC_LABEL_HILLS: Final = "언덕길"
+EDC_LABEL_MOTOR: Final = "모터"
+EDC_ERR_MOTOR_JOINT: Final = "모터는 회전 관절(회전, 회전 스프링)에만 달 수 있습니다."
+
+# M5a 에디터 화면 (lead)
+ED_BUILTIN_LANDER: Final = "달 착륙선"
+ED_BUILTIN_TRACK: Final = "트랙 자동차"
+ED_BUILTIN_HILL: Final = "언덕 넘는 자동차"
+ED_COORDS: Final = "x {x:.2f} · y {y:.2f} m"
+ED_NEW: Final = "새로 만들기"
+ED_OPEN: Final = "열기…"
+ED_SAVE: Final = "저장"
+ED_SAVE_AS: Final = "다른 이름으로 저장…"
+ED_FROM_BUILTIN: Final = "내장 예제에서 시작"
+ED_UNDO: Final = "되돌리기"
+ED_REDO: Final = "다시하기"
+ED_COPY: Final = "복사"
+ED_PASTE: Final = "붙여넣기"
+ED_PLAY: Final = "직접 조종"
+ED_TO_LAB: Final = "실험실로 보내기"
+ED_STATUS: Final = "검사: 오류 {errors}개, 경고 {warnings}개 (아래 '검사 결과' 탭)"
+ED_STATUS_OK: Final = "검사: 문제 없음"
+ED_UNSAVED_TITLE: Final = "저장하지 않은 고침"
+ED_UNSAVED: Final = "'{name}'에 저장하지 않은 고침이 있습니다. 저장할까요?"
+ED_OPEN_FAILED: Final = "환경 파일을 열 수 없습니다"
+ED_SAVE_FAILED: Final = "저장하지 못했습니다"
+ED_PASTE_NOTHING: Final = "붙여 넣을 부품이 없습니다(진화 실험실에서 복사한 부품만 붙여 넣을 수 있습니다)."
+ED_HAS_ERRORS: Final = "환경에 오류가 있습니다. 아래 '검사 결과' 탭을 보고 고친 뒤 다시 하세요."
+MAIN_ENV_SENT: Final = "에디터에서 고친 환경을 멈춘 학습에 보냈습니다. 적용되면 '이어서'를 누르세요."

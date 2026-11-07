@@ -599,6 +599,23 @@ def test_drag_move_snaps_and_is_one_undo_step(qtbot: Any) -> None:
     assert doc.undo_stack.count() == before
 
 
+def test_escape_cancels_drag_and_locked_hover(qtbot: Any) -> None:
+    c = make_canvas(qtbot, three_bodies(), scale=40.0)
+    doc = c.doc
+    index = doc.undo_stack.index()
+    QTest.mousePress(c, LEFT, NO, pt(c, 4.0, 0.0))
+    QTest.mouseMove(c, pt(c, 6.0, 2.0))
+    assert body(doc, "block")["pos"] == [6.0, 2.0]
+    key(c, Qt.Key.Key_Escape)
+    QTest.mouseRelease(c, LEFT, NO, pt(c, 6.0, 2.0))
+    assert body(doc, "block")["pos"] == [4.0, 0.0] and doc.undo_stack.index() == index
+    doc.set_value(("bodies", doc.find(("bodies", "block")), "pos"), ["=4", "=0"])
+    QTest.mouseMove(c, pt(c, 4.0, 0.1))
+    assert c.cursor().shape() == Qt.CursorShape.ForbiddenCursor and c.toolTip()
+    QTest.mouseMove(c, pt(c, 8.0, -6.0))
+    assert c.cursor().shape() == Qt.CursorShape.ArrowCursor and not c.toolTip()
+
+
 def test_drag_agent_body_with_rotated_spawn(qtbot: Any) -> None:
     doc = three_bodies()
     T.set_spawn(doc, 0.0, 0.0, math.pi / 2)  # 에이전트 좌표 x가 세계 위쪽

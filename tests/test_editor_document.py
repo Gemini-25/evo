@@ -102,3 +102,18 @@ def test_checks_point_at_components(qtbot: Any) -> None:
     doc2.add("bodies", {"id": "b", "owner": "world", "type": "dynamic", "pos": [0.5, 0], "shapes": [{"kind": "box", "w": 2, "h": 2}]})
     msgs = [x.message for x in doc2.run_check()]
     assert any("겹쳐" in m for m in msgs)
+
+
+def test_rename_keeps_kinds_tags_and_updates_dotted_names(qtbot: Any) -> None:
+    doc = EnvDocument()
+    doc.from_builtin("lander.evoenv")
+    assert doc.rename(("sensors", "fuel"), "fuel_ratio")
+    assert doc.item(("sensors", "fuel_ratio"))["kind"] == "fuel"  # 종류 값은 그대로
+    assert doc.rename(("bodies", "hull"), "body")
+    assert "hull" in doc.item(("bodies", "body"))["tags"]  # 태그는 다른 이름 공간
+    assert compile_env(doc.data) is not None
+    doc2 = EnvDocument()
+    doc2.from_builtin("track_car.evoenv")
+    assert doc2.rename(("generators", "track"), "road")
+    spec = compile_env(doc2.data)  # gen.road.*, road.cp.* 로 따라 바뀐다
+    assert spec.track_set_size == 5
