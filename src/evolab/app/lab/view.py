@@ -1353,23 +1353,11 @@ def _spin(lo: int, hi: int, value: int, special: str | None = None) -> QSpinBox:
 
 
 def my_best_score(spec: EnvSpec) -> float | None:
-    """직접 조종 기록 가운데 같은 환경(내용 해시)의 최고 점수."""
+    """직접 조종 기록(.evoplay, 예전 .json) 가운데 같은 환경(내용 해시)의 최고 점수. 데이터 폴더를 바꾸기 전 기록도 본다."""
     try:
-        from evolab.app.play.window import records_dir
+        from evolab.app.play.record import best_record_score
+        from evolab.app.play.window import record_dirs
 
-        folder = records_dir()
-        want = env_hash(spec.file)
-        best: float | None = None
-        for p in folder.glob("*.json"):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if data.get("env_hash") != want:
-                continue
-            score = (data.get("result") or {}).get("score")
-            if isinstance(score, (int, float)) and math.isfinite(score):
-                best = score if best is None else max(best, float(score))
-        return best
+        return best_record_score(spec, record_dirs())
     except OSError:
         return None

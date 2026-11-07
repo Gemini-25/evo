@@ -325,3 +325,14 @@ def test_undo_restores_only_change_keys_of_run_json(tmp_path: Path, monkeypatch:
     assert info["memo"] == "화면에서 쓴 메모"
     assert [v["id"] for v in info["env_versions"]] == ["v000"] and info.get("protected_checkpoints", []) == []
     sess.pool.close()
+
+
+def test_lab_best_score_line_reads_evoplay_records(data_dirs: tuple[Path, Path]) -> None:
+    """실험실의 '내 최고 기록'도 화면이 저장하는 .evoplay와 예전 기본 위치를 본다(검토 20의 실험실 쪽)."""
+    from evolab.app.lab.view import my_best_score
+    from evolab.app.play.window import records_dir
+
+    spec = load_env(LANDER)
+    assert my_best_score(spec) is None
+    finished_record(7.25).save(records_dir() / "play_1.evoplay")
+    assert my_best_score(spec) == 7.25

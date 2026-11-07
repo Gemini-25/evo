@@ -302,6 +302,8 @@ class WorkerPool:
         return EvalResult.concat(parts, order)
 
     def _split(self, n: int) -> list[list[int]]:
+        if n <= 0:
+            return []
         k = max(1, min(n, self.workers * self.chunks_per_worker))
         size = -(-n // k)
         return [list(range(i, min(n, i + size))) for i in range(0, n, size)]

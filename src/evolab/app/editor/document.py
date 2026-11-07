@@ -448,7 +448,7 @@ class EnvDocument(QObject):
         new_refs: list[Ref] = []
 
         def mutate(d: dict[str, Any]) -> None:
-            for e, new_id in zip(entries, new_ids):
+            for e, new_id in zip(entries, new_ids, strict=True):
                 original = e["item"]
                 item = fix(copy.deepcopy(original), None)
                 item["id"] = new_id

@@ -392,3 +392,36 @@ def test_clone_keeps_settings_without_form_fields(qtbot: Any, lab: LabView, tmp_
     assert lab.load_env(LANDER)
     c = lab.config_from_form()
     assert (c.validate_every, c.max_evaluations, c.diagonal_threshold) == (1000, None, 1000)
+
+
+def test_main_window_records_resume_waits_for_lab_without_branch_folder(
+        qtbot: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message_boxes: list[tuple[str, str]]) -> None:
+    """실험실이 학습 중이면 기록 > 이어하기(옛 체크포인트 분기 포함)는 폴더를 만들기 전에 거절한다(검토 13, 19)."""
+    from evolab.app.main import MainWindow
+    from evolab.app.records.view import RecordsView
+
+    monkeypatch.setattr(paths, "user_state_dir", lambda: tmp_path / "state")
+    paths.set_custom_data_dir(tmp_path / "data")
+    runs = paths.runs_dir()
+    run = new_run(runs, "parent", small_config(2))
+    run.save_checkpoint(2, {"x": 2})
+    run.save_checkpoint(4, {"x": 4})
+    window = MainWindow()
+    qtbot.addWidget(window)
+    errors: list[str] = []
+    asked: list[Any] = []
+    monkeypatch.setattr(window.records, "show_error", errors.append)
+    monkeypatch.setattr(window.records, "ask_checkpoint", lambda s, gens: asked.append(gens) or gens[0])
+    monkeypatch.setattr(window.records, "confirm_branch", lambda s, g: True)
+    before = sorted(p.name for p in runs.iterdir())
+    window.lab.client._proc = object()  # 실험실에서 다른 실행을 학습 중(가짜)
+    try:
+        window.records.refresh()
+        assert window.records.select_run(run.root)
+        with qtbot.assertNotEmitted(window.records.resume_requested):
+            window.records.resume_button.click()
+        assert asked == [] and errors == [S.REC_RESUME_FAILED.format(reason=S.MAIN_LAB_BUSY)]
+        assert sorted(p.name for p in runs.iterdir()) == before
+        assert isinstance(window.records, RecordsView)
+    finally:
+        window.lab.client._proc = None  # 창을 닫기 전에 가짜 세션을 치운다

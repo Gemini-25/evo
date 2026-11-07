@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self._busy_repeat: Path | None = None
         # 실험실의 '이어서'와 기록의 이어하기도 같은 규칙: 다른 곳에서 학습 중인 폴더는 이어 가지 않는다.
         self.lab.run_busy = self.run_is_busy
+        self.records.resume_blocked = lambda: S.MAIN_LAB_BUSY if self.lab.client.active else None
         self.lab.run_started.connect(lambda p: self._set_busy(lab=p))
         self.lab.client.closed.connect(lambda: self._set_busy(lab=None))
         self.compare.repeat_run_started.connect(lambda p: self._set_busy(repeat=p))
