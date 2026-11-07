@@ -13,9 +13,9 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
@@ -23,6 +23,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from evolab import paths
 from evolab.app import strings as S
 from evolab.spec import model as m
+from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvFileError, EnvSpec, Issue, check_env
 from evolab.spec.io import dump_env, parse_env
 
@@ -34,7 +35,10 @@ params, scoring.blocks"""
 SECTIONS = ("generators", "bodies", "joints", "actuators", "sensors", "regions", "checkpoints", "events",
             "randomize", "params")
 CLIPBOARD_FORMAT = "evolab-components"
-_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ID_RE = re.compile(str(get_args(m.Id)[1].pattern))
+"""부품 id 규칙: 환경 파일 모델과 같다(한글 허용)."""
+_ID_MAX = 40
+_EVOLVE_RE = re.compile(r"=\s*p\.([A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*)\s*")
 _WHERE_RE = re.compile(r"^([a-z_.]+)\[(\d+)\]")
 
 
@@ -72,6 +76,11 @@ def del_path(data: Any, path: JsonPath) -> None:
         cur.pop(path[-1], None)
     else:
         del cur[path[-1]]
+
+
+def _clean(x: float) -> float:
+    """파일에 적을 좌표: 부동소수 잡음을 지운다(tools.clean과 같다)."""
+    return round(float(x), 6) + 0.0
 
 
 def where_to_ref(data: dict[str, Any], where: str) -> Ref | None:
@@ -188,18 +197,24 @@ class EnvDocument(QObject):
         self.load_text((paths.builtin_env_dir() / name).read_text(encoding="utf-8"), None)
 
     def text(self) -> str:
-        """저장할 내용. 구조가 맞으면 정규 형식(dump_env), 아니면 사전 그대로."""
+        """지금 내용. 구조가 맞으면 정규 형식(dump_env), 아니면 사전 그대로(저장은 하지 않는다: save)."""
         try:
             return dump_env(parse_env(self.data))
         except EnvFileError:
             return json.dumps(self.data, ensure_ascii=False, indent=2) + "\n"
 
     def save(self, path: Path | None = None) -> Path:
+        """파일로 쓴다(정규 형식). 구조가 잘못된 내용이면 쓰지 않고 EnvFileError를 낸다.
+
+        구조 오류(모르는 종류, 범위 밖 숫자 ...)가 있는 파일은 다시 열 수 없다(load_text가 거절한다). 그런 파일을
+        쓰거나 멀쩡한 파일을 덮어쓰지 않으려고 저장을 거절한다. 참조·수식 오류만 있으면 저장하고 다시 열 수 있다.
+        """
         target = path or self.path
         if target is None:
             raise ValueError("no path")
+        text = dump_env(parse_env(self.data))
         tmp = target.with_name(target.name + ".tmp")
-        tmp.write_text(self.text(), encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         tmp.replace(target)
         self.path = target
         self.undo_stack.setClean()
@@ -278,15 +293,19 @@ class EnvDocument(QObject):
         return out
 
     def unique_id(self, base: str, taken: set[str] | None = None) -> str:
-        base = base if _ID_RE.match(base) else "part"
-        used = self.all_ids() | (taken or set())
+        """base(또는 base_1, base_2 ...) 가운데 아직 안 쓴 id. 모델 규칙에 맞고 예약된 이름·밑줄 두 개를 피한다."""
+        base = base[:_ID_MAX] if _ID_RE.match(base) and "__" not in base else "part"
+        used = self.all_ids() | (taken or set()) | sy.RESERVED
         if base not in used:
             return base
         stem = re.sub(r"_?\d+$", "", base) or "part"
         k = 1
-        while f"{stem}_{k}" in used:
+        while True:
+            suffix = f"_{k}"
+            cand = (stem[: _ID_MAX - len(suffix)].rstrip("_") or "part") + suffix
+            if cand not in used:
+                return cand
             k += 1
-        return f"{stem}_{k}"
 
     def add(self, section: str, item: dict[str, Any], label: str | None = None, select: bool = True) -> Ref:
         """부품 하나를 더한다(id가 겹치면 바꾼다). 더한 부품의 Ref."""
@@ -338,7 +357,7 @@ class EnvDocument(QObject):
         """이 칸이 진화 대상 매개변수 하나("=p.<id>")를 그대로 가리키면 그 id."""
         value = self.get(path)
         if isinstance(value, str):
-            mt = re.fullmatch(r"=\s*p\.([A-Za-z_][A-Za-z0-9_]*)\s*", value)
+            mt = _EVOLVE_RE.fullmatch(value)
             if mt:
                 pid = mt.group(1)
                 for p in self.items("params"):
@@ -367,12 +386,14 @@ class EnvDocument(QObject):
         if pid is None:
             return
 
+        from evolab.app.editor.forms import param_uses
+
         def mutate(d: dict[str, Any]) -> None:
             params = d.get("params", [])
             value = next(p.get("value", 0.0) for p in params if p.get("id") == pid)
             set_path(d, path, value)
-            still_used = any(pid in s for s in _strings(d) if s.startswith("="))
-            if not still_used:
+            # 이름 단위로 센다: 'p.hull_w'는 'p.hull_w_1' 안에 들어 있지 않다(글자 포함 검사는 안 쓴 유전자를 남겼다).
+            if param_uses(d, pid) == 0:
                 d["params"] = [p for p in params if p.get("id") != pid]
 
         self.edit(S.ED_UNDO_EVOLVE_OFF, mutate)
@@ -392,7 +413,15 @@ class EnvDocument(QObject):
         return json.dumps({"format": CLIPBOARD_FORMAT, "items": items}, ensure_ascii=False)
 
     def paste_text(self, text: str, offset: tuple[float, float] = (1.0, -1.0)) -> list[Ref]:
-        """복사한 부품을 붙인다. id가 겹치면 바꾸고, 붙인 부품끼리의 참조는 새 id로 이어 준다. 위치는 조금 옮긴다."""
+        """복사한 부품을 붙인다. id가 겹치면 바꾸고, 붙인 부품끼리의 참조는 새 id로 이어 준다. 위치는 조금 옮긴다.
+
+        - 참조 칸과 수식만 고친다(forms.id_renamer, 이름 바꾸기와 같은 규칙). 종류(kind)·태그 같은 고정값 칸은 id와
+          글자가 같아도 그대로 둔다(센서 'fuel'의 종류 'fuel', 물체 'hull'의 태그 'hull').
+        - 관절로 놓인 물체(place_by)를 그 관절 없이 붙이면 place_by를 지우고, 원본이 놓인 자리(+ 조금 옮김)를
+          pos·angle로 적는다. 관절은 원본 물체를 붙잡고 있으므로 사본을 놓을 수 없다.
+        """
+        from evolab.app.editor.forms import id_renamer
+
         try:
             data = json.loads(text)
         except (ValueError, TypeError):
@@ -404,29 +433,34 @@ class EnvDocument(QObject):
         if not entries:
             return []
         taken: set[str] = set()
-        renames: dict[str, str] = {}
+        new_ids: list[str] = []
+        renames: dict[Ref, str] = {}
         for e in entries:
             old = str(e["item"].get("id", "part"))
             new = self.unique_id(old, taken)
             taken.add(new)
-            renames[old] = new
+            new_ids.append(new)
+            renames.setdefault((str(e["section"]), old), new)
+        fix = id_renamer(renames)
+        loose = [e["item"] for e in entries if e["section"] == "bodies" and isinstance(e["item"].get("place_by"), str)
+                 and ("joints", e["item"]["place_by"]) not in renames]
+        placed = self._placements(loose) if loose else {}
         new_refs: list[Ref] = []
 
-        def remap(value: Any) -> Any:
-            if isinstance(value, dict):
-                return {k: remap(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [remap(v) for v in value]
-            if isinstance(value, str) and value in renames:
-                return renames[value]
-            return value
-
         def mutate(d: dict[str, Any]) -> None:
-            for e in entries:
-                item = remap(copy.deepcopy(e["item"]))
-                item["id"] = renames[str(e["item"].get("id", "part"))]
+            for e, new_id in zip(entries, new_ids):
+                original = e["item"]
+                item = fix(copy.deepcopy(original), None)
+                item["id"] = new_id
+                pose = None
+                if any(original is x for x in loose):
+                    item.pop("place_by", None)
+                    pose = placed.get(str(original.get("id")))
                 pos = item.get("pos")
-                if isinstance(pos, list) and len(pos) == 2 and all(isinstance(v, (int, float)) for v in pos):
+                if pose is not None:
+                    item["pos"] = [_clean(pose[0] + offset[0]), _clean(pose[1] + offset[1])]
+                    item["angle"] = _clean(pose[2])
+                elif isinstance(pos, list) and len(pos) == 2 and all(isinstance(v, (int, float)) for v in pos):
                     item["pos"] = [pos[0] + offset[0], pos[1] + offset[1]]
                 keys = tuple(e["section"].split("."))
                 try:
@@ -438,6 +472,30 @@ class EnvDocument(QObject):
         self.edit(S.ED_UNDO_PASTE, mutate)
         self.select(new_refs)
         return new_refs
+
+    def _placements(self, bodies: list[dict[str, Any]]) -> dict[str, tuple[float, float, float]]:
+        """관절로 놓인 물체들이 지금 문서에서 놓인 자리를 그 물체의 pos·angle 좌표로(에이전트 물체는 시작 자세 기준).
+
+        같은 문서에서 복사한 물체(id와 place_by가 같은 물체가 있다)만. 미리보기 장면(canvas.build_scene)에서 읽는다.
+        """
+        from evolab.app.editor.canvas import build_scene
+        from evolab.app.editor.tools import to_local
+
+        mine = [b for b in bodies if (self.item(("bodies", str(b.get("id")))) or {}).get("place_by") == b.get("place_by")]
+        if not mine:
+            return {}
+        scene = build_scene(self)
+        out: dict[str, tuple[float, float, float]] = {}
+        for b in mine:
+            bid = str(b.get("id"))
+            shown = scene.body(bid)
+            if shown is None:
+                continue
+            x, y, angle = shown.pose
+            if b.get("owner", "agent") == "agent":
+                (x, y), angle = to_local(scene.spawn, (x, y)), angle - scene.spawn[2]
+            out[bid] = (x, y, angle)
+        return out
 
     # ------------------------------------------------------------------
     # 검사와 컴파일
@@ -472,17 +530,6 @@ class EnvDocument(QObject):
 
     def issues_for(self, ref: Ref) -> list[Issue]:
         return [i for i in self.issues if where_to_ref(self.data, i.where) == ref]
-
-
-def _strings(value: Any) -> Iterator[str]:
-    if isinstance(value, dict):
-        for v in value.values():
-            yield from _strings(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from _strings(v)
-    elif isinstance(value, str):
-        yield value
 
 
 def editor_checks(env: m.EnvFile, spec: EnvSpec | None) -> list[Issue]:

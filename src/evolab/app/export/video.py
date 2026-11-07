@@ -79,9 +79,18 @@ def save_gif(frames: Sequence[QImage], path: Path, fps: int = DEFAULT_FPS) -> Pa
 def export_gif(items: Sequence[tuple[Replay, QColor, str]], path: Path, *, size: tuple[int, int] = DEFAULT_SIZE,
                fps: int = DEFAULT_FPS, speed: float = 1.0, title: str = "",
                progress: Callable[[int, int], bool] | None = None) -> Path | None:
-    """재생들을 GIF 파일로. 취소하면 None."""
-    frames = render_frames(items, size=size, fps=fps, speed=speed, title=title, progress=progress)
-    expected = max(1, math.ceil(0.5 * fps / max(speed, 1e-6)))
-    if not frames or (progress is not None and len(frames) < expected):
+    """재생들을 GIF 파일로. 취소하면 None(파일을 쓰지 않는다: 같은 이름의 파일이 있으면 그대로 둔다)."""
+    cancelled = False
+
+    def on_progress(done: int, total: int) -> bool:
+        nonlocal cancelled
+        if progress is not None and progress(done, total) is False:
+            cancelled = True
+            return False
+        return True
+
+    frames = render_frames(items, size=size, fps=fps, speed=speed, title=title,
+                           progress=on_progress if progress is not None else None)
+    if not frames or cancelled:
         return None
     return save_gif(frames, path, fps)

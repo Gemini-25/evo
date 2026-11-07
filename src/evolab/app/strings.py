@@ -1199,3 +1199,14 @@ REC_EXPORT_DONE: Final = "저장했습니다: {path}"
 REC_EXPORT_FAILED: Final = "저장하지 못했습니다"
 REC_ZIP_FILTER: Final = "재현 묶음 (*.zip)"
 REC_CSV_FILTER: Final = "CSV (*.csv)"
+
+# 리뷰 수정 lab (실험실·영상·주 창)
+RVL_RESUME_BUSY: Final = "이 실행은 지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중이라 이어서 학습할 수 없습니다. 그 학습이 끝난 뒤 다시 하세요."
+RVL_CONTINUE_BUSY_TIP: Final = "지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중인 실행이라 이어서 학습할 수 없습니다. 타임라인과 '1세대 대표와 지금 챔피언'으로 보기만 할 수 있습니다."
+RVL_SCENE_FAILED: Final = "이 세대의 관전 장면을 만들지 못해 건너뜁니다: {reason}"
+
+# 리뷰 수정 environment editor
+RVE_BAD_ID: Final = "이름(id)은 영문자, 한글, _로 시작하고 영문자, 한글, 숫자, _만 쓸 수 있습니다(40자까지)."
+RVE_RANGE_VALUE: Final = "값"
+RVE_OUT_OF_RANGE: Final = "허용 범위를 벗어났습니다: {range}"
+RVE_SAVE_INVALID: Final = "구조 오류가 있어 저장하지 않았습니다. 이대로 저장하면 이 파일을 다시 열 수 없습니다.\n아래 오류를 고친 뒤(또는 되돌리기로 되돌린 뒤) 다시 저장하세요.\n\n{errors}"

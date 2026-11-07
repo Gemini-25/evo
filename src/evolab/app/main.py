@@ -52,6 +52,8 @@ class MainWindow(QMainWindow):
         # 학습 중인 실행(실험실, 반복 실행)은 기록 화면에서 지우거나 최신 체크포인트에서 이어 할 수 없다.
         self._busy_lab: Path | None = None
         self._busy_repeat: Path | None = None
+        # 실험실의 '이어서'와 기록의 이어하기도 같은 규칙: 다른 곳에서 학습 중인 폴더는 이어 가지 않는다.
+        self.lab.run_busy = self.run_is_busy
         self.lab.run_started.connect(lambda p: self._set_busy(lab=p))
         self.lab.client.closed.connect(lambda: self._set_busy(lab=None))
         self.compare.repeat_run_started.connect(lambda p: self._set_busy(repeat=p))
@@ -153,8 +155,17 @@ class MainWindow(QMainWindow):
             self._busy_lab = changes["lab"]
         if "repeat" in changes:
             self._busy_repeat = changes["repeat"]
-        self.records.set_busy_runs([p for p in (self._busy_lab, self._busy_repeat) if p is not None])
+        self.records.set_busy_runs(self.busy_runs())
         self.records.refresh()
+        self.lab.busy_runs_changed()
+
+    def busy_runs(self) -> list[Path]:
+        """지금 학습 중인 실행 폴더(실험실, 비교 화면의 반복 실행)."""
+        return [p for p in (self._busy_lab, self._busy_repeat) if p is not None]
+
+    def run_is_busy(self, run: Path) -> bool:
+        """그 실행 폴더를 지금 어느 세션이든 학습하고 있는가."""
+        return any(_same_folder(Path(run), p) for p in self.busy_runs())
 
     def _editor_to_lab(self, text: str) -> None:
         if self.lab.can_take_env():
@@ -226,6 +237,13 @@ class MainWindow(QMainWindow):
         self.lab.shutdown()
         self.compare.shutdown()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
 
 
 def _open_folder(folder: Path) -> None:

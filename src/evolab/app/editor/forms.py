@@ -62,10 +62,12 @@ from evolab.spec.compiled import Issue
 
 _MISSING = object()
 _NONE = type(None)
-_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REF_RE = re.compile(str(get_args(m.Ref)[1].pattern))  # 모델과 같은 규칙(한글 id 허용)
 _MODEL_ID_RE = re.compile(str(get_args(m.Id)[1].pattern))
-_PARAM_REF_RE = re.compile(r"=\s*p\.([A-Za-z_][A-Za-z0-9_]*)\s*")
+_ID_RE = _MODEL_ID_RE
+"""이름 바꾸기가 받는 id: 환경 파일 모델과 같은 규칙(한글 허용, 40자까지)."""
+_ID_MAX = 40
+_PARAM_REF_RE = re.compile(r"=\s*p\.([A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*)\s*")
 ISSUE_COLOR = "#d9534f"
 
 SECTION_TYPES: dict[str, Any] = {
@@ -143,6 +145,7 @@ class TypeInfo:
     low: float | None = None
     high: float | None = None
     low_open: bool = False
+    high_open: bool = False
     min_len: int = 0
     max_len: int | None = None
 
@@ -174,7 +177,7 @@ def type_info(ann: Any, metadata: tuple[Any, ...] | list[Any] = ()) -> TypeInfo:
     base, meta = _unwrap(ann)
     meta = _flat_meta([*metadata, *meta])
     low = high = None
-    low_open = False
+    low_open = high_open = False
     min_len, max_len = 0, None
     sc: StringConstraints | None = None
     for x in meta:
@@ -185,7 +188,7 @@ def type_info(ann: Any, metadata: tuple[Any, ...] | list[Any] = ()) -> TypeInfo:
         elif isinstance(x, Le):
             high = float(x.le)  # type: ignore[arg-type]
         elif isinstance(x, Lt):
-            high = float(x.lt)  # type: ignore[arg-type]
+            high, high_open = float(x.lt), True  # type: ignore[arg-type]
         elif isinstance(x, MinLen):
             min_len = int(x.min_length)
         elif isinstance(x, MaxLen):
@@ -218,9 +221,9 @@ def type_info(ann: Any, metadata: tuple[Any, ...] | list[Any] = ()) -> TypeInfo:
     if base is bool:
         return TypeInfo("bool")
     if base is int:
-        return TypeInfo("int", low=low, high=high, low_open=low_open)
+        return TypeInfo("int", low=low, high=high, low_open=low_open, high_open=high_open)
     if base is float:
-        return TypeInfo("float", low=low, high=high, low_open=low_open)
+        return TypeInfo("float", low=low, high=high, low_open=low_open, high_open=high_open)
     if base is str:
         kind = "text"
         if sc is not None:
@@ -517,6 +520,8 @@ def blank_value(spec: FieldSpec, data: dict[str, Any]) -> Any:
         v = _DEFAULT_NUMBERS.get(spec.key, 1.0)
         if info.low is not None and (v < info.low or (info.low_open and v <= info.low)):
             v = info.low + 1.0
+        if info.high is not None and v > info.high:
+            v = info.high
         return v
     if k == "int":
         if spec.key == "count":
@@ -650,10 +655,23 @@ def _all_strings(value: Any) -> Iterator[str]:
         yield value
 
 
+def _formula_strings(value: Any, key: str | None = None) -> Iterator[str]:
+    """수식인 글자들('='로 시작하는 칸, 조건·점수 수식). 고정값 칸(이름, 설명, 종류, 태그 ...)은 뺀다."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k not in _TEXT_KEYS:
+                yield from _formula_strings(v, k)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _formula_strings(v, key)
+    elif isinstance(value, str) and (value.startswith("=") or key in _EXPR_KEYS):
+        yield value
+
+
 def param_uses(data: dict[str, Any], pid: str) -> int:
-    """수식과 조건에서 p.<pid>를 쓰는 횟수."""
-    rx = re.compile(rf"(?<![A-Za-z0-9_.])p\.{re.escape(pid)}(?![A-Za-z0-9_])")
-    return sum(len(rx.findall(s)) for s in _all_strings({k: v for k, v in data.items() if k != "editor"}))
+    """수식과 조건에서 p.<pid>를 쓰는 횟수(이름 단위로 센다: p.hull_w는 p.hull_w_1 안에 들어 있지 않다)."""
+    rx = re.compile(rf"(?<![\w.])p\.{re.escape(pid)}(?!\w)")
+    return sum(len(rx.findall(s)) for s in _formula_strings(data))
 
 
 def default_range(value: float) -> tuple[float, float]:
@@ -673,50 +691,86 @@ _REF_KEYS = frozenset({*_REF_KIND_BY_KEY, "inputs", "outputs"})
 """참조(부품 id, <id>.<출력>, 센서 채널)를 담는 칸."""
 
 
+def id_error(new_id: str) -> str | None:
+    """환경 파일에서 부품 id로 쓸 수 없는 이유(모델 규칙, 예약된 이름, 밑줄 두 개). 쓸 수 있으면 None."""
+    if not _ID_RE.match(new_id) or len(new_id) > _ID_MAX:
+        return S.RVE_BAD_ID
+    if new_id in sy.RESERVED:
+        return S.SPEC_ID_RESERVED.format(id=new_id)
+    if "__" in new_id:
+        return S.SPEC_ID_DUNDER.format(id=new_id)
+    return None
+
+
 def rename_error(doc: EnvDocument, ref: Ref, new_id: str) -> str | None:
     """이름을 바꿀 수 없는 이유(바꿀 수 있으면 None)."""
     if new_id == ref[1]:
         return None
-    if not _ID_RE.match(new_id):
-        return S.EDP_BAD_ID
+    err = id_error(new_id)
+    if err is not None:
+        return err
     if new_id in doc.all_ids():
         return S.EDP_ID_TAKEN.format(id=new_id)
     return None
 
 
-def rename(doc: EnvDocument, ref: Ref, new_id: str) -> bool:
-    """부품 이름(id)을 바꾸고, 그 이름을 가리키는 곳을 함께 고친다(되돌리기 한 단계).
+def _alternation(names: dict[str, str]) -> str:
+    return "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n)))
 
-    doc.rename과 같지만 앞에 점이 붙는 이름도 고친다: 매개변수 p.<id>, 랜덤 값 r.<id>, 생성기 결과
-    gen.<id>.* 와 <id>.pad / <id>.walls / <id>.cp, 센서 채널 <id>.<항목>(뇌 입력 목록). 태그(tag.<이름>)는
-    다른 이름 공간이라 건드리지 않는다.
+
+def _prefixed_sub(prefix: str, table: dict[str, str]) -> Callable[[str], str]:
+    """수식 안의 <prefix>.<옛 id> -> <prefix>.<새 id> (p.<매개변수>, r.<랜덤 값>)."""
+    rx = re.compile(rf"(?<![\w.]){prefix}\.({_alternation(table)})(?!\w)")
+    return lambda s: rx.sub(lambda mt: f"{prefix}.{table[mt.group(1)]}", s)
+
+
+def id_renamer(renames: dict[Ref, str]) -> Callable[[Any, str | None], Any]:
+    """부품 이름 여러 개를 한꺼번에 바꾸는 함수 fix(값, 칸 이름) -> 고친 사본. renames: (구역, 옛 id) -> 새 id.
+
+    이름 바꾸기(rename)와 붙여넣기(doc.paste_text)가 같이 쓴다.
+    - 수식('='로 시작하는 칸, 조건·점수 수식): 매개변수는 p.<id>, 랜덤 값은 r.<id>, 나머지 부품은 이름 그대로와
+      gen.<id>. 이름 경계는 수식 이름 글자(한글 포함)와 점이다: '다리'는 '앞다리' 안에서 바뀌지 않는다. 뒤에 '('가
+      오는 이름은 함수(min, abs ...)라 바꾸지 않는다.
+    - 참조 칸(_REF_KEYS): <id>와 <id>.<출력>(생성기 결과, 센서 채널).
+    - 고정값 칸(_TEXT_KEYS: kind, tags, label, id ...)은 건드리지 않는다.
+    - 예약된 이름(time, p, tag, dist ...)인 옛 부품 id는 수식에서 내장 기호와 구별할 수 없어 수식은 그대로 두고,
+      참조 칸에서 값이 정확히 같은 것만 바꾼다(내장 사건 이름 timeout 같은 것은 그것도 두지 않는다).
+    - 한 번에 바꾼다: a -> b와 b -> c가 함께 있어도 a가 c가 되지 않는다.
     """
-    if new_id == ref[1]:
-        return True
-    if rename_error(doc, ref, new_id) is not None or doc.find(ref) is None:
-        return False
-    section, old = ref
-    esc = re.escape(old)
-    if section == "params":
-        rx_expr = re.compile(rf"(?<![A-Za-z0-9_.])p\.{esc}(?![A-Za-z0-9_])")
-        expr_sub: Callable[[str], str] = lambda s: rx_expr.sub(f"p.{new_id}", s)
-        plain_sub: Callable[[str], str] | None = None
-    elif section == "randomize":
-        rx_expr = re.compile(rf"(?<![A-Za-z0-9_.])r\.{esc}(?![A-Za-z0-9_])")
-        expr_sub = lambda s: rx_expr.sub(f"r.{new_id}", s)
-        plain_sub = None
-    else:
-        rx_word = re.compile(rf"(?<![A-Za-z0-9_.])(gen\.)?{esc}(?![A-Za-z0-9_])")
+    comp: dict[str, str] = {}
+    exact: dict[str, str] = {}
+    spaced: dict[str, dict[str, str]] = {"p": {}, "r": {}}
+    for (section, old), new in renames.items():
+        if old == new:
+            continue
+        if section == "params":
+            spaced["p"].setdefault(old, new)
+        elif section == "randomize":
+            spaced["r"].setdefault(old, new)
+        elif old in sy.RESERVED:
+            if old not in sy.BUILTIN_EVENTS:
+                exact.setdefault(old, new)
+        else:
+            comp.setdefault(old, new)
+    subs = [_prefixed_sub(prefix, table) for prefix, table in spaced.items() if table]
+    if comp:
+        rx_word = re.compile(rf"(?<![\w.])(gen\.)?({_alternation(comp)})(?!\w)(?!\s*\()")
+        subs.append(lambda s: rx_word.sub(lambda mt: (mt.group(1) or "") + comp[mt.group(2)], s))
 
-        def expr_sub(s: str) -> str:
-            return rx_word.sub(lambda mt: (mt.group(1) or "") + new_id, s)
+    def expr_sub(s: str) -> str:
+        for sub in subs:  # p. r. 다음 부품 이름: 앞에서 바꾼 p.<새 id>의 id는 점 뒤라 다시 걸리지 않는다
+            s = sub(s)
+        return s
 
-        def plain_sub(s: str) -> str:
-            if s == old:
-                return new_id
-            if s.startswith(old + "."):
-                return new_id + s[len(old):]
-            return s
+    def plain_sub(s: str) -> str:
+        if s in comp:
+            return comp[s]
+        if s in exact:
+            return exact[s]
+        head, dot, rest = s.partition(".")
+        if dot and head in comp:
+            return f"{comp[head]}.{rest}"
+        return s
 
     def fix(value: Any, key: str | None) -> Any:
         if isinstance(value, dict):
@@ -726,9 +780,26 @@ def rename(doc: EnvDocument, ref: Ref, new_id: str) -> bool:
         if isinstance(value, str):
             if value.startswith("=") or key in _EXPR_KEYS:
                 return expr_sub(value)
-            if plain_sub is not None and key in _REF_KEYS:
+            if key in _REF_KEYS:
                 return plain_sub(value)
         return value
+
+    return fix
+
+
+def rename(doc: EnvDocument, ref: Ref, new_id: str) -> bool:
+    """부품 이름(id)을 바꾸고, 그 이름을 가리키는 곳을 함께 고친다(되돌리기 한 단계).
+
+    doc.rename과 같지만 앞에 점이 붙는 이름도 고친다: 매개변수 p.<id>, 랜덤 값 r.<id>, 생성기 결과
+    gen.<id>.* 와 <id>.pad / <id>.walls / <id>.cp, 센서 채널 <id>.<항목>(뇌 입력 목록). 태그(tag.<이름>)는
+    다른 이름 공간이라 건드리지 않는다. 무엇을 바꾸는지는 id_renamer.
+    """
+    if new_id == ref[1]:
+        return True
+    if rename_error(doc, ref, new_id) is not None or doc.find(ref) is None:
+        return False
+    section, _old = ref
+    fix = id_renamer({ref: new_id})
 
     def mutate(d: dict[str, Any]) -> None:
         path = doc.item_path(ref)
@@ -761,9 +832,31 @@ def fmt_value(v: Any) -> str:
     return str(v)
 
 
+def range_text(low: float | None, high: float | None, low_open: bool = False, high_open: bool = False) -> str:
+    """허용 범위를 사람이 읽는 꼴로: '0 < 값 ≤ 0.1'."""
+    parts = []
+    if low is not None:
+        parts.append(f"{fmt_value(low)} {'<' if low_open else '≤'}")
+    parts.append(S.RVE_RANGE_VALUE)
+    if high is not None:
+        parts.append(f"{'<' if high_open else '≤'} {fmt_value(high)}")
+    return " ".join(parts)
+
+
+def in_range(v: float, low: float | None, high: float | None, low_open: bool = False,
+             high_open: bool = False) -> bool:
+    if low is not None and (v < low or (low_open and v <= low)):
+        return False
+    return not (high is not None and (v > high or (high_open and v >= high)))
+
+
 def parse_number(text: str, *, formula: bool = True, optional: bool = False,
-                 integer: bool = False) -> tuple[bool, Any, str | None]:
-    """(맞나, 값, 틀린 이유). 숫자 또는 '='로 시작하는 수식."""
+                 integer: bool = False, low: float | None = None, high: float | None = None,
+                 low_open: bool = False, high_open: bool = False) -> tuple[bool, Any, str | None]:
+    """(맞나, 값, 틀린 이유). 숫자 또는 '='로 시작하는 수식.
+
+    low/high를 주면 숫자가 그 범위 안이어야 한다(모델의 ge/gt/le/lt). 수식은 모델처럼 범위를 보지 않는다.
+    """
     t = text.strip()
     if not t:
         return (True, None, None) if optional else (False, None, S.EDP_REQUIRED)
@@ -780,6 +873,8 @@ def parse_number(text: str, *, formula: bool = True, optional: bool = False,
         return False, None, bad
     if not math.isfinite(v):
         return False, None, bad
+    if not in_range(v, low, high, low_open, high_open):
+        return False, None, S.RVE_OUT_OF_RANGE.format(range=range_text(low, high, low_open, high_open))
     if integer:
         if not v.is_integer():
             return False, None, S.EDP_BAD_INT
@@ -839,11 +934,14 @@ class NumEdit(QLineEdit):
     problem_changed = Signal(str)
 
     def __init__(self, *, formula: bool = True, optional: bool = False, integer: bool = False,
-                 parent: QWidget | None = None) -> None:
+                 info: TypeInfo | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.formula = formula
         self.optional = optional
         self.integer = integer
+        self.bounds: tuple[float | None, float | None, bool, bool] = (
+            (info.low, info.high, info.low_open, info.high_open) if info is not None else (None, None, False, False))
+        """숫자가 들어가야 하는 범위(low, high, low_open, high_open). 모델의 ge/gt/le/lt."""
         self.problem: str | None = None
         self._shown = ""
         self.setMinimumWidth(44)
@@ -851,8 +949,9 @@ class NumEdit(QLineEdit):
         self.editingFinished.connect(self._on_finished)
 
     def parse(self, text: str | None = None) -> tuple[bool, Any, str | None]:
+        low, high, low_open, high_open = self.bounds
         return parse_number(self.text() if text is None else text, formula=self.formula, optional=self.optional,
-                            integer=self.integer)
+                            integer=self.integer, low=low, high=high, low_open=low_open, high_open=high_open)
 
     def _set_problem(self, problem: str | None) -> None:
         if problem != self.problem:
@@ -945,6 +1044,11 @@ class FieldWidget(QWidget):
     def refresh(self) -> None:
         """문서 값에 맞춘다(위젯은 그대로)."""
 
+    def flush(self) -> None:
+        """칸을 떠날 때 쓰는 칸(참조, 이름)에 아직 안 쓴 글자가 있으면 지금 문서에 쓴다(저장·닫기 전에).
+
+        타이핑할 때마다 쓰는 칸은 할 일이 없다."""
+
     def leaves(self) -> Iterator[FieldWidget]:
         yield self
 
@@ -1006,7 +1110,8 @@ class NumField(FieldWidget):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(4)
-        self.editor = NumEdit(formula=self.info.formula, optional=self.info.optional, integer=self.info.kind == "int")
+        self.editor = NumEdit(formula=self.info.formula, optional=self.info.optional, integer=self.info.kind == "int",
+                              info=self.info)
         self.editor.edited.connect(self._on_edited)
         self.editor.problem_changed.connect(self.set_invalid)
         top.addWidget(self.editor, 1)
@@ -1256,7 +1361,7 @@ class IntField(FieldWidget):
         spin = _NoWheelSpin()
         spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         low = int(info.low) + (1 if info.low_open else 0) if info.low is not None else -2_000_000_000
-        high = int(info.high) if info.high is not None else 2_000_000_000
+        high = int(info.high) - (1 if info.high_open else 0) if info.high is not None else 2_000_000_000
         spin.setRange(low, high)
         spin.valueChanged.connect(self._on_changed)
         lay.addWidget(spin)
@@ -1440,6 +1545,11 @@ class RefField(FieldWidget):
         if value != self.value():
             self.write(value, merge=False)
 
+    def flush(self) -> None:
+        combo = self.editor
+        assert isinstance(combo, QComboBox)
+        self._commit(combo.currentText())
+
     def refresh(self) -> None:
         combo = self.editor
         assert isinstance(combo, QComboBox)
@@ -1506,7 +1616,7 @@ class TextField(FieldWidget):
                 return None
             return S.EDP_REQUIRED
         if k == "id" and not _MODEL_ID_RE.match(text):
-            return S.EDP_BAD_ID
+            return S.RVE_BAD_ID
         if k == "ref" and not _REF_RE.match(text):
             return S.EDP_BAD_REF
         if self.info.max_len and len(text) > self.info.max_len:
@@ -1595,6 +1705,9 @@ class IdField(FieldWidget):
         if edit.isVisible():
             QToolTip.showText(edit.mapToGlobal(edit.rect().bottomLeft()), self.last_error, edit)
 
+    def flush(self) -> None:
+        self._commit()
+
     def refresh(self) -> None:
         edit = self.editor
         assert isinstance(edit, QLineEdit)
@@ -1613,11 +1726,12 @@ def _parse_item(info: TypeInfo, text: str) -> tuple[bool, Any]:
         ok, v, _ = parse_number(text, formula=False, integer=True)
         if not ok:
             return False, None
-        if (info.low is not None and v < info.low) or (info.high is not None and v > info.high):
+        if not in_range(v, info.low, info.high, info.low_open, info.high_open):
             return False, None
         return True, v
     if k == "float":
-        ok, v, _ = parse_number(text, formula=False)
+        ok, v, _ = parse_number(text, formula=False, low=info.low, high=info.high, low_open=info.low_open,
+                                high_open=info.high_open)
         return ok, v
     if k == "id":
         return bool(_MODEL_ID_RE.match(text)) and len(text) <= 40, text
@@ -1854,7 +1968,7 @@ class DictField(FieldWidget):
         for r, key in enumerate(keys):
             label = QLabel(str(key))
             label.setToolTip(value_name(key, key))
-            edit = NumEdit(formula=self.value_info.kind == "num")
+            edit = NumEdit(formula=self.value_info.kind == "num", info=self.value_info)
             edit.edited.connect(functools.partial(self._on_value, key))
             remove = QToolButton()
             remove.setText("✕")

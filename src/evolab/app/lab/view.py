@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +85,43 @@ class _ReplayThread(QThread):
     def run(self) -> None:
         try:
             out = [replay(spec, layout, genome, trial, trace=trace) for spec, layout, genome, trial, trace in self.jobs]
+        except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
+            self.finished_job.emit(self.tag, exc)
+            return
+        self.finished_job.emit(self.tag, out)
+
+
+def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray,
+                trial: Trial) -> tuple[Any, list[Any] | None]:
+    """관전 장면: 세계 모양과 (몸 유전자가 있으면) 개체마다 몸 모양.
+
+    몸 유전자가 있으면 개체마다 Episode를 만들어야 해서 개체 수에 비례해 느리다(언덕 자동차 32개에 0.3초 안팎).
+    그래서 관전 재생은 이것을 _SceneThread에서 부른다(화면 스레드를 막지 않게).
+    """
+    if layout.n_body:
+        body = layout.body_values(np.asarray(population, dtype=np.float64))
+        eps = [Episode(spec, body[i], trial) for i in range(len(population))]
+        geoms = [e.geometry() for e in eps]
+        return geoms[0], [agent_geoms(g, e.moving_bodies) for g, e in zip(geoms, eps, strict=True)]
+    ep = Episode(spec, None, trial)
+    return ep.geometry(), None
+
+
+class _SceneThread(QThread):
+    """관전할 세대의 장면(build_scene)을 백그라운드에서 만든다. 화면에만 쓰므로 학습 결과와 무관하다."""
+
+    finished_job = Signal(object, object)
+    """(꼬리표, (세계 모양, 개체 몸 모양) 또는 예외)"""
+
+    def __init__(self, tag: Any, spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, trial: Trial,
+                 parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.tag = tag
+        self.args = (spec, layout, population, trial)
+
+    def run(self) -> None:
+        try:
+            out = build_scene(*self.args)
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
             self.finished_job.emit(self.tag, exc)
             return
@@ -205,9 +244,23 @@ class LabView(QWidget):
         self.play_t = 0.0
         self.speed = 1
         self.loop_overlay = False
-        self._threads: list[_ReplayThread] = []
+        self._threads: list[QThread] = []
         self._replay_tag = 0
+        self._replay_label = ""
         self._fast_last = 0
+        self.last_fast_candidate: dict[str, Any] | None = None
+        self._last_video: tuple[list[Any], str] | None = None
+        self._last_played: dict[str, Any] | None = None
+        """관전 재생이 끝나 화면에 남은 세대(재생이 끝난 뒤에도 개체를 클릭해 들여다볼 수 있게)."""
+        self._scene_jobs: collections.deque[dict[str, Any]] = collections.deque()
+        """장면(몸 유전자 환경)을 백그라운드에서 만드는 중이거나 기다리는 관전 세대. 맨 앞이 만드는 중."""
+        self._scene_thread: _SceneThread | None = None
+        self._scene_seq = 0
+        self._base_config: dict[str, Any] | None = None
+        """설정 칸을 채운 설정 전체(복제·열기). 화면에 칸이 없는 값(validate_every 등)은 여기서 그대로 가져간다."""
+        self._restoring = False
+        self.run_busy: Callable[[Path], bool] | None = None
+        """주 창이 넣는다: 그 실행 폴더를 지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중인가."""
         self._inspect_index: int | None = None
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
@@ -427,6 +480,7 @@ class LabView(QWidget):
         self.speed_combo.currentIndexChanged.connect(lambda i: self.set_speed(SPEEDS[i]))
         vf.addRow(S.LAB_SPEED, self.speed_combo)
         self.fast_interval = _spin(1, 100000, 10)
+        self.fast_interval.valueChanged.connect(lambda _v: self._save_settings())
         vf.addRow(S.LAB_FAST_INTERVAL, self.fast_interval)
         lay.addWidget(view)
         lay.addStretch(1)
@@ -440,21 +494,34 @@ class LabView(QWidget):
             return path.stem
 
     def _restore_settings(self) -> None:
+        # 네 값을 먼저 다 읽고 칸에 넣는다: 칸을 바꾸면 _save_settings가 불려 아직 안 읽은 값을 기본값으로 덮기 때문.
         s = self.settings
+
+        def number(key: str, default: int) -> int:
+            try:
+                return int(s.value(key, default) or default)
+            except (TypeError, ValueError):
+                return default
+
+        w = number("lab/workers", 0)
+        speed = number("lab/speed", 1)
+        mode = str(s.value("lab/mode", "spectate"))
+        interval = number("lab/fast_interval", 10)
+        self._restoring = True
         try:
-            w = int(s.value("lab/workers", 0) or 0)
             if w > 0:
                 self.workers.setValue(w)
-            speed = int(s.value("lab/speed", 1))
             if speed in SPEEDS:
                 self.speed_combo.setCurrentIndex(SPEEDS.index(speed))
-            if str(s.value("lab/mode", "spectate")) == "fast":
+            if mode == "fast":
                 self.rb_fast.setChecked(True)
-            self.fast_interval.setValue(int(s.value("lab/fast_interval", 10)))
-        except (TypeError, ValueError):
-            pass
+            self.fast_interval.setValue(interval)
+        finally:
+            self._restoring = False
 
     def _save_settings(self) -> None:
+        if self._restoring:
+            return
         self.settings.setValue("lab/speed", self.speed)
         self.settings.setValue("lab/mode", "spectate" if self.rb_spectate.isChecked() else "fast")
         self.settings.setValue("lab/fast_interval", self.fast_interval.value())
@@ -502,6 +569,7 @@ class LabView(QWidget):
         self.state = "idle"
         self.env_path, self.env_text, self.spec, self.layout = path, text, spec, layout
         self.env_label.setText(f"{spec.file.name}\n{where}")
+        self._base_config = None
         if config:
             self._form_from_config(config)
         if spec.file.evaluation.trials:
@@ -535,8 +603,11 @@ class LabView(QWidget):
             self.popsize.setValue(64 if method == "ga" else 32)
 
     def config_from_form(self) -> TrainConfig:
+        """설정 칸의 값. 칸이 없는 값(validate_every, max_evaluations 등)은 칸을 채운 설정(복제·열기)에서 가져온다."""
         method = str(self.method.currentData())
-        c = TrainConfig(
+        base = TrainConfig.from_dict(self._base_config) if self._base_config else TrainConfig()
+        c = dataclasses.replace(
+            base,
             method=method,
             run_seed=self.seed.value(),
             popsize=self.popsize.value(),
@@ -563,6 +634,8 @@ class LabView(QWidget):
         c.stagnation_generations = self.stagnation.value() or None
 
     def _form_from_config(self, c: dict[str, Any]) -> None:
+        self._base_config = dict(c) if c else None
+
         def setv(widget: Any, value: Any, empty: Any) -> None:
             widget.setValue(empty if value is None else value)
 
@@ -610,8 +683,22 @@ class LabView(QWidget):
         self._update_buttons()
         return True
 
+    def busy_elsewhere(self, run_dir: Path | None) -> bool:
+        """그 실행 폴더를 지금 다른 세션(비교 화면의 반복 실행 등)이 학습하고 있는가(주 창이 run_busy로 알려 준다)."""
+        if run_dir is None or self.run_busy is None:
+            return False
+        return bool(self.run_busy(Path(run_dir)))
+
+    def busy_runs_changed(self) -> None:
+        """학습 중인 실행이 바뀌었다(주 창이 부른다): '이어서' 단추를 다시 정한다."""
+        self._update_buttons()
+
     def resume_run(self, run_dir: Path, generation: int | None = None) -> bool:
         if self.client.active:
+            return False
+        if self.busy_elsewhere(run_dir):
+            # 두 학습 프로세스가 한 실행 폴더에 쓰면 통계·체크포인트가 뒤섞인다
+            QMessageBox.information(self, S.APP_NAME, S.RVL_RESUME_BUSY)
             return False
         self._reset_run_view()
         self.state = "starting"
@@ -680,6 +767,8 @@ class LabView(QWidget):
     def set_spectate(self, on: bool) -> None:
         self.client.send({"type": "mode", "spectate": bool(on)})
         self.queue.clear()
+        self._drop_scene_jobs()
+        self._last_played = None
         if self.view_mode in ("live", "fast"):
             self.view_mode = "live" if on else "fast"
             self.playing = None
@@ -703,6 +792,13 @@ class LabView(QWidget):
         self.playing = None
         self.generation = 0
         self.view_mode = "live" if self.rb_spectate.isChecked() else "fast"
+        # 앞 실행의 재생 상태를 새 실행에 넘기지 않는다(앞 실행 유전자를 새 환경으로 재생하거나 그 영상을 저장하지 않게)
+        self._drop_scene_jobs()
+        self._last_played = None
+        self.last_fast_candidate = None
+        self._last_video = None
+        self._fast_last = 0
+        self._replay_tag += 1  # 아직 도는 앞 실행의 다시 시뮬레이션 결과는 버린다
         self.dashboard.clear()
         self.timeline.setMaximum(1)
         self._close_inspect()
@@ -790,14 +886,19 @@ class LabView(QWidget):
         self._update_status()
         if msg.get("trajectories") is not None:
             if self.view_mode == "live":
-                self.queue.append(msg)
-                if self.playing is None:
-                    self._play_next()
+                if self.layout is not None and self.layout.n_body:
+                    self._scene_jobs.append(msg)  # 장면을 백그라운드에서 만든 뒤 재생 줄에 넣는다
+                    self._next_scene()
+                else:
+                    self.queue.append(msg)
+                    if self.playing is None:
+                        self._play_next()
             else:
                 self.client.send({"type": "played", "generation": self.generation})
         elif self.view_mode == "fast":
             self.last_fast_candidate = msg
             self._maybe_fast_replay()
+        self._update_buttons()  # 첫 세대가 오면 타임라인·1세대 vs 지금을 학습 중에도 쓸 수 있다
 
     def _on_state(self, msg: dict[str, Any]) -> None:
         self.state = str(msg.get("state"))
@@ -813,7 +914,10 @@ class LabView(QWidget):
             return
         gen = int(msg.get("generation", self.generation))
         kind = {"config": "config_change", "env": "env_change"}.get(str(msg.get("what")))
-        if kind and (msg.get("changes") or msg.get("what") == "env"):
+        # 학습 프로세스는 내용이 바뀐 환경만 기록한다(같은 파일을 다시 읽으면 기록 없음): 표시도 같게
+        env_changed = msg.get("what") == "env" and msg.get("env_text") is not None and \
+            str(msg["env_text"]) != self.env_text
+        if kind and (msg.get("changes") or env_changed):
             self.events.append({"kind": kind, "generation": gen})
             self._update_marks()
         if msg.get("what") == "config" and msg.get("config"):
@@ -833,6 +937,7 @@ class LabView(QWidget):
     def _on_closed(self) -> None:
         self.state = "closed" if self.run_dir is not None else "idle"
         self.queue.clear()
+        self._drop_scene_jobs()
         self._update_status()
         self._update_buttons()
 
@@ -859,7 +964,9 @@ class LabView(QWidget):
         paused = active and self.state in ("paused", "finished")
         self.btn_start.setEnabled(not active and self.env_text is not None)
         self.btn_pause.setEnabled(running)
-        self.btn_continue.setEnabled(paused or (not active and self.run_dir is not None))
+        busy = not active and self.busy_elsewhere(self.run_dir)
+        self.btn_continue.setEnabled(paused or (not active and self.run_dir is not None and not busy))
+        self.btn_continue.setToolTip(S.RVL_CONTINUE_BUSY_TIP if busy else "")
         self.btn_step.setEnabled(paused)
         self.btn_end.setEnabled(active)
         self.btn_apply.setEnabled(paused)
@@ -882,10 +989,13 @@ class LabView(QWidget):
             return
         msg = self.queue.popleft()
         self.playing = msg
-        seed, track = msg["trial"]
-        trial = Trial(int(seed), track)
-        spec = self.spec_for(msg.get("env_version"), int(msg["generation"]))
-        geometry, agents = self._scene_for(spec, msg["population"], trial)
+        scene = msg.pop("_scene", None)
+        if scene is not None:  # 백그라운드에서 만든 장면(몸 유전자 환경)
+            spec, (geometry, agents) = scene
+        else:
+            seed, track = msg["trial"]
+            spec = self.spec_for(msg.get("env_version"), int(msg["generation"]))
+            geometry, agents = self._scene_for(spec, msg["population"], Trial(int(seed), track))
         scores = np.asarray(msg["scores"])
         ranks = np.empty(len(scores), dtype=np.int64)
         ranks[np.argsort(-scores, kind="stable")] = np.arange(len(scores))
@@ -895,15 +1005,45 @@ class LabView(QWidget):
         self._start_clock()
 
     def _scene_for(self, spec: EnvSpec, population: np.ndarray, trial: Trial) -> tuple[Any, list[Any] | None]:
-        layout = self.layout
-        assert layout is not None
-        if layout.n_body:
-            body = layout.body_values(np.asarray(population, dtype=np.float64))
-            eps = [Episode(spec, body[i], trial) for i in range(len(population))]
-            geoms = [e.geometry() for e in eps]
-            return geoms[0], [agent_geoms(g, e.moving_bodies) for g, e in zip(geoms, eps, strict=True)]
-        ep = Episode(spec, None, trial)
-        return ep.geometry(), None
+        assert self.layout is not None
+        return build_scene(spec, self.layout, population, trial)
+
+    def _next_scene(self) -> None:
+        """기다리는 관전 세대의 장면을 하나씩 차례로 백그라운드에서 만든다(세대 순서를 지킨다)."""
+        if self._scene_thread is not None or not self._scene_jobs or self.spec is None or self.layout is None:
+            return
+        msg = self._scene_jobs[0]
+        seed, track = msg["trial"]
+        spec = self.spec_for(msg.get("env_version"), int(msg["generation"]))
+        th = _SceneThread((self._scene_seq, msg, spec), spec, self.layout, np.asarray(msg["population"]),
+                          Trial(int(seed), track), self)
+        th.finished_job.connect(self._scene_done)
+        th.finished.connect(lambda t=th: self._forget_thread(t))
+        self._threads.append(th)
+        self._scene_thread = th
+        th.start()
+
+    def _scene_done(self, tag: Any, result: Any) -> None:
+        seq, msg, spec = tag
+        self._scene_thread = None
+        if seq == self._scene_seq and self._scene_jobs and self._scene_jobs[0] is msg:
+            self._scene_jobs.popleft()
+            if isinstance(result, Exception) or self.view_mode != "live":
+                # 장면을 못 만들면 이 세대는 건너뛴다(학습이 재생 끝 알림을 기다리며 멈추지 않게)
+                if isinstance(result, Exception):
+                    self.status.setText(self.status.text() + "\n" + S.RVL_SCENE_FAILED.format(reason=result))
+                self.client.send({"type": "played", "generation": int(msg["generation"])})
+            else:
+                msg["_scene"] = (spec, result)
+                self.queue.append(msg)
+                if self.playing is None:
+                    self._play_next()
+        self._next_scene()
+
+    def _drop_scene_jobs(self) -> None:
+        """기다리는 장면 만들기를 버린다(만드는 중인 결과는 꼬리표가 달라 버려진다)."""
+        self._scene_jobs.clear()
+        self._scene_seq += 1
 
     def _start_clock(self) -> None:
         self.play_t = 0.0
@@ -928,6 +1068,7 @@ class LabView(QWidget):
             return
         if self.view_mode == "live" and self.playing is not None:
             self.client.send({"type": "played", "generation": int(self.playing["generation"])})
+            self._last_played = self.playing
             self.playing = None
             if self.queue:
                 self._play_next()
@@ -994,7 +1135,7 @@ class LabView(QWidget):
             rep = result[0]
             self.canvas.set_overlay([(rep.trajectory, rep.agent, COLOR_NOW, str(index))])
             self.canvas.set_rays(rep.rays, rep.trajectory.dt)
-            if self.view_mode != "live":
+            if self.view_mode != "live" or self.playing is None:  # 재생이 끝난 세대를 클릭했으면 다시 돌린다
                 self._start_clock()
             return
         reps: list[Replay] = result
@@ -1056,8 +1197,10 @@ class LabView(QWidget):
             return
         self._fast_last = max(self.generation, 1)
         self._replay_label = S.LAB_LABEL_CHAMPION.format(gen=gen)
+        # 고친 환경이면 챔피언을 뽑은 세대의 환경 버전으로 재생한다(1세대 vs 지금과 같게)
+        spec = self.spec_for(None, max(1, gen))
         self._run_replays(("fast", [self._replay_label]),
-                          [(self.spec, self.layout, genome, seeds.display_trial(), False)])
+                          [(spec, self.layout, genome, seeds.display_trial(), False)])
 
     def _current_champion(self) -> tuple[np.ndarray | None, int]:
         if self.champion is not None and self.champion.get("genome") is not None:
@@ -1114,22 +1257,30 @@ class LabView(QWidget):
         if self.playing is not None:
             self.client.send({"type": "played", "generation": int(self.playing["generation"])})
             self.playing = None
+        self._last_played = None
         while self.queue:
             msg = self.queue.popleft()
             self.client.send({"type": "played", "generation": int(msg["generation"])})
+        for msg in self._scene_jobs:
+            self.client.send({"type": "played", "generation": int(msg["generation"])})
+        self._drop_scene_jobs()
 
     def back_to_live(self) -> None:
         self.loop_overlay = False
+        self._replay_tag += 1  # 아직 도는 타임라인·겹쳐 보기 결과가 실시간 화면을 덮지 않게
         self.canvas.set_overlay([])
         self._close_inspect()
         self.view_mode = "live" if self.rb_spectate.isChecked() else "fast"
         if self.view_mode == "fast":
             self._maybe_fast_replay(force=True)
-        else:
+        elif self.playing is None:
+            # 타임라인·겹쳐 보기 재생만 멈춘다. 관전 중인 세대는 계속 재생해야 끝 알림(played)이 가서 학습이 이어진다.
             self._timer.stop()
 
     def _inspect(self, index: int) -> None:
         msg = self.playing
+        if msg is None and self.view_mode == "live":
+            msg = self._last_played  # 재생이 끝나 화면에 남은 세대
         if msg is None or self.layout is None:
             return
         seed, track = msg["trial"]

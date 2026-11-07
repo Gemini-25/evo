@@ -30,10 +30,12 @@ from evolab import paths
 from evolab.app import strings as S
 from evolab.app.editor.canvas import EditorCanvas
 from evolab.app.editor.document import EnvDocument
+from evolab.app.editor.forms import FieldWidget
 from evolab.app.editor.palette import Palette
 from evolab.app.editor.properties import PropertyPanel
 from evolab.app.editor.tabs import BottomTabs
 from evolab.spec.compiled import EnvFileError
+from evolab.spec.io import parse_env
 
 BUILTINS = (("lander.evoenv", S.ED_BUILTIN_LANDER), ("track_car.evoenv", S.ED_BUILTIN_TRACK),
             ("hill_car.evoenv", S.ED_BUILTIN_HILL))
@@ -144,8 +146,32 @@ class EditorView(QWidget):
     # ------------------------------------------------------------------
     # 파일
     # ------------------------------------------------------------------
+    def commit_pending(self) -> None:
+        """포커스가 있는 칸에 아직 문서에 안 쓴 글자(참조 칸, 이름 칸)가 있으면 지금 쓴다.
+
+        참조·이름 칸은 Enter나 칸을 떠날 때 쓴다. 저장 단축키(Ctrl+S)와 도구 모음 단추는 포커스를 옮기지 않으므로,
+        저장·닫기·보내기 전에 먼저 쓰지 않으면 보이는 값과 저장한 값이 다르고 고친 것을 잃는다.
+        """
+        w = QApplication.focusWidget()
+        while w is not None and w is not self:
+            if isinstance(w, FieldWidget):
+                w.flush()
+                return
+            w = w.parentWidget()
+
+    def _check_saveable(self) -> bool:
+        """구조 오류가 있으면 저장하지 않는다고 알린다(그런 파일은 다시 열 수 없다). 저장해도 되면 True."""
+        try:
+            parse_env(self.doc.data)
+        except EnvFileError as exc:
+            errors = "\n".join(str(i) for i in exc.issues if i.severity == "error")
+            QMessageBox.warning(self, S.ED_SAVE_FAILED, S.RVE_SAVE_INVALID.format(errors=errors))
+            return False
+        return True
+
     def maybe_save(self) -> bool:
         """저장하지 않은 고침이 있으면 물어본다. 계속해도 되면 True."""
+        self.commit_pending()
         if not self.doc.dirty:
             return True
         answer = QMessageBox.question(
@@ -200,16 +226,23 @@ class EditorView(QWidget):
         return True
 
     def save(self) -> bool:
+        """저장. 구조 오류(다시 열 수 없는 내용)가 있으면 저장하지 않고 알린다(save_as도 같다)."""
+        self.commit_pending()
         if self.doc.path is None:
             return self.save_as()
+        if not self._check_saveable():
+            return False
         try:
             self.doc.save()
-        except OSError as exc:
+        except (OSError, EnvFileError) as exc:
             QMessageBox.warning(self, S.ED_SAVE_FAILED, str(exc))
             return False
         return True
 
     def save_as(self, path: Path | None = None) -> bool:
+        self.commit_pending()
+        if not self._check_saveable():
+            return False
         if path is None:
             folder = paths.user_env_dir()
             folder.mkdir(parents=True, exist_ok=True)
@@ -223,7 +256,7 @@ class EditorView(QWidget):
                 path = path.with_suffix(".evoenv")
         try:
             self.doc.save(path)
-        except OSError as exc:
+        except (OSError, EnvFileError) as exc:
             QMessageBox.warning(self, S.ED_SAVE_FAILED, str(exc))
             return False
         return True
@@ -232,6 +265,7 @@ class EditorView(QWidget):
     # 편집
     # ------------------------------------------------------------------
     def copy(self) -> None:
+        self.commit_pending()
         if self.doc.selection:
             QApplication.clipboard().setText(self.doc.copy_text())
 
@@ -241,6 +275,7 @@ class EditorView(QWidget):
             self.status.setText(S.ED_PASTE_NOTHING)
 
     def play(self) -> None:
+        self.commit_pending()
         spec = self.doc.spec()
         if spec is None:
             QMessageBox.warning(self, S.ED_PLAY, S.ED_HAS_ERRORS)
@@ -248,6 +283,7 @@ class EditorView(QWidget):
         self.play_requested.emit(spec)
 
     def to_lab(self) -> None:
+        self.commit_pending()
         if self.doc.spec() is None:
             QMessageBox.warning(self, S.ED_TO_LAB, S.ED_HAS_ERRORS)
             return
