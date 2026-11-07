@@ -75,7 +75,7 @@ class Session:
         self.trainer: Any = None
         self.stop_logged = False
         self.change_saved = False
-        """설정 변경·환경 교체 중에 바뀐 상태의 체크포인트를 이미 썼는지(실패하면 되돌려 써야 한다)."""
+        """설정 변경·환경 교체 중에 바뀐 상태의 체크포인트를 쓰기 시작했는지(실패하면 되돌려 써야 한다)."""
 
     # ------------------------------------------------------------------
     def main(self) -> None:
@@ -324,12 +324,15 @@ class Session:
     def _mark_change_point(self) -> None:
         """바뀐 설정·환경이 담긴 체크포인트를 남기고 정리 대상에서 뺀다(0세대면 체크포인트가 없다).
 
-        체크포인트를 쓰고 나면 change_saved = True(뒤에서 실패해 되돌릴 때 바꾸기 전 상태로 다시 써야 한다).
+        change_saved = True는 체크포인트를 쓰기 전에 둔다(뒤에서 실패해 되돌릴 때 바꾸기 전 상태로 다시 써야 한다).
+        save_checkpoint는 파일을 바꿔 넣은 뒤 정리 규칙을 적용하다가도(run.json 읽기) 실패할 수 있어서, 저장이 끝난
+        뒤에 표시하면 바뀐 설정·환경이 담긴 체크포인트가 그대로 남는다. 파일을 바꾸기 전에 실패했어도 바꾸기 전
+        상태(실제로 학습한 설정·환경)로 다시 쓰는 것은 해가 없다.
         """
         gen = self.trainer.state.generation
         if gen:
-            self.trainer.checkpoint()
             self.change_saved = True
+            self.trainer.checkpoint()
             self.store.protect(gen)
 
     def _change_records(self) -> dict[str, Any] | None:
@@ -344,7 +347,8 @@ class Session:
     def _undo_change_records(self, before: dict[str, Any] | None) -> None:
         """실패한 변경이 이미 남긴 것을 될 수 있는 만큼 되돌린다(트레이너는 이미 되돌렸다).
 
-        - 바뀐 상태로 쓴 체크포인트는 되돌린 트레이너 상태로 다시 쓴다(같은 세대, 바꾸기 전 설정·환경 버전).
+        - 바뀐 상태로 썼을 수 있는 체크포인트(쓰기를 시작했으면)는 되돌린 트레이너 상태로 다시 쓴다(같은 세대,
+          바꾸기 전 설정·환경 버전).
         - run.json의 환경 버전과 보호 목록은 바꾸기 전으로(다른 키는 건드리지 않는다: 화면이 메모를 쓸 수 있다).
         - events.jsonl 사건 줄은 맨 마지막에 쓰므로 실패했으면 남지 않는다(잘린 줄은 다음 덧붙이기 때 잘라 낸다).
         되돌리기마저 실패하면(디스크 가득 참 등) 더 할 수 있는 것이 없어 그대로 둔다.

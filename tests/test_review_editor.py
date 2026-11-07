@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLineEdit, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 
 from evolab.app import strings as S
 from evolab.app.editor.canvas import build_scene
@@ -19,6 +19,7 @@ from evolab.app.editor.forms import (
     IdField,
     NumField,
     RefField,
+    TableField,
     TypeInfo,
     id_renamer,
     param_uses,
@@ -32,6 +33,7 @@ from evolab.app.editor.tabs import _generator_item
 from evolab.app.editor.view import EditorView
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import compile_env, load_env, parse_env
+from evolab.world.physics2d.episode import Episode, Trial
 
 
 @pytest.fixture
@@ -205,6 +207,54 @@ def test_paste_placed_body_without_its_joint(qtbot: Any, lander: EnvDocument) ->
     assert not _errors(lander)
 
 
+def _start_poses(doc: EnvDocument) -> dict[str, float]:
+    """물리 에피소드를 만든 직후 물체들의 자세(관절로 놓인 자리 포함). '물체.x'·'.y'·'.angle' → 값."""
+    ep = Episode(compile_env(doc.data), None, Trial(0))
+    out: dict[str, float] = {}
+    for bid, b in ep.bodies.items():
+        out.update({f"{bid}.x": b.position.x, f"{bid}.y": b.position.y, f"{bid}.angle": b.angle})
+    return out
+
+
+def _joint_gap(doc: EnvDocument, jid: str) -> float:
+    j = next(j for j in build_scene(doc).joints if j.ref == ("joints", jid))
+    return math.dist(j.pa, j.pb)
+
+
+def test_paste_moved_body_keeps_place_by_when_the_joint_still_holds_it(qtbot: Any, lander: EnvDocument) -> None:
+    """복사 → 원본 지우기 → 붙여넣기(같은 id): 관절이 그 물체를 붙잡고 있으니 place_by를 두고 같은 자리에 놓는다."""
+    before = _start_poses(lander)
+    text = lander.copy_text([("bodies", "leg_l")])
+    lander.remove([("bodies", "leg_l")])
+    refs = lander.paste_text(text)
+    assert refs == [("bodies", "leg_l")]
+    assert lander.item(refs[0])["place_by"] == "j_leg_l"  # type: ignore[index]
+    assert not _errors(lander) and _joint_gap(lander, "j_leg_l") == pytest.approx(0.0, abs=1e-9)
+    assert _start_poses(lander) == pytest.approx(before, abs=1e-9)  # 관절에서 1.8 m 떨어져 놓이지 않는다
+    lander.undo_stack.undo()  # 붙여넣기 되돌리기·다시 하기
+    assert lander.find(("bodies", "leg_l")) is None
+    lander.undo_stack.redo()
+    assert lander.item(("bodies", "leg_l"))["place_by"] == "j_leg_l"  # type: ignore[index]
+    # 두 다리를 함께 옮겨도 같다
+    text = lander.copy_text([("bodies", "leg_l"), ("bodies", "leg_r")])
+    lander.remove([("bodies", "leg_l"), ("bodies", "leg_r")])
+    refs = lander.paste_text(text)
+    assert [lander.item(r)["place_by"] for r in refs] == ["j_leg_l", "j_leg_r"]  # type: ignore[index]
+    assert not _errors(lander) and _start_poses(lander) == pytest.approx(before, abs=1e-9)
+    # 관절은 있고 물체만 없는 다른 문서에 붙여도 같다
+    other = EnvDocument()
+    other.from_builtin("lander.evoenv")
+    other.remove([("bodies", "leg_l")])
+    refs = other.paste_text(text)
+    assert refs == [("bodies", "leg_l"), ("bodies", "leg_r_1")]
+    assert [other.item(r).get("place_by") for r in refs] == ["j_leg_l", None]  # type: ignore[union-attr]
+    assert _joint_gap(other, "j_leg_l") == pytest.approx(0.0, abs=1e-9)
+    # 원본이 그대로 있으면(사본 id가 바뀜) 관절이 사본을 붙잡지 않으므로 전처럼 place_by를 지운다
+    refs = lander.paste_text(lander.copy_text([("bodies", "leg_l")]))
+    assert refs == [("bodies", "leg_l_1")] and "place_by" not in lander.item(refs[0])  # type: ignore[operator]
+    assert not _errors(lander)
+
+
 def test_paste_relinks_formulas_between_pasted_parts(qtbot: Any, lander: EnvDocument) -> None:
     refs = lander.paste_text(lander.copy_text([("bodies", "hull"), ("events", "crash")]))
     when = lander.item(refs[1])["when"]  # type: ignore[index]
@@ -256,6 +306,48 @@ def test_close_asks_when_only_typed_text_is_unsaved(qtbot: Any, tmp_path: Path, 
     _type(qtbot, body.editor.lineEdit(), "leg_l", finish=False)  # type: ignore[union-attr]
     assert not view.maybe_save()  # 물어보고(취소) 닫지 않는다
     assert len(boxes["question"]) == 1 and view.doc.dirty
+
+
+def _type_in_cell(qtbot: Any, table: TableField, row: int, col: int, text: str) -> QLineEdit:
+    """표 칸의 편집기를 열고 글자를 친다(Enter도 안 누르고 칸도 안 떠난다)."""
+    _focus(qtbot, table.table)
+    item = table.table.item(row, col)
+    table.table.setCurrentItem(item)
+    table.table.editItem(item)
+
+    def editing() -> bool:
+        w = QApplication.focusWidget()
+        return isinstance(w, QLineEdit) and table.table.isAncestorOf(w)
+
+    qtbot.waitUntil(editing, timeout=2000)
+    edit = QApplication.focusWidget()
+    assert isinstance(edit, QLineEdit)
+    edit.selectAll()
+    QTest.keyClicks(edit, text)
+    return edit
+
+
+def test_save_and_close_commit_text_still_typed_in_a_table_cell(qtbot: Any, tmp_path: Path,
+                                                                boxes: dict[str, list[Any]]) -> None:
+    """다각형 꼭짓점 같은 표 칸: 편집기가 열린 채 Ctrl+S를 누르거나 닫아도 친 값을 잃지 않는다."""
+    view = _view(qtbot)
+    view.start_from_builtin("hill_car.evoenv")
+    out = tmp_path / "언덕차.evoenv"
+    assert view.save_as(out)
+    view.doc.select([("bodies", "chassis")])
+    points = next(t for t in view.findChildren(TableField) if t.path[-1] == "points")
+    path = points.path
+    first = view.doc.get(path)[0]
+    edit = _type_in_cell(qtbot, points, 0, 1, "-0.5")
+    assert not view.doc.dirty and view.doc.get(path)[0] == first  # 아직 문서에 안 썼다
+    QTest.keyClick(edit, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)  # 편집기에 포커스가 있는 채 Ctrl+S
+    i = view.doc.find(("bodies", "chassis"))
+    saved = json.loads(out.read_text(encoding="utf-8"))["bodies"][i]["shapes"][0]["points"]
+    assert saved[0] == [first[0], -0.5] and view.doc.get(path)[0] == [first[0], -0.5]
+    assert not view.doc.dirty
+    _type_in_cell(qtbot, points, 1, 1, "-0.75")  # 저장하지 않고 닫기: 물어본다(취소 → 닫지 않음)
+    assert not view.maybe_save()
+    assert len(boxes["question"]) == 1 and view.doc.dirty and view.doc.get(path)[1][1] == -0.75
 
 
 # ---------------------------------------------------------------------------

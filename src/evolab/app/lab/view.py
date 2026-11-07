@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import gc
 import json
 import math
 from collections.abc import Callable
@@ -91,24 +92,45 @@ class _ReplayThread(QThread):
         self.finished_job.emit(self.tag, out)
 
 
-def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray,
-                trial: Trial) -> tuple[Any, list[Any] | None]:
+class SceneCancelled(Exception):
+    """장면 만들기를 중간에 그만두었다(그 세대를 더 볼 일이 없거나 창을 닫는 중)."""
+
+
+def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, trial: Trial,
+                cancel: Callable[[], bool] | None = None) -> tuple[Any, list[Any] | None]:
     """관전 장면: 세계 모양과 (몸 유전자가 있으면) 개체마다 몸 모양.
 
     몸 유전자가 있으면 개체마다 Episode를 만들어야 해서 개체 수에 비례해 느리다(언덕 자동차 32개에 0.3초 안팎).
     그래서 관전 재생은 이것을 _SceneThread에서 부른다(화면 스레드를 막지 않게).
+    Episode는 하나씩 만들어 모양만 남기고 바로 버린다. N개를 다 살려 두면(Episode마다 순환 참조가 있는 객체 5천 개
+    안팎) 순환 GC의 전체 수집이 그것을 거듭 훑느라 GIL을 오래 쥐어, 개체 256개에서 화면 스레드가 200ms씩 멈췄다.
+    버린 Episode는 순환 참조라 참조 수로는 풀리지 않으므로 바로 젊은 세대만 수집한다(1ms 안팎). 그러면 만드는 중인
+    Episode가 늙은 세대로 넘어가지 않아 전체 수집이 일어나지 않는다(개체 256개: 화면 멈춤 최대 50ms → 10ms 아래).
+    세계 모양은 첫 개체 것이다. cancel()이 참이 되면 다음 개체 전에 SceneCancelled로 그만둔다.
     """
-    if layout.n_body:
-        body = layout.body_values(np.asarray(population, dtype=np.float64))
-        eps = [Episode(spec, body[i], trial) for i in range(len(population))]
-        geoms = [e.geometry() for e in eps]
-        return geoms[0], [agent_geoms(g, e.moving_bodies) for g, e in zip(geoms, eps, strict=True)]
-    ep = Episode(spec, None, trial)
-    return ep.geometry(), None
+    if not layout.n_body:
+        return Episode(spec, None, trial).geometry(), None
+    body = layout.body_values(np.asarray(population, dtype=np.float64))
+    world: Any = None
+    agents: list[Any] = []
+    for i in range(len(population)):
+        if cancel is not None and cancel():
+            raise SceneCancelled
+        ep = Episode(spec, body[i], trial)
+        geometry = ep.geometry()
+        if world is None:
+            world = geometry
+        agents.append(agent_geoms(geometry, ep.moving_bodies))
+        del ep, geometry  # 다음 개체를 만들기 전에 놓는다(위 설명)
+        gc.collect(1)
+    return world, agents
 
 
 class _SceneThread(QThread):
-    """관전할 세대의 장면(build_scene)을 백그라운드에서 만든다. 화면에만 쓰므로 학습 결과와 무관하다."""
+    """관전할 세대의 장면(build_scene)을 백그라운드에서 만든다. 화면에만 쓰므로 학습 결과와 무관하다.
+
+    requestInterruption()을 부르면 개체 하나를 만드는 사이에 멈춘다(SceneCancelled를 결과로 보낸다).
+    """
 
     finished_job = Signal(object, object)
     """(꼬리표, (세계 모양, 개체 몸 모양) 또는 예외)"""
@@ -121,8 +143,8 @@ class _SceneThread(QThread):
 
     def run(self) -> None:
         try:
-            out = build_scene(*self.args)
-        except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
+            out = build_scene(*self.args, cancel=self.isInterruptionRequested)
+        except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다(멈춘 것도: 꼬리표가 달라 버려진다)
             self.finished_job.emit(self.tag, exc)
             return
         self.finished_job.emit(self.tag, out)
@@ -256,8 +278,13 @@ class LabView(QWidget):
         """장면(몸 유전자 환경)을 백그라운드에서 만드는 중이거나 기다리는 관전 세대. 맨 앞이 만드는 중."""
         self._scene_thread: _SceneThread | None = None
         self._scene_seq = 0
+        self._closing = False
         self._base_config: dict[str, Any] | None = None
-        """설정 칸을 채운 설정 전체(복제·열기). 화면에 칸이 없는 값(validate_every 등)은 여기서 그대로 가져간다."""
+        """복제한 실행의 설정 전체. 화면에 칸이 없는 값(validate_every 등)은 새 실행이 여기서 그대로 가져간다.
+        복제할 때만 정한다: 열기·다른 실행 이어하기·환경 불러오기 뒤의 새 실행은 그런 값을 기본값으로 시작한다."""
+        self._form_exact: dict[str, tuple[Any, Any]] = {}
+        """설정 키 → (칸을 채운 직후 칸 값, 설정의 원래 값). 칸은 소수 자릿수만큼 반올림해 담으므로, 사용자가 칸을
+        바꾸지 않았으면 원래 값을 쓴다(복제·열기한 실행과 같은 설정으로 학습하게)."""
         self._restoring = False
         self.run_busy: Callable[[Path], bool] | None = None
         """주 창이 넣는다: 그 실행 폴더를 지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중인가."""
@@ -418,6 +445,10 @@ class LabView(QWidget):
         stop = QGroupBox(S.LAB_STOP_GROUP)
         sf = QFormLayout(stop)
         self.max_generations = _spin(0, 10**7, 0, special=S.LAB_NONE)
+        # 최대 시험 횟수(명세 공통 정지 조건): 반복 실행·CLI가 정한 예산도 보이고 바꿀 수 있게
+        self.max_evaluations = _spin(0, 2**31 - 1, 0, special=S.LAB_NONE)
+        self.max_evaluations.setSingleStep(1000)
+        self.max_evaluations.setGroupSeparatorShown(True)
         self.max_minutes = QDoubleSpinBox()
         self.max_minutes.setRange(0.0, 10**6)
         self.max_minutes.setDecimals(1)
@@ -430,6 +461,7 @@ class LabView(QWidget):
         self.target.setValue(-1e9)
         self.stagnation = _spin(0, 10**7, 0, special=S.LAB_NONE)
         sf.addRow(S.LAB_MAX_GENERATIONS, self.max_generations)
+        sf.addRow(S.CMP_REPEAT_STOP_EVALS, self.max_evaluations)
         sf.addRow(S.LAB_MAX_MINUTES, self.max_minutes)
         sf.addRow(S.LAB_TARGET, self.target)
         sf.addRow(S.LAB_STAGNATION, self.stagnation)
@@ -569,7 +601,8 @@ class LabView(QWidget):
         self.state = "idle"
         self.env_path, self.env_text, self.spec, self.layout = path, text, spec, layout
         self.env_label.setText(f"{spec.file.name}\n{where}")
-        self._base_config = None
+        # 복제할 때만 칸이 없는 설정까지 가져간다(검토 24). 그냥 환경을 불러오면 그런 값은 기본값으로 돌아간다.
+        self._base_config = dict(config) if config else None
         if config:
             self._form_from_config(config)
         if spec.file.evaluation.trials:
@@ -602,42 +635,54 @@ class LabView(QWidget):
         if set_defaults:
             self.popsize.setValue(64 if method == "ga" else 32)
 
+    def _form_value(self, key: str, widget: QSpinBox | QDoubleSpinBox, convert: Callable[[Any], Any]) -> Any:
+        """칸 값을 설정 값으로(convert). 설정에서 칸을 채운 뒤 사용자가 바꾸지 않았으면 그 설정의 원래 값.
+
+        칸은 소수 자릿수만큼 반올림해(시그마 0.1234 → 0.123, 최대 시간 100초 → 1.7분 = 102초) 담으므로, 칸 값을 다시
+        읽으면 복제·열기한 실행과 다른 설정으로 학습하게 된다(검토 24). 멈춘 학습에 설정을 적용할 때도 같다.
+        """
+        held = self._form_exact.get(key)
+        if held is not None and held[0] == widget.value():
+            return held[1]
+        return convert(widget.value())
+
     def config_from_form(self) -> TrainConfig:
-        """설정 칸의 값. 칸이 없는 값(validate_every, max_evaluations 등)은 칸을 채운 설정(복제·열기)에서 가져온다."""
+        """설정 칸의 값. 칸이 없는 값(validate_every 등)은 복제한 실행의 설정에서, 아니면 기본값."""
         method = str(self.method.currentData())
         base = TrainConfig.from_dict(self._base_config) if self._base_config else TrainConfig()
-        c = dataclasses.replace(
-            base,
-            method=method,
-            run_seed=self.seed.value(),
-            popsize=self.popsize.value(),
-            sigma0=self.sigma.value(),
-            trials=self.trials.value() or None,
-            ipop=self.ipop.isChecked(),
-            ga_elites=self.ga_elites.value(),
-            ga_crossover=self.ga_crossover.value(),
-            ga_mutation_rate=self.ga_mut_rate.value(),
-            ga_mutation_sigma=self.ga_mut_sigma.value(),
-            ga_sigma_decay=self.ga_decay.value(),
-            sa_neighbors=self.sa_neighbors.value(),
-            sa_step=self.sa_step.value(),
-            sa_initial_temperature=self.sa_temp.value() or None,
-            sa_cooling=self.sa_cooling.value(),
-        )
+        fields = {key: self._form_value(key, widget, convert) for key, widget, convert in (
+            ("run_seed", self.seed, _same), ("popsize", self.popsize, _same), ("sigma0", self.sigma, _same),
+            ("trials", self.trials, _or_none), ("ga_elites", self.ga_elites, _same),
+            ("ga_crossover", self.ga_crossover, _same), ("ga_mutation_rate", self.ga_mut_rate, _same),
+            ("ga_mutation_sigma", self.ga_mut_sigma, _same), ("ga_sigma_decay", self.ga_decay, _same),
+            ("sa_neighbors", self.sa_neighbors, _same), ("sa_step", self.sa_step, _same),
+            ("sa_initial_temperature", self.sa_temp, _or_none), ("sa_cooling", self.sa_cooling, _same),
+        )}
+        c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked(), **fields)
         self._stop_fields(c)
         return c
 
     def _stop_fields(self, c: TrainConfig) -> None:
-        c.max_generations = self.max_generations.value() or None
-        c.max_time = self.max_minutes.value() * 60.0 or None
-        c.target_score = None if self.target.value() <= self.target.minimum() else self.target.value()
-        c.stagnation_generations = self.stagnation.value() or None
+        """정지 조건 칸(새 실행, 멈춘 학습에 설정 적용)."""
+        c.max_generations = self._form_value("max_generations", self.max_generations, _or_none)
+        c.max_evaluations = self._form_value("max_evaluations", self.max_evaluations, _or_none)
+        c.max_time = self._form_value("max_time", self.max_minutes, lambda v: v * 60.0 or None)
+        c.target_score = self._form_value("target_score", self.target,
+                                          lambda v: None if v <= self.target.minimum() else v)
+        c.stagnation_generations = self._form_value("stagnation_generations", self.stagnation, _or_none)
 
     def _form_from_config(self, c: dict[str, Any]) -> None:
-        self._base_config = dict(c) if c else None
+        """설정을 칸에 채운다(복제, 열기, 이어하기, 학습 시작). 칸이 없는 값은 여기서 가져가지 않는다(_base_config)."""
+        self._form_exact = {}
 
-        def setv(widget: Any, value: Any, empty: Any) -> None:
-            widget.setValue(empty if value is None else value)
+        def setv(widget: Any, key: str, empty: Any, scale: float = 1.0) -> None:
+            value = c.get(key)
+            if value is None:
+                widget.setValue(empty)
+            else:
+                widget.setValue(value if scale == 1.0 else float(value) / scale)
+            if key in c:
+                self._form_exact[key] = (widget.value(), value)
 
         idx = self.method.findData(c.get("method", "cmaes"))
         if idx >= 0:
@@ -652,16 +697,16 @@ class LabView(QWidget):
                                    (self.ga_decay, "ga_sigma_decay", 1.0), (self.sa_neighbors, "sa_neighbors", 8),
                                    (self.sa_step, "sa_step", 0.1), (self.sa_temp, "sa_initial_temperature", 0.0),
                                    (self.sa_cooling, "sa_cooling", 0.995)):
-            setv(widget, c.get(key), empty)
-        setv(self.seed, c.get("run_seed"), 1)
-        setv(self.popsize, c.get("popsize"), 32)
-        setv(self.sigma, c.get("sigma0"), 0.5)
-        setv(self.trials, c.get("trials"), 0)
-        setv(self.max_generations, c.get("max_generations"), 0)
-        mt = c.get("max_time")
-        self.max_minutes.setValue(0.0 if mt is None else float(mt) / 60.0)
-        setv(self.target, c.get("target_score"), self.target.minimum())
-        setv(self.stagnation, c.get("stagnation_generations"), 0)
+            setv(widget, key, empty)
+        setv(self.seed, "run_seed", 1)
+        setv(self.popsize, "popsize", 32)
+        setv(self.sigma, "sigma0", 0.5)
+        setv(self.trials, "trials", 0)
+        setv(self.max_generations, "max_generations", 0)
+        setv(self.max_evaluations, "max_evaluations", 0)
+        setv(self.max_minutes, "max_time", 0.0, scale=60.0)
+        setv(self.target, "target_score", self.target.minimum())
+        setv(self.stagnation, "stagnation_generations", 0)
 
     # ------------------------------------------------------------------
     # 학습 시작·조작
@@ -700,6 +745,9 @@ class LabView(QWidget):
             # 두 학습 프로세스가 한 실행 폴더에 쓰면 통계·체크포인트가 뒤섞인다
             QMessageBox.information(self, S.APP_NAME, S.RVL_RESUME_BUSY)
             return False
+        if self.run_dir is None or Path(run_dir) != self.run_dir:
+            # 다른 실행을 이어 가면 복제한 설정은 버린다: 그 뒤 '새로 시작'은 칸에 보이는 설정만 가져간다
+            self._base_config = None
         self._reset_run_view()
         self.state = "starting"
         req = SessionRequest(kind="resume", run_dir=str(run_dir), generation=generation, workers=self.workers.value(),
@@ -728,9 +776,11 @@ class LabView(QWidget):
             return
         c = TrainConfig()
         self._stop_fields(c)
+        # 칸에 있는 정지 조건은 다 보낸다(바뀌지 않은 값은 학습 프로세스가 기록하지 않는다)
         changes = {
-            "max_generations": c.max_generations, "max_time": c.max_time, "target_score": c.target_score,
-            "stagnation_generations": c.stagnation_generations, "trials": self.trials.value() or None,
+            "max_generations": c.max_generations, "max_evaluations": c.max_evaluations, "max_time": c.max_time,
+            "target_score": c.target_score, "stagnation_generations": c.stagnation_generations,
+            "trials": self._form_value("trials", self.trials, _or_none),
         }
         self.client.send({"type": "config", "changes": changes})
 
@@ -1010,7 +1060,8 @@ class LabView(QWidget):
 
     def _next_scene(self) -> None:
         """기다리는 관전 세대의 장면을 하나씩 차례로 백그라운드에서 만든다(세대 순서를 지킨다)."""
-        if self._scene_thread is not None or not self._scene_jobs or self.spec is None or self.layout is None:
+        if (self._scene_thread is not None or self._closing or not self._scene_jobs or self.spec is None
+                or self.layout is None):
             return
         msg = self._scene_jobs[0]
         seed, track = msg["trial"]
@@ -1030,7 +1081,7 @@ class LabView(QWidget):
             self._scene_jobs.popleft()
             if isinstance(result, Exception) or self.view_mode != "live":
                 # 장면을 못 만들면 이 세대는 건너뛴다(학습이 재생 끝 알림을 기다리며 멈추지 않게)
-                if isinstance(result, Exception):
+                if isinstance(result, Exception) and not isinstance(result, SceneCancelled):
                     self.status.setText(self.status.text() + "\n" + S.RVL_SCENE_FAILED.format(reason=result))
                 self.client.send({"type": "played", "generation": int(msg["generation"])})
             else:
@@ -1041,9 +1092,11 @@ class LabView(QWidget):
         self._next_scene()
 
     def _drop_scene_jobs(self) -> None:
-        """기다리는 장면 만들기를 버린다(만드는 중인 결과는 꼬리표가 달라 버려진다)."""
+        """기다리는 장면 만들기를 버린다. 만드는 중인 것은 멈추라고 하고, 그 결과는 꼬리표가 달라 버려진다."""
         self._scene_jobs.clear()
         self._scene_seq += 1
+        if self._scene_thread is not None:
+            self._scene_thread.requestInterruption()
 
     def _start_clock(self) -> None:
         self.play_t = 0.0
@@ -1321,6 +1374,8 @@ class LabView(QWidget):
             QMessageBox.warning(self, S.LAB_ERROR_TITLE, str(exc))
             return False
         self._reset_run_view()
+        # 연 실행의 칸이 없는 설정(validate_every 등)은 '새로 시작'에 가져가지 않는다. 그대로 쓰려면 복제한다.
+        self._base_config = None
         self._adopt_run(msg)
         self.state = "closed"
         self._update_status()
@@ -1328,10 +1383,32 @@ class LabView(QWidget):
         return True
 
     def shutdown(self) -> None:
+        """창을 닫을 때: 학습 프로세스를 끝내고 백그라운드 스레드가 다 끝날 때까지 기다린다.
+
+        스레드는 이 화면의 자식이라, 도는 채로 화면과 함께 지워지면 Qt가 프로세스를 끝내 버린다(abort). 그래서 시간
+        제한 없이 기다린다. 장면 만들기(개체 수에 비례해 길다)는 멈추라고 해서 개체 하나 안에 끝나게 한다.
+        """
         self._timer.stop()
-        self.client.shutdown(timeout=SHUTDOWN_WAIT_S)
-        for th in list(self._threads):
-            th.wait(10000)
+        self._closing = True  # 학습 프로세스가 끝나기를 기다리는 동안 온 세대의 장면은 만들지 않는다
+        try:
+            self._drop_scene_jobs()
+            self.client.shutdown(timeout=SHUTDOWN_WAIT_S)
+            self._drop_scene_jobs()
+            for th in list(self._threads):
+                th.requestInterruption()
+            for th in list(self._threads):
+                th.wait()
+        finally:
+            self._closing = False
+
+
+def _same(v: Any) -> Any:
+    return v
+
+
+def _or_none(v: Any) -> Any:
+    """0(칸의 '없음'·'환경 파일대로')이면 None."""
+    return v or None
 
 
 def _dspin(lo: float, hi: float, value: float, decimals: int) -> QDoubleSpinBox:

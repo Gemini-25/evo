@@ -32,6 +32,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -2083,6 +2084,18 @@ class TableField(FieldWidget):
             rows.append(row)
         self.set_invalid(None)
         self.write(self._value_from(rows))
+
+    def flush(self) -> None:
+        """칸 편집기가 열려 있으면 그 글자를 지금 칸에 넣는다(itemChanged → 문서에 씀).
+
+        표는 칸 편집기를 닫을 때(Enter, 다른 칸·위젯으로 옮김)만 쓴다. Ctrl+S·도구 모음 단추는 편집기를 닫지 않으므로,
+        저장·닫기 전에 넣지 않으면 보이는 값과 저장한 값이 다르고 고친 것을 잃는다."""
+        w = QApplication.focusWidget()
+        viewport = self.table.viewport()
+        while w is not None and w.parentWidget() is not viewport:
+            w = w.parentWidget()
+        if w is not None:
+            self.table.commitData(w)
 
     def _on_add(self) -> None:
         rows = self._rows_from(self.value())

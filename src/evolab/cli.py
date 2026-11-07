@@ -7,16 +7,81 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from evolab.app import strings as S
 
+_korean_thread: int | None = None
+"""argparse 문장을 한국어로 바꿔 끼운 스레드. 다른 스레드가 그 사이 argparse를 써도 원래 문장을 받는다."""
+_saved_gettext: tuple[Callable[[str], str], Callable[[str, str, int], str]] = (
+    argparse._, argparse.ngettext)  # type: ignore[attr-defined]
+
+
+def _korean_gettext(message: str) -> str:
+    if threading.get_ident() != _korean_thread:
+        return _saved_gettext[0](message)
+    return S.RV2_ARGPARSE_TEXT.get(message) or _saved_gettext[0](message)
+
+
+def _korean_ngettext(singular: str, plural: str, n: int) -> str:
+    if threading.get_ident() != _korean_thread:
+        return _saved_gettext[1](singular, plural, n)
+    return S.RV2_ARGPARSE_TEXT.get(singular if n == 1 else plural) or _saved_gettext[1](singular, plural, n)
+
+
+@contextlib.contextmanager
+def _korean_argparse() -> Iterator[None]:
+    """이 블록 안에서 argparse 자신의 문장(사용법, 도움말 제목, 인수 오류)을 strings.py의 한국어로 바꾼다.
+
+    argparse는 문장을 만들 때마다 모듈의 _와 ngettext(gettext)를 찾는다. 우리 파서가 일하는 동안만 바꿔 끼우고
+    끝나면(오류로 끝내도) 되돌려서, argparse를 쓰는 다른 코드에는 남지 않는다. 안쪽 호출(하위 명령 파서)은
+    바깥 것이 되돌린다.
+    """
+    global _korean_thread, _saved_gettext
+    if argparse._ is _korean_gettext:  # type: ignore[attr-defined]
+        yield
+        return
+    _saved_gettext = (argparse._, argparse.ngettext)  # type: ignore[attr-defined]
+    _korean_thread = threading.get_ident()
+    argparse._, argparse.ngettext = _korean_gettext, _korean_ngettext  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        argparse._, argparse.ngettext = _saved_gettext  # type: ignore[attr-defined]
+        _korean_thread = None
+
 
 class _Parser(argparse.ArgumentParser):
-    """인수 오류를 한국어 문장으로 알리고 종료 코드 2로 끝낸다(하위 명령 파서도 이 클래스를 쓴다)."""
+    """인수 오류를 한국어 문장으로 알리고 종료 코드 2로 끝낸다(하위 명령 파서도 이 클래스를 쓴다).
+
+    argparse가 직접 만드는 문장(필요한 인수, 알 수 없는 인수, 고를 수 없는 값, 사용법·도움말 제목)도
+    _korean_argparse로 한국어가 된다: 파서를 만들 때(도움말 제목), 읽을 때, 사용법·도움말을 만들 때.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        with _korean_argparse():
+            super().__init__(*args, **kwargs)
+
+    def parse_args(self, args: Any = None, namespace: Any = None) -> Any:
+        with _korean_argparse():
+            return super().parse_args(args, namespace)
+
+    def parse_known_args(self, args: Any = None, namespace: Any = None) -> Any:
+        with _korean_argparse():
+            return super().parse_known_args(args, namespace)
+
+    def format_usage(self) -> str:
+        with _korean_argparse():
+            return super().format_usage()
+
+    def format_help(self) -> str:
+        with _korean_argparse():
+            return super().format_help()
 
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)  # stderr가 None(창 exe)이어도 argparse가 조용히 넘어간다
@@ -59,7 +124,8 @@ def _worker_list(text: str) -> list[int]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="evolab", description=S.CLI_DESCRIPTION)
-    sub = parser.add_subparsers(dest="command")
+    # 이름을 정해 두지 않으면 잘못된 명령 오류에 "command"라는 영어 이름이 나온다
+    sub = parser.add_subparsers(dest="command", metavar=S.RV2_CLI_COMMAND_METAVAR)
 
     train = sub.add_parser("train", help=S.CLI_HELP_TRAIN)
     train.add_argument("env", type=Path, nargs="?", default=None, help=S.CLI_HELP_ENV_FILE)

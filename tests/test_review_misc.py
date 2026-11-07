@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import queue
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -113,13 +115,45 @@ def test_best_record_score_reads_new_and_old_record_folders(data_dirs: tuple[Pat
 # ---------------------------------------------------------------------------
 
 
+def _argparse_messages() -> list[str]:
+    """argparse(설치된 파이썬)가 gettext로 부르는 원문 문장 전부(_('...'), ngettext('...', '...'))."""
+    tree = ast.parse(Path(argparse.__file__).read_text(encoding="utf-8"))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("_", "ngettext"):
+            found += [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+    return found
+
+
+def _english_phrases() -> list[str]:
+    """argparse 문장에서 자리 표시(%s, %(name)s, %r)를 뺀 영어 조각들("invalid choice:", "usage:", "argument" 등)."""
+    phrases = set()
+    for message in _argparse_messages():
+        for part in re.split(r"%(?:\([a-z_]+\))?[sr]", message):
+            part = part.strip(" \n()")
+            if re.search(r"[A-Za-z]{3,}", part):
+                phrases.add(part)
+    return sorted(phrases)
+
+
+ENGLISH_PHRASES = _english_phrases()
+
+
 def _cli_error(capsys: pytest.CaptureFixture[str], argv: list[str]) -> str:
+    """오류 줄(마지막 줄). 사용법 줄을 포함한 stderr 전체에 argparse의 영어 문장이 남지 않았는지도 본다."""
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "Traceback" not in err
+    left = [p for p in ENGLISH_PHRASES if p in err]
+    assert not left, f"영어 문장이 남음 {left}: {err}"
+    assert err.startswith(S.RV2_ARGPARSE_TEXT["usage: "])
     return err.strip().splitlines()[-1]
+
+
+def _argument(name: str, message: str) -> str:
+    return S.RV2_ARGPARSE_TEXT["argument %(argument_name)s: %(message)s"] % {"argument_name": name, "message": message}
 
 
 @pytest.mark.parametrize(("argv", "detail"), [
@@ -142,12 +176,63 @@ def _cli_error(capsys: pytest.CaptureFixture[str], argv: list[str]) -> str:
 ])
 def test_cli_rejects_bad_numbers_in_korean(capsys: pytest.CaptureFixture[str], argv: list[str], detail: str) -> None:
     line = _cli_error(capsys, argv)
-    assert line.startswith(S.RVM_CLI_BAD_ARGS.format(detail="")) and line.endswith(detail)
+    assert line == S.RVM_CLI_BAD_ARGS.format(detail=_argument(argv[-2], detail))  # "--seeds 인수: 1 이상이어야…"
 
 
-def test_cli_other_argument_errors_are_korean_too(capsys: pytest.CaptureFixture[str]) -> None:
-    for argv in (["judge"], ["없는명령"], ["bench"]):
-        assert _cli_error(capsys, argv).startswith(S.RVM_CLI_BAD_ARGS.format(detail=""))
+_T = S.RV2_ARGPARSE_TEXT
+_COMMANDS = "'train', 'bench', 'judge', 'play', 'bundle', 'reproduce', 'csv', 'selftest'"
+
+
+@pytest.mark.parametrize(("argv", "detail"), [
+    (["judge"], _T["the following arguments are required: %s"] % "run"),
+    (["bench"], _T["the following arguments are required: %s"] % "env"),
+    (["play"], _T["the following arguments are required: %s"] % "env"),
+    (["train", "--bogus"], _T["unrecognized arguments: %s"] % "--bogus"),
+    (["judge", "run", "더", "있음"], _T["unrecognized arguments: %s"] % "더 있음"),
+    (["train", "x.evoenv", "--method", "xx"], _argument("--method", _T[
+        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "xx", "choices": "'cmaes', 'ga', 'sa'"})),
+    (["nosuchcmd"], _argument(S.RV2_CLI_COMMAND_METAVAR, _T[
+        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "nosuchcmd", "choices": _COMMANDS})),
+    (["없는명령"], _argument(S.RV2_CLI_COMMAND_METAVAR, _T[
+        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "없는명령", "choices": _COMMANDS})),
+    (["train", "x.evoenv", "--seed"], _argument("--seed", _T["expected one argument"])),
+    (["train", "x.evoenv", "--seed", "abc"], _argument("--seed", S.RVM_CLI_NOT_INT.format(value="abc"))),
+    (["train", "x.evoenv", "--max", "3"], _T["ambiguous option: %(option)s could match %(matches)s"] % {
+        "option": "--max", "matches": "--max-time, --max-generations, --max-evaluations"}),
+    (["train", "x.evoenv", "--ipop=1"], _argument("--ipop", _T["ignored explicit argument %r"] % "1")),
+])
+def test_cli_other_argument_errors_are_korean_too(capsys: pytest.CaptureFixture[str], argv: list[str],
+                                                  detail: str) -> None:
+    """argparse가 직접 만드는 오류도 한국어(옵션 이름과 값만 그대로). 예전에는 접두어만 한국어였다."""
+    assert _cli_error(capsys, argv) == S.RVM_CLI_BAD_ARGS.format(detail=detail)
+
+
+def test_cli_help_headings_are_korean(capsys: pytest.CaptureFixture[str]) -> None:
+    for argv in (["-h"], ["judge", "-h"], ["train", "--help"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(argv)
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert out.startswith(_T["usage: "]) and f"\n{_T['options']}:\n" in out
+        assert _T["show this help message and exit"] in out
+        assert not [p for p in ENGLISH_PHRASES if p in out], out
+    assert f"\n{_T['positional arguments']}:\n  {S.RV2_CLI_COMMAND_METAVAR}\n" in cli._build_parser().format_help()
+
+
+def test_argparse_translation_keys_match_argparse_and_do_not_leak(capsys: pytest.CaptureFixture[str]) -> None:
+    """번역 키는 argparse의 실제 원문이어야 하고(파이썬이 바뀌면 여기서 알린다), 우리 파서 밖에는 남지 않는다."""
+    assert set(_T) <= set(_argparse_messages())
+    original = argparse._  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit):
+        cli.main(["judge"])
+    capsys.readouterr()
+    assert argparse._ is original  # type: ignore[attr-defined]
+    plain = argparse.ArgumentParser(prog="plain")
+    plain.add_argument("--n", type=int)
+    assert plain.format_usage().startswith("usage: ") and "options:" in plain.format_help()
+    with pytest.raises(SystemExit):
+        plain.parse_args(["--n", "x"])
+    assert "argument --n: invalid int value: 'x'" in capsys.readouterr().err
 
 
 def test_cli_accepts_valid_numbers() -> None:
@@ -244,6 +329,8 @@ LOCKED = PermissionError(13, "locked")
 @pytest.mark.parametrize(("what", "step"), [
     ("env", "save_checkpoint"), ("env", "protect"), ("env", "add_env_version"), ("env", "append_event"),
     ("config", "save_checkpoint"), ("config", "protect"), ("config", "append_event"),
+    # save_checkpoint가 파일을 바꿔 넣은 뒤 정리 규칙에서 run.json을 읽다가 실패(2차 검토)
+    ("env", "_protected"), ("config", "_protected"),
 ])
 def test_failed_change_leaves_no_record_and_trainer_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                               what: str, step: str) -> None:
@@ -305,6 +392,34 @@ def test_failed_env_change_keeps_resume_and_reproduce_in_agreement(tmp_path: Pat
             shutil.copytree(store.root, copy)  # 이어하기는 체크포인트 뒤를 잘라 내므로 사본으로
             resumed = Trainer.resume(RunStore.open(copy), pool, gen)
             assert resumed.env_text == LANDER_TEXT  # 이어하기도 실제로 학습한 환경을 고른다
+
+
+def test_change_failing_after_checkpoint_replaced_keeps_resume_in_agreement(tmp_path: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """save_checkpoint가 3세대 파일을 바꿔 넣은 뒤(정리 규칙의 run.json 읽기에서) 실패해도, 3세대 체크포인트는
+    실제로 학습한 설정을 담는다: 3세대에서 이어 학습하면 기록된 통계와 같다(2차 검토)."""
+    from evolab.engine.pool import WorkerPool
+    from evolab.engine.trainer import Trainer
+    from evolab.runs import bundle
+
+    sess = paused_session(tmp_path)
+    fail_once(monkeypatch, "_protected", LOCKED)
+    sess._handle({"type": "config", "changes": {"trials": 3}})
+    assert replies(sess)[0]["ok"] is False
+    assert sess.store.load_checkpoint(3)[1]["config"]["trials"] == 2
+    while sess.trainer.check_stop() is None:  # 바꾸지 않은 설정으로 계속(6세대까지)
+        sess.trainer.step()
+    sess.trainer.checkpoint()
+    sess.pool.close()
+    stats = sess.store.read_stats()
+    copy = tmp_path / "사본"
+    shutil.copytree(sess.store.root, copy)
+    with WorkerPool(0) as pool:
+        resumed = Trainer.resume(RunStore.open(copy), pool, 3)
+        assert resumed.config.trials == 2
+        while resumed.check_stop() is None:
+            resumed.step()
+    assert bundle.compare_stats(stats, RunStore.open(copy).read_stats()) is None
 
 
 def test_undo_restores_only_change_keys_of_run_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

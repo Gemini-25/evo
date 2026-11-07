@@ -295,9 +295,9 @@ def test_body_gene_spectate_scene_is_built_off_the_gui_thread(qtbot: Any, lab: L
     on_main: list[bool] = []
     real = lab_view.build_scene
 
-    def spy(*args: Any) -> Any:
+    def spy(*args: Any, **kwargs: Any) -> Any:
         on_main.append(threading.current_thread() is threading.main_thread())
-        return real(*args)
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(lab_view, "build_scene", spy)
     played: list[int] = []
@@ -388,10 +388,202 @@ def test_clone_keeps_settings_without_form_fields(qtbot: Any, lab: LabView, tmp_
     assert lab.config_from_form().to_dict() == original.to_dict()
     lab.seed.setValue(11)  # 칸으로 바꾼 값만 바뀐다
     assert lab.config_from_form().to_dict() == {**original.to_dict(), "run_seed": 11}
-    # 다른 환경 파일을 새로 불러오면 칸이 없는 값은 기본으로 돌아간다
+    # 다른 환경 파일을 새로 불러오면 칸이 없는 값은 기본으로 돌아간다. 최대 시험 횟수는 칸이 있어 칸 값 그대로다
+    # (최대 세대처럼).
     assert lab.load_env(LANDER)
     c = lab.config_from_form()
-    assert (c.validate_every, c.max_evaluations, c.diagonal_threshold) == (1000, None, 1000)
+    assert (c.validate_every, c.diagonal_threshold) == (1000, 1000)
+    assert c.max_evaluations == lab.max_evaluations.value() == 36
+
+
+# ---------------------------------------------------------------------------
+# 2차 검토: 최대 시험 횟수는 칸에 보이고 바꿀 수 있다. 연 실행의 칸 없는 설정은 '새로 시작'에 가져가지 않는다
+# ---------------------------------------------------------------------------
+
+
+def budget_config(**kw: Any) -> TrainConfig:
+    """반복 실행처럼 시험 횟수 예산으로 멈추는 설정(개체 6 × 시험 2 = 세대마다 12회)."""
+    return TrainConfig(popsize=6, trials=2, run_seed=7, checkpoint_every=2, max_evaluations=24, **kw)
+
+
+def test_opened_run_budget_is_shown_and_hidden_settings_stay_behind(qtbot: Any, lab: LabView, tmp_path: Path) -> None:
+    store = new_run(tmp_path / "runs", "budget", budget_config(validate_every=24, diagonal_threshold=7))
+    assert lab.open_run(store.root)
+    assert lab.max_evaluations.value() == 24  # 반복 실행이 정한 예산이 칸에 보인다
+    c = lab.config_from_form()
+    assert c.max_evaluations == 24
+    assert (c.validate_every, c.diagonal_threshold) == (1000, 1000)  # 칸이 없는 값은 연 실행에서 가져가지 않는다
+    lab.max_evaluations.setValue(0)
+    assert lab.max_evaluations.text() == S.LAB_NONE and lab.config_from_form().max_evaluations is None
+    # 복제하면 칸이 없는 값도 가져가고, 그 뒤 다른 실행을 열면 복제한 설정은 버린다
+    info = clone_settings(store.root)
+    assert lab.use_env_text(info["env_text"], info.get("env_name", ""), info.get("config") or {})
+    assert lab.config_from_form().to_dict() == budget_config(validate_every=24, diagonal_threshold=7).to_dict()
+    assert lab.open_run(store.root)
+    assert lab.config_from_form().validate_every == 1000
+
+
+def test_budget_stop_can_be_changed_and_continued(qtbot: Any, lab: LabView, tmp_path: Path,
+                                                  message_boxes: list[tuple[str, str]]) -> None:
+    store = new_run(tmp_path / "runs", "repeat", budget_config())
+    assert lab.open_run(store.root)
+    lab.rb_fast.setChecked(True)
+    lab.seed.setValue(11)
+    lab.max_generations.setValue(5)
+    assert lab.start_new()
+    wait_state(qtbot, lab, "finished")
+    assert len(lab.rows) == 2 and lab.max_evaluations.value() == 24  # 보이는 정지 조건(최대 시험 횟수)에 걸렸다
+    lab.max_evaluations.setValue(0)  # 예산을 없애고 설정 적용 → 이어서
+    with qtbot.waitSignal(lab.client.applied, timeout=60000) as applied:
+        lab.apply_settings()
+    assert applied.args[0].get("ok") and applied.args[0]["changes"] == {"max_evaluations": None}
+    lab.continue_run()
+    qtbot.waitUntil(lambda: len(lab.rows) == 5 and lab.state == "finished", timeout=240000)
+    assert message_boxes == []
+
+
+# ---------------------------------------------------------------------------
+# 2차 검토: 칸이 반올림해 보여 주는 값(시그마 0.1234 등)도 복제·열기·설정 적용에서 원래 값을 쓴다
+# ---------------------------------------------------------------------------
+
+
+def test_clone_keeps_values_the_form_rounds(qtbot: Any, lab: LabView, tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    rounded = (
+        TrainConfig(method="cmaes", run_seed=3, popsize=6, sigma0=0.1234, max_time=100.0, target_score=123.456),
+        TrainConfig(method="ga", run_seed=3, popsize=8, ga_crossover=0.755, ga_mutation_rate=0.0125,
+                    ga_mutation_sigma=0.01234, ga_sigma_decay=0.99975),
+        TrainConfig(method="sa", run_seed=3, sa_step=0.0125, sa_cooling=0.99975, sa_initial_temperature=1.23456),
+    )
+    for i, original in enumerate(rounded):
+        store = RunStore.create(tmp_path / "runs", f"cli{i}", {"program": "evolab", "env_name": "달 착륙선",
+                                                               "method": original.method,
+                                                               "config": original.to_dict()})
+        store.add_env_version(LANDER_TEXT, 0)
+        info = clone_settings(store.root)
+        assert lab.use_env_text(info["env_text"], info.get("env_name", ""), info.get("config") or {})
+        if i == 0:
+            assert lab.sigma.value() == pytest.approx(0.123)  # 칸은 반올림해 보여 준다
+        assert lab.config_from_form().to_dict() == original.to_dict()
+    lab.sa_cooling.setValue(0.99)  # 바꾼 칸만 칸 값을 쓴다
+    assert lab.config_from_form().to_dict() == {**rounded[2].to_dict(), "sa_cooling": 0.99}
+
+    # 연 실행을 그대로 '새로 시작'해도, 멈춘 학습에 설정을 적용해도 원래 값이다(1.7분 = 102초로 바꾸지 않는다)
+    assert lab.open_run(tmp_path / "runs" / "cli0")
+    c = lab.config_from_form()
+    assert (c.sigma0, c.max_time, c.target_score) == (0.1234, 100.0, 123.456)
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(lab.client, "send", lambda msg: sent.append(msg) or True)
+    lab.client._proc = object()  # 멈춘 학습이 있는 것처럼(가짜)
+    try:
+        lab.apply_settings()
+        lab.max_minutes.setValue(2.0)
+        lab.apply_settings()
+    finally:
+        lab.client._proc = None
+    first, second = (m["changes"] for m in sent)
+    assert (first["max_time"], first["target_score"], first["max_evaluations"]) == (100.0, 123.456, None)
+    assert second["max_time"] == 120.0 and second["target_score"] == 123.456
+
+
+# ---------------------------------------------------------------------------
+# 2차 검토: 관전 장면은 Episode를 하나씩 만들고 버린다(개체 256개에서 GC가 화면 스레드를 200ms씩 멈추지 않게)
+# ---------------------------------------------------------------------------
+
+
+def test_scene_builds_one_episode_at_a_time(qtbot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gc
+    import pickle
+    import weakref
+
+    from evolab.engine.replay import agent_geoms
+    from evolab.policy.genome import layout_for
+    from evolab.world.physics2d.episode import Episode, Trial
+
+    spec = compile_env(HILL.read_text(encoding="utf-8"))
+    layout = layout_for(spec)
+    pop = layout.initial()[None, :] + 0.3 * np.random.default_rng(3).standard_normal((8, layout.dim))
+    for trial in (seeds.display_trial(), Trial(12345, 0)):
+        # 고치기 전 방식(개체를 다 살려 둔 채 만든 장면)과 똑같은 장면이어야 한다
+        eps = [Episode(spec, b, trial) for b in layout.body_values(pop)]
+        geoms = [e.geometry() for e in eps]
+        want = pickle.dumps((geoms[0], [agent_geoms(g, e.moving_bodies) for g, e in zip(geoms, eps, strict=True)]))
+        del eps, geoms
+        assert pickle.dumps(lab_view.build_scene(spec, layout, pop, trial)) == want
+
+    real = lab_view.Episode
+    alive: list[weakref.ref[Any]] = []
+    held: list[int] = []
+
+    def tracked(*args: Any, full_gc: bool = True) -> Any:
+        if full_gc:
+            gc.collect()
+            held.append(sum(r() is not None for r in alive))  # 이 개체를 만들 때 아직 붙잡힌 앞 개체 Episode 수
+        ep = real(*args)
+        alive.append(weakref.ref(ep))
+        return ep
+
+    monkeypatch.setattr(lab_view, "Episode", tracked)
+    lab_view.build_scene(spec, layout, pop, seeds.display_trial())
+    assert held == [0] * 8
+    # 버린 Episode(순환 참조)는 전체 수집을 기다리지 않고 바로 풀린다: 늙은 세대로 넘어가 전체 수집을 부르지 않게
+    alive.clear()
+    monkeypatch.setattr(lab_view, "Episode", lambda *a: tracked(*a, full_gc=False))
+    gc.collect()
+    lab_view.build_scene(spec, layout, pop, seeds.display_trial())
+    assert sum(r() is not None for r in alive) == 0
+
+
+# ---------------------------------------------------------------------------
+# 2차 검토: 큰 개체 수의 관전 장면을 만드는 중에 창을 닫아도 프로세스가 죽지 않는다(스레드를 멈추고 기다린다)
+# ---------------------------------------------------------------------------
+
+
+def test_scene_build_stops_on_mode_change_and_shutdown(qtbot: Any, lab: LabView,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    assert lab.load_env(HILL)
+    layout, trial = lab.layout, seeds.display_trial()
+    cached = lab_view.Episode(lab.spec, layout.body_values(layout.initial()[None, :])[0], trial)
+    started, release = threading.Event(), threading.Event()
+    built: list[int] = []
+
+    def slow(*_a: Any) -> Any:
+        started.set()
+        release.wait(0.05)  # 개체 하나에 50ms: 1000개면 50초 걸리는 장면(CPU는 쓰지 않는다)
+        built.append(1)
+        return cached
+
+    monkeypatch.setattr(lab_view, "Episode", slow)
+    n = 1000
+    pop = np.repeat(layout.initial()[None, :], n, axis=0)
+
+    def spectate_generation() -> None:
+        started.clear()
+        built.clear()
+        msg = {"generation": 1, "population": pop, "trial": (trial.seed, trial.track), "env_version": None,
+               "scores": np.zeros(n), "representative": 0, "trajectories": []}
+        lab._scene_jobs.append(msg)  # 몸 유전자 환경 관전에서 _on_generation이 하는 것
+        lab._next_scene()
+        assert started.wait(30)
+
+    try:
+        assert lab.view_mode == "live"
+        spectate_generation()
+        lab.rb_fast.setChecked(True)  # 관전을 그만두면 만들던 장면도 멈춘다
+        qtbot.waitUntil(lambda: lab._scene_thread is None, timeout=10000)
+        assert len(built) < n and S.RVL_SCENE_FAILED.split("{")[0] not in lab.status.text()
+        lab.rb_spectate.setChecked(True)
+        spectate_generation()
+        t0 = time.monotonic()
+        lab.shutdown()  # 주 창 closeEvent가 부르는 것
+        assert not any(t.isRunning() for t in lab._threads)
+        assert time.monotonic() - t0 < 5 and len(built) < n
+    finally:
+        release.set()  # (고치기 전이면) 남은 개체를 바로 끝내 스레드가 화면보다 먼저 끝나게
+        for t in list(lab._threads):
+            t.wait()
 
 
 def test_main_window_records_resume_waits_for_lab_without_branch_folder(

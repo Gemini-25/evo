@@ -419,6 +419,8 @@ class EnvDocument(QObject):
           글자가 같아도 그대로 둔다(센서 'fuel'의 종류 'fuel', 물체 'hull'의 태그 'hull').
         - 관절로 놓인 물체(place_by)를 그 관절 없이 붙이면 place_by를 지우고, 원본이 놓인 자리(+ 조금 옮김)를
           pos·angle로 적는다. 관절은 원본 물체를 붙잡고 있으므로 사본을 놓을 수 없다.
+        - 단, 문서의 그 관절이 붙인 물체의 id를 붙잡고 있으면(복사 → 원본 지우기 → 붙여넣기로 옮김, 관절만 있는
+          다른 문서에 붙임) place_by를 그대로 둔다. 관절이 그 물체를 놓으므로 전과 같은 자리·같은 시뮬레이션이다.
         """
         from evolab.app.editor.forms import id_renamer
 
@@ -442,8 +444,15 @@ class EnvDocument(QObject):
             new_ids.append(new)
             renames.setdefault((str(e["section"]), old), new)
         fix = id_renamer(renames)
-        loose = [e["item"] for e in entries if e["section"] == "bodies" and isinstance(e["item"].get("place_by"), str)
-                 and ("joints", e["item"]["place_by"]) not in renames]
+
+        def held(joint_id: str, body_id: str) -> bool:
+            """문서에 이미 있는 관절 joint_id가 물체 body_id를 붙잡고 있나(그 관절의 b)."""
+            joint = self.item(("joints", joint_id))
+            return isinstance(joint, dict) and joint.get("b") == body_id
+
+        loose = [e["item"] for e, new_id in zip(entries, new_ids, strict=True)
+                 if e["section"] == "bodies" and isinstance(e["item"].get("place_by"), str)
+                 and ("joints", e["item"]["place_by"]) not in renames and not held(e["item"]["place_by"], new_id)]
         placed = self._placements(loose) if loose else {}
         new_refs: list[Ref] = []
 

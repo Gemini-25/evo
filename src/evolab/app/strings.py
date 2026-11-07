@@ -1218,3 +1218,30 @@ RVM_CLI_TOO_SMALL: Final = "{minimum} 이상이어야 합니다: {value}"
 RVM_CLI_NOT_NUMBER: Final = "숫자가 아닙니다: '{value}'"
 RVM_CLI_BAD_WORKER_LIST: Final = "워커 수 목록은 1 이상의 정수를 쉼표로 이어 써야 합니다(예: 1,2,4): '{value}'"
 RVM_CLI_OPTION_TOO_SMALL: Final = "{name} 값은 {minimum} 이상이어야 합니다: {value}"
+
+# 2차 검토 수정
+# argparse가 직접 만드는 문장(사용법, 도움말 제목, 인수 오류). 키는 argparse(파이썬 3.12)의 gettext 원문 그대로다.
+# 명령줄 파서(cli._Parser)가 일하는 동안에만 이 번역을 쓴다.
+RV2_ARGPARSE_TEXT: Final = {
+    "usage: ": "사용법: ",
+    "positional arguments": "위치 인수",
+    "options": "옵션",
+    "show this help message and exit": "이 도움말을 보여 주고 끝냅니다",
+    "argument %(argument_name)s: %(message)s": "%(argument_name)s 인수: %(message)s",
+    "the following arguments are required: %s": "다음 인수가 필요합니다: %s",
+    "one of the arguments %s is required": "다음 인수 중 하나가 필요합니다: %s",
+    "unrecognized arguments: %s": "알 수 없는 인수입니다: %s",
+    "invalid choice: %(value)r (choose from %(choices)s)": "고를 수 없는 값입니다: %(value)r (고를 수 있는 값: %(choices)s)",
+    "unknown parser %(parser_name)r (choices: %(choices)s)": "알 수 없는 명령입니다: %(parser_name)r (고를 수 있는 명령: %(choices)s)",
+    "invalid %(type)s value: %(value)r": "%(type)s 값으로 읽을 수 없습니다: %(value)r",
+    "expected one argument": "값이 하나 필요합니다",
+    "expected at most one argument": "값은 하나까지만 줄 수 있습니다",
+    "expected at least one argument": "값이 하나 이상 필요합니다",
+    "expected %s argument": "값이 %s개 필요합니다",
+    "expected %s arguments": "값이 %s개 필요합니다",
+    "ambiguous option: %(option)s could match %(matches)s": "줄인 옵션 이름 %(option)s(이)가 여러 옵션과 맞습니다: %(matches)s",
+    "ignored explicit argument %r": "이 옵션은 값을 받지 않습니다: %r",
+    "not allowed with argument %s": "%s 인수와 함께 쓸 수 없습니다",
+    "unexpected option string: %s": "예상하지 못한 옵션입니다: %s",
+}
+RV2_CLI_COMMAND_METAVAR: Final = "명령"
