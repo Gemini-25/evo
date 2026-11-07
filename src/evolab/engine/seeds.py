@@ -3,7 +3,7 @@
 맨 앞 단어가 용도 태그라 공간끼리 겹치지 않는다.
 - 학습: [0, 실행 시드, 세대, 시험 번호]. 개체 번호는 넣지 않는다(같은 세대 개체는 같은 조건).
 - 검증(챔피언 선정): [1, k], 비교 평가(비교 그래프·표): [2, k], 판정(완료 기준): [3, k]. 실행 시드와 무관한 고정 세트.
-- 학습 방법 전용 난수: [4, 실행 시드].
+- 학습 방법 전용 난수: [4, 실행 시드](처음 학습 방법), [4, 실행 시드, n](n번째로 만든 학습 방법: 예선 출전자, 자동 재시작).
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import numpy as np
 
 from evolab.world.physics2d.episode import Trial
 
-SEED_SCHEME_VERSION = 1
+SEED_SCHEME_VERSION = 2
+"""2: 학습 방법 번호 추가. 번호 0은 1과 같은 값(1을 그대로 포함)."""
 
 TAG_TRAIN = 0
 TAG_VALIDATION = 1
@@ -59,6 +60,11 @@ def display_trial() -> Trial:
     return validation_trials(1)[0]
 
 
-def learner_seed(run_seed: int) -> int:
-    """학습 방법 전용 RandomState 시드(32비트)."""
-    return derive(TAG_LEARNER, run_seed) & 0xFFFFFFFF
+def learner_seed(run_seed: int, index: int = 0) -> int:
+    """학습 방법 전용 RandomState 시드(32비트). index = 실행 안에서 만든 순서.
+
+    0은 [4, 실행 시드](v1.0과 같음), 1부터 [4, 실행 시드, index](예선 출전자, 자동 재시작).
+    SeedSequence의 끝 0 처리에 기대지 않고 단어를 명시적으로 나눈다(끝 0을 무시하는 성질은 단어 4개 이하에서만 성립).
+    """
+    words = (TAG_LEARNER, run_seed) if index == 0 else (TAG_LEARNER, run_seed, index)
+    return derive(*words) & 0xFFFFFFFF

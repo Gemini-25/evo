@@ -117,6 +117,8 @@ def reproduce(bundle: Path, runs_dir: Path, workers: int | None = None,
         raise RunStoreError(S.BUNDLE_READ_FAILED.format(path=bundle, reason="envs"))
     first = envs[str(versions[0]["id"])]
     config = TrainConfig.from_dict(info.get("config", {}))
+    # 정지 조건만 지운다(같은 세대 수까지 돌린다). 자동 재시작·예선 설정은 그대로 둔다: 키가 없는 v1.0 묶음은 끔으로
+    # 읽혀 v1.0처럼 돌고, 켠 실행은 같은 세대에서 같은 교체를 다시 만든다.
     config.max_generations = None
     config.max_evaluations = None
     config.max_time = None
@@ -128,8 +130,10 @@ def reproduce(bundle: Path, runs_dir: Path, workers: int | None = None,
     store = create_run(runs_dir, first, compile_env(first), config, n,
                        extra={"reproduced_from": {"run": data["manifest"].get("run"), "bundle": str(bundle)},
                               "memo": S.BUNDLE_MEMO.format(run=data["manifest"].get("run"))})
+    # 원래 통계 열 머리로 다시 쓴다: v1.0 묶음은 v1.0 열 그대로(새 열 없음) 재현되어 엄격 비교로 같다고 판정된다.
+    columns = list(data["stats"][0]) if data["stats"] else None
     with WorkerPool(n) as pool:
-        trainer = Trainer(first, config, pool, store)
+        trainer = Trainer(first, config, pool, store, stats_columns=columns)
         while True:
             g = trainer.state.generation
             for e in changes.get(g, []):

@@ -6,6 +6,8 @@
   빈 글자와 없는 열은 NaN으로 읽는다.
 - 타일(그래프 묶음)은 켜고 끄고 순서를 바꿀 수 있고, 배치는 QSettings의 "dashboard" 묶음에 저장한다.
 - 숨긴 타일은 갱신하지 않고, 다시 켤 때 한 번에 그린다.
+- v1.1 학습 방법 열(learner, learner_best, qualifying, switch 등)이 있으면 학습 방법 교체 세로선(자동 재시작·예선),
+  지금 학습 방법 최고점 선, 예선 띠를 더한다. 이 열이 없는 옛 실행은 NaN으로 읽혀 아무것도 더 그리지 않는다.
 """
 
 from __future__ import annotations
@@ -50,6 +52,11 @@ TILE_MIN_HEIGHT = 230
 AXIS_WIDTH = 66  # 세로축 칸 폭(눈금 글자 + 축 이름). 타일끼리 맞춘다
 SETTINGS_GROUP = "dashboard"
 SETTINGS_FILE = "settings.ini"
+# v1.1 stats.csv의 switch 열(이 세대 끝에 일어난 학습 방법 교체) → 자동 세로선 종류.
+# 0(없음)과 열이 없는 옛 실행은 선을 긋지 않는다
+SWITCH_KINDS: dict[int, str] = {1: "restart", 2: "restart", 3: "qualify_next", 4: "qualify_pick"}
+SWITCH_RESTART_FROM: dict[int, str] = {1: "fresh", 2: "champion"}  # 새로 시작한 곳
+QUALIFY_MARK_KINDS: tuple[str, ...] = ("qualify_next", "qualify_pick")
 
 _NAN = math.nan
 
@@ -113,6 +120,36 @@ def _pen(color: str | QColor, width: float = 1.5, style: Qt.PenStyle = Qt.PenSty
     pen = pg.mkPen(color=color, width=width)
     pen.setStyle(style)
     return pen
+
+
+def mark_style(kind: str) -> str:
+    """세로선 종류 → 펜 묶음: "restart"(자동 재시작), "qualify"(예선 다음·예선 끝), "event"(사건 기록)."""
+    if kind == "restart":
+        return "restart"
+    if kind in QUALIFY_MARK_KINDS:
+        return "qualify"
+    return "event"
+
+
+def mark_pen(theme: Theme, style: str) -> QPen:
+    """세로선 펜: 사건은 회색 점선, 자동 재시작은 실선, 예선은 점점선."""
+    if style == "restart":
+        return _pen(theme.series[7], 1.5)
+    if style == "qualify":
+        return _pen(theme.series[6], 1.5, Qt.PenStyle.DotLine)
+    return _pen(theme.ink2, 1, Qt.PenStyle.DashLine)
+
+
+def _shade_region(brush: QColor, z: float) -> pg.LinearRegionItem:
+    """가로축 구간 음영(테두리 없음, 마우스로 못 옮김)."""
+    region = pg.LinearRegionItem(
+        values=(0, 1), orientation="vertical", movable=False, brush=brush, pen=pg.mkPen(None), hoverBrush=brush
+    )
+    for line in region.lines:
+        line.setPen(pg.mkPen(None))
+        line.setHoverPen(pg.mkPen(None))
+    region.setZValue(z)
+    return region
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +524,10 @@ class _Tile(QFrame):
         self.plots: list[pg.PlotItem] = []
         self._fixed_y: dict[int, tuple[float, float]] = {}
         self._mark_pools: list[list[pg.InfiniteLine]] = []
+        # j번째 세로선(모든 그래프 공통)에 지금 놓인 (가로축 값, 풍선 도움말, 이름, 펜 묶음). None이면 숨김
+        self._mark_applied: list[tuple[float, str, str, str] | None] = []
         self._cross: list[pg.InfiniteLine] = []
-        self._mark_key: tuple[bytes, tuple[str, ...]] | None = None
+        self._mark_key: tuple[bytes, tuple[str, ...], tuple[str, ...]] | None = None
         self._legend_text = ""
         self._hover_index: int | None = None
         self._mouse = pg.SignalProxy(self.view.scene().sigMouseMoved, rateLimit=30, slot=self._on_mouse)
@@ -567,37 +606,52 @@ class _Tile(QFrame):
         return self.dash.x_values(self.follows_axis)
 
     def sync_marks(self) -> None:
-        xs, tips, labels = self.dash.mark_positions(self.follows_axis)
-        key = (xs.tobytes(), tuple(tips))
+        xs, tips, labels, kinds = self.dash.mark_positions(self.follows_axis)
+        key = (xs.tobytes(), tuple(tips), tuple(kinds))
         if key == self._mark_key:
             return
         self._mark_key = key
         t = self.theme
+        n = len(xs)
+        applied = self._mark_applied
         for k, (plot, pool) in enumerate(zip(self.plots, self._mark_pools, strict=True)):
             labelled = self.mark_labels and k == 0
-            while len(pool) < len(xs):
+            while len(pool) < n:
                 line = pg.InfiniteLine(
                     angle=90,
                     movable=False,
-                    pen=_pen(t.ink2, 1, Qt.PenStyle.DashLine),
+                    pen=mark_pen(t, "event"),
                     label="" if labelled else None,
                     labelOpts={"position": 0.96, "color": t.ink2, "fill": _qcolor(t.surface, 210), "anchors": [(0, 0), (0, 0)]}
                     if labelled
                     else None,
                 )
                 line.setZValue(40)
+                line.hide()
                 plot.addItem(line, ignoreBounds=True)
                 pool.append(line)
-            for j, line in enumerate(pool):
-                if j < len(xs) and math.isfinite(xs[j]):
-                    line.setPos(float(xs[j]))
-                    line.setToolTip(tips[j])
-                    if labelled and line.label is not None:
-                        # 이름표 글자는 str.format 틀로 쓰이므로 중괄호를 겹친다
-                        line.label.setFormat(labels[j].replace("{", "{{").replace("}", "}}"))
-                    line.show()
-                else:
+        while len(applied) < n:
+            applied.append(None)
+        # 값이 바뀐 선만 고친다(자동 재시작이 잦은 긴 실행에서 새 선 하나 때문에 모든 선을 다시 놓지 않게)
+        for j, before in enumerate(applied):
+            want = (float(xs[j]), tips[j], labels[j], mark_style(kinds[j])) if j < n and math.isfinite(xs[j]) else None
+            if want == before:
+                continue
+            for k, pool in enumerate(self._mark_pools):
+                line = pool[j]
+                if want is None:
                     line.hide()
+                    continue
+                x, tip, label, style = want
+                if before is None or before[3] != style:
+                    line.setPen(mark_pen(t, style))
+                line.setPos(x)
+                line.setToolTip(tip)
+                if self.mark_labels and k == 0 and line.label is not None:
+                    # 이름표 글자는 str.format 틀로 쓰이므로 중괄호를 겹친다
+                    line.label.setFormat(label.replace("{", "{{").replace("}", "}}"))
+                line.show()
+            applied[j] = want
 
     def legend_html(self, i: int | None) -> str:
         parts: list[str] = []
@@ -668,7 +722,8 @@ def _value_text(arr_fn: Callable[[], np.ndarray], scale: float = 1.0) -> Callabl
 
 
 class _TrendTile(_Tile):
-    """점수 추이: 최고·평균·중앙값·최저, 25~75% 띠, 챔피언 검증 점수(계단), 내 최고 기록, 정체 구간."""
+    """점수 추이: 최고·평균·중앙값·최저, 25~75% 띠, 챔피언 검증 점수(계단), 내 최고 기록, 정체 구간.
+    v1.1: 지금 학습 방법 최고 검증 점수(계단, 학습 방법이 한 번이라도 바뀐 실행에서만)와 예선 구간 띠."""
 
     mark_labels = True
     LINES = (
@@ -695,6 +750,15 @@ class _TrendTile(_Tile):
         self.champion = _curve(_pen(t.series[0], 2.5), stepMode="right")
         self.champion.setZValue(10)
         self.plot.addItem(self.champion)
+        # 지금 학습 방법의 검증 최고점: 재시작하면 챔피언 선은 평평하게 남고 이 선이 아래에서 다시 오른다.
+        # 학습 방법이 처음 것(learner 0)뿐이면 챔피언 선과 같으므로 숨긴다
+        self.learner_line = _curve(_pen(t.series[6], 1.2, Qt.PenStyle.DashLine), stepMode="right")
+        self.learner_line.setZValue(12)
+        self.learner_line.hide()
+        self.plot.addItem(self.learner_line)
+        self.qualify_band = _shade_region(_qcolor(t.series[6], 30), -35)  # 예선 세대 구간
+        self.qualify_band.hide()
+        self.plot.addItem(self.qualify_band, ignoreBounds=True)
         self.my_best = pg.InfiniteLine(
             angle=0,
             movable=False,
@@ -718,7 +782,25 @@ class _TrendTile(_Tile):
         for key, curve in self.lines.items():
             curve.setData(x, d.col(key))
         self.champion.setData(x, d.col("champion_score"))
+        if d.learner_switched:
+            self.learner_line.setData(x, d.col("learner_best"))
+            self.learner_line.show()
+        else:
+            self.learner_line.setData(_EMPTY, _EMPTY)
+            self.learner_line.hide()
+        self._update_qualify_band(x)
         self._update_stagnation()
+
+    def _update_qualify_band(self, x: np.ndarray) -> None:
+        rows = self.dash.qualify_rows
+        if rows is not None:
+            a, b = float(x[rows[0]]), float(x[rows[1]])
+            if math.isfinite(a) and math.isfinite(b):
+                if tuple(self.qualify_band.getRegion()) != (a, b):
+                    self.qualify_band.setRegion((a, b))
+                self.qualify_band.show()
+                return
+        self.qualify_band.hide()
 
     def set_my_best(self, score: float | None) -> None:
         if score is None or not math.isfinite(score):
@@ -734,13 +816,7 @@ class _TrendTile(_Tile):
         self.ranges = stagnation_ranges(gens, d.col("champion_score"), d.stagnation_generations)
         brush = _qcolor(self.theme.muted, 45)
         while len(self._regions) < len(self.ranges):
-            region = pg.LinearRegionItem(
-                values=(0, 1), orientation="vertical", movable=False, brush=brush, pen=pg.mkPen(None), hoverBrush=brush
-            )
-            for line in region.lines:
-                line.setPen(pg.mkPen(None))
-                line.setHoverPen(pg.mkPen(None))
-            region.setZValue(-30)
+            region = _shade_region(brush, -30)
             self.plot.addItem(region, ignoreBounds=True)
             self._regions.append(region)
         for k, region in enumerate(self._regions):
@@ -756,6 +832,8 @@ class _TrendTile(_Tile):
     def entries(self) -> list[_Entry]:
         t, d = self.theme, self.dash
         out = [_Entry(t.series[0], GLYPH_LINE, S.DASH_TREND_CHAMPION, _value_text(lambda: d.col("champion_score")))]
+        if d.learner_switched:
+            out.append(_Entry(t.series[6], GLYPH_DASH, S.DASH_TREND_LEARNER, _value_text(lambda: d.col("learner_best"))))
         for key, name, slot, _w in reversed(self.LINES):
             out.append(_Entry(t.series[slot], GLYPH_LINE, name, _value_text(lambda k=key: d.col(k))))
 
@@ -767,6 +845,8 @@ class _TrendTile(_Tile):
         mb = self.dash.my_best
         if mb is not None:
             out.append(_Entry(t.series[5], GLYPH_DASH, S.DASH_MY_BEST, lambda _i: fmt_value(mb)))
+        if d.qualify_rows is not None:
+            out.append(_Entry(_blend(t.series[6], t.surface, 0.3), GLYPH_FILL, S.DASH_QUALIFY_LEGEND))
         if self.ranges:
             out.append(_Entry(t.muted, GLYPH_FILL, S.DASH_STAGNATION_LEGEND.format(n=self.dash.stagnation_generations)))
         return out
@@ -1109,6 +1189,12 @@ class Dashboard(QWidget):
         self.hist = ScoreHistogram()
         self.axis = "generation"
         self.marks: list[tuple[int, str]] = []
+        # 자동 세로선 (세대, 종류, 풍선 도움말 값): 통계 줄의 switch 열에서 읽는다(v1.1, 옛 실행은 없음)
+        self.auto_marks: list[tuple[int, str, dict[str, float]]] = []
+        self._auto_rows: list[int] = []  # 자동 세로선마다 그 세대의 줄 번호(가로축 값 찾기)
+        self._auto_tips: list[str] = []
+        self.learner_max = _NAN  # learner 열 최댓값(옛 실행은 NaN)
+        self.qualify_rows: tuple[int, int] | None = None  # qualifying == 1인 첫 줄과 마지막 줄 번호
         self.my_best: float | None = None
         self.end_meta: list[tuple[str, str]] = []
         self.block_meta: list[tuple[str, str]] = []
@@ -1175,6 +1261,7 @@ class Dashboard(QWidget):
         """실행을 열 때: 지금 자료를 버리고 통계 줄 전체로 다시 그린다."""
         self.table.clear()
         self.hist.clear()
+        self._clear_learner()
         for row in rows:
             self._append(row, bulk=True)
         self.hist.finish()
@@ -1188,7 +1275,8 @@ class Dashboard(QWidget):
         self._refresh_all()
 
     def set_marks(self, marks: Sequence[tuple[int, str]]) -> None:
-        """세로선을 그을 (세대, 사건 종류): resume, env_change, config_change, branch."""
+        """세로선을 그을 (세대, 사건 종류): resume, env_change, config_change, branch.
+        학습 방법 교체 세로선(auto_marks)은 통계 줄의 switch 열에서 따로 읽으므로 여기에 넣지 않는다."""
         self.marks = [(int(g), str(k)) for g, k in marks]
         self._refresh_all(marks_only=True)
 
@@ -1220,14 +1308,94 @@ class Dashboard(QWidget):
         self.table.clear()
         self.hist.clear()
         self.marks = []
+        self._clear_learner()
         self._refresh_all()
 
     def _append(self, row: Mapping[str, Any], *, bulk: bool) -> None:
         values = {k: to_float(v) for k, v in row.items() if k != "scores"}
         if not math.isfinite(values.get("generation", _NAN)):
             values["generation"] = float(self.table.n + 1)
+        i = self.table.n
         self.table.append(values)
         self.hist.append(parse_scores(row.get("scores")), update=not bulk)
+        self._note_learner(i, values)
+
+    # -- 학습 방법 교체(v1.1 자동 재시작·예선) --------------------------------
+    @property
+    def learner_switched(self) -> bool:
+        """학습 방법이 한 번이라도 바뀌었는가(max(learner) > 0). 옛 실행과 바뀐 적 없는 실행은 False."""
+        return self.learner_max > 0
+
+    def _clear_learner(self) -> None:
+        self.auto_marks = []
+        self._auto_rows = []
+        self._auto_tips = []
+        self.learner_max = _NAN
+        self.qualify_rows = None
+
+    def _note_learner(self, i: int, values: Mapping[str, float]) -> None:
+        """i번째 줄의 learner·qualifying·switch 열을 읽어 자동 세로선, 예선 구간, learner 최댓값을 늘린다.
+        줄마다 O(1)이라 수천 세대 실행에서도 세대마다 부담이 늘지 않는다. 열이 없는 옛 줄은 NaN이라 아무것도 하지 않는다."""
+        learner = values.get("learner", _NAN)
+        if math.isfinite(learner):
+            if not learner <= self.learner_max:  # 첫 값(learner_max가 NaN)이거나 더 큼
+                self.learner_max = learner
+            # 바로 앞 줄이 예선 끝이면 이 줄을 만든 학습 방법이 통과자다
+            if self._auto_rows and self._auto_rows[-1] == i - 1 and self.auto_marks[-1][1] == "qualify_pick":
+                gen, kind, info = self.auto_marks[-1]
+                info["winner"] = learner
+                self._auto_tips[-1] = self._auto_tip(gen, kind, info)
+        if values.get("qualifying") == 1.0:
+            self.qualify_rows = (i if self.qualify_rows is None else self.qualify_rows[0], i)
+        code = values.get("switch", _NAN)
+        kind = SWITCH_KINDS.get(int(code)) if math.isfinite(code) and code == int(code) else None
+        if kind is None:
+            return
+        gen = int(values["generation"])
+        info = {
+            "switch": float(code),
+            "learner": learner,
+            "learner_stall": values.get("learner_stall", _NAN),
+            "learner_best": values.get("learner_best", _NAN),
+        }
+        self.auto_marks.append((gen, kind, info))
+        self._auto_rows.append(i)
+        self._auto_tips.append(self._auto_tip(gen, kind, info))
+
+    def _auto_tip(self, gen: int, kind: str, info: Mapping[str, float]) -> str:
+        """자동 세로선 풍선 도움말. 필요한 값이 빠진(손상된) 줄은 사건 표시와 같은 짧은 글."""
+        best = fmt_value(info.get("learner_best", _NAN))
+        learner = info.get("learner", _NAN)
+        if kind == "restart":
+            stall = info.get("learner_stall", _NAN)
+            where = SWITCH_RESTART_FROM.get(int(info.get("switch", 0)))
+            if math.isfinite(stall) and where is not None:
+                return S.DASH_MARK_TIP_RESTART.format(
+                    gen=gen, where=S.RESTART_FROM_NAMES_SHORT[where], stall=int(stall), best=best
+                )
+        elif kind == "qualify_next":
+            if math.isfinite(learner):
+                return S.DASH_MARK_TIP_QUALIFY_NEXT.format(gen=gen, n=int(learner) + 1, best=best)
+        elif kind == "qualify_pick":
+            winner = info.get("winner", _NAN)
+            if not math.isfinite(winner):
+                winner = self._qualify_leader()
+            if math.isfinite(winner):
+                return S.DASH_MARK_TIP_QUALIFY_PICK.format(gen=gen, winner=int(winner) + 1)
+        return S.DASH_MARK_TOOLTIP.format(gen=gen, label=S.DASH_MARK_LABELS.get(kind, kind))
+
+    def _qualify_leader(self) -> float:
+        """다음 줄이 아직 없을 때의 통과자: 마지막 예선 끝 표시까지 이어진 예선 표시(출전마다 마지막 세대)의
+        learner_best 가운데 첫 최댓값을 낸 learner(동점이면 앞 번호, 명세 A28). 다음 줄이 오면 그 줄의 learner로 고친다."""
+        k = len(self.auto_marks) - 1
+        while k > 0 and self.auto_marks[k - 1][1] == "qualify_next":
+            k -= 1
+        top, leader = -math.inf, _NAN
+        for _gen, _kind, info in self.auto_marks[k:]:
+            b = info.get("learner_best", _NAN)
+            if math.isfinite(b) and b > top:
+                top, leader = b, info.get("learner", _NAN)
+        return leader
 
     # -- 타일이 쓰는 자료 -----------------------------------------------------
     def col(self, name: str) -> np.ndarray:
@@ -1251,14 +1419,21 @@ class Dashboard(QWidget):
         x = self.table.col(self.axis)[idx]
         return np.where(np.isfinite(out), x, _NAN)
 
-    def mark_positions(self, follows_axis: bool) -> tuple[np.ndarray, list[str], list[str]]:
-        """세로선 (가로축 값, 풍선 도움말, 이름). 자료 범위 밖 세대는 NaN."""
-        if not self.marks:
-            return np.zeros(0), [], []
-        xs = self.x_at_generations(np.array([g for g, _ in self.marks], dtype=np.float64), follows_axis)
-        labels = [S.DASH_MARK_LABELS.get(k, k) for _, k in self.marks]
+    def mark_positions(self, follows_axis: bool) -> tuple[np.ndarray, list[str], list[str], list[str]]:
+        """세로선 (가로축 값, 풍선 도움말, 이름, 종류). 사건 표시(set_marks) 뒤에 자동 표시(switch 열)를 잇는다.
+        자료 범위 밖 세대는 NaN. 자동 표시는 그 세대 줄의 가로축 값(세대 끝의 누적 시험 횟수·경과 시간)에 긋는다."""
+        kinds = [k for _, k in self.marks]
+        labels = [S.DASH_MARK_LABELS.get(k, k) for k in kinds]
         tips = [S.DASH_MARK_TOOLTIP.format(gen=g, label=label) for (g, _), label in zip(self.marks, labels, strict=True)]
-        return xs, tips, labels
+        xs = self.x_at_generations(np.array([g for g, _ in self.marks], dtype=np.float64), follows_axis)
+        if self.auto_marks:
+            auto_kinds = [k for _, k, _ in self.auto_marks]
+            kinds += auto_kinds
+            labels += [S.DASH_MARK_LABELS.get(k, k) for k in auto_kinds]
+            tips += self._auto_tips
+            rows = np.asarray(self._auto_rows, dtype=np.int64)
+            xs = np.concatenate((xs, self.x_values(follows_axis)[rows]))
+        return xs, tips, labels, kinds
 
     def x_text(self, i: int, follows_axis: bool) -> str:
         gens = self.table.col("generation")
