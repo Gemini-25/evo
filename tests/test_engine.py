@@ -45,10 +45,15 @@ def test_seed_spaces_are_disjoint_and_stable() -> None:
     assert len(train) == 25 and not train & other
     assert len({t.seed for t in seeds.judge_trials()}) == seeds.JUDGE_SET
     assert seeds.train_trials(1, 0, 1) != seeds.train_trials(2, 0, 1)
-    code = "from evolab.engine import seeds; print(seeds.derive(0, 1, 2, 3), seeds.learner_seed(9))"
+    code = ("from evolab.engine import seeds; "
+            "print(seeds.derive(0, 1, 2, 3), seeds.learner_seed(9), seeds.learner_seed(9, 3))")
     outs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env={"PYTHONHASHSEED": str(h), **_env()}).stdout
             for h in (0, 1, 77)}
-    assert len(outs) == 1 and outs.pop().split()[0] == str(seeds.derive(0, 1, 2, 3))
+    assert len(outs) == 1
+    assert outs.pop().split() == [str(seeds.derive(0, 1, 2, 3)), str(seeds.learner_seed(9)), str(seeds.learner_seed(9, 3))]
+    # 학습 방법 시드(v1.1): 처음 학습 방법은 v1.0과 같은 [4, s], n번째로 만든 학습 방법은 [4, s, n]
+    assert seeds.learner_seed(9) == seeds.derive(4, 9) & 0xFFFFFFFF
+    assert seeds.learner_seed(9, 3) == seeds.derive(4, 9, 3) & 0xFFFFFFFF != seeds.learner_seed(9)
 
 
 def _env() -> dict[str, str]:

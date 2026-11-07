@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from evolab import paths
+from evolab.app import strings as S
 from evolab.app.lab.client import TrainingClient
 from evolab.engine import trainer as trainer_mod
 from evolab.engine.pool import WorkerPool
@@ -169,6 +170,56 @@ def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
     assert rec2.of("started")[0]["generation"] == 1
     client2.shutdown()
     assert strip(RunStore.open(run_dir).read_stats()) == straight_rows(3)
+
+
+FAST = {"validation_seeds": 4, "validation_candidates": 1}
+
+
+def test_enabling_restart_while_paused_matches_trainer_apply_config(qtbot: Any, tmp_path: Path) -> None:
+    """v1.1: 멈춤 → config 명령으로 자동 재시작을 켬 → 계속한 결과가 같은 세대에 apply_config한 Trainer와 같다."""
+    client, rec = start(qtbot, tmp_path, start_running=False, config={**FAST, "max_generations": 10})
+    qtbot.waitUntil(lambda: bool(rec.states()), timeout=30000)
+    for n in (2, 3):
+        client.send({"type": "step"})
+        qtbot.waitUntil(lambda n=n: rec.states().count("paused") >= n, timeout=120000)
+    assert [g["generation"] for g in rec.of("generation")] == [1, 2]
+    client.send({"type": "config", "changes": {"restart_patience": 24}})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 1, timeout=30000)
+    reply = rec.of("applied")[-1]
+    assert reply["ok"] is True and reply["changes"] == {"restart_patience": 24} and reply["generation"] == 2
+    client.send({"type": "run"})
+    qtbot.waitUntil(lambda: "finished" in rec.states(), timeout=180000)
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    client.shutdown()
+    store = RunStore.open(run_dir)
+    assert ("config_change", 2) in [(e["kind"], e["generation"]) for e in store.read_events()]
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, TrainConfig.from_dict({**CONFIG, **FAST, "max_generations": 10}), pool)
+        expect = [t.step() for _ in range(2)]
+        t.apply_config({"restart_patience": 24})
+        expect += [t.step() for _ in range(8)]
+    rows = store.read_stats()
+    assert strip(rows) == strip(expect) == strip([g["row"] for g in rec.of("generation")])
+    assert any(r["switch"] in ("1", "2") for r in rows)  # 켠 뒤 재시작이 실제로 일어났다
+
+
+def test_env_change_during_qualifying_is_refused(qtbot: Any, tmp_path: Path) -> None:
+    client, rec = start(qtbot, tmp_path, start_running=False,
+                        config={**FAST, "qualify_entrants": 2, "qualify_trials": 48, "max_generations": 6})
+    qtbot.waitUntil(lambda: bool(rec.states()), timeout=30000)
+    client.send({"type": "step"})
+    qtbot.waitUntil(lambda: rec.states().count("paused") >= 2, timeout=120000)
+    data = json.loads(LANDER_TEXT)
+    data["world"]["gravity"] = [0.0, -1.5]
+    client.send({"type": "env", "text": json.dumps(data, ensure_ascii=False)})
+    qtbot.waitUntil(lambda: len(rec.of("applied")) >= 1, timeout=30000)
+    reply = rec.of("applied")[-1]
+    assert reply["ok"] is False and reply["message"] == S.TRAIN_ENV_DURING_QUALIFY.format(n=1, k=2)
+    run_dir = Path(rec.of("started")[0]["run_dir"])
+    client.shutdown()
+    store = RunStore.open(run_dir)
+    assert "env_change" not in [e["kind"] for e in store.read_events()]
+    assert len(store.read_run_info()["env_versions"]) == 1
 
 
 def test_bad_request_reports_error(qtbot: Any, tmp_path: Path) -> None:

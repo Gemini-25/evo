@@ -170,6 +170,9 @@ def _argument(name: str, message: str) -> str:
     (["train", "x.evoenv", "--workers", "-2"], S.RVM_CLI_TOO_SMALL.format(minimum=0, value=-2)),
     (["train", "x.evoenv", "--popsize", "abc"], S.RVM_CLI_NOT_INT.format(value="abc")),
     (["train", "x.evoenv", "--sigma", "abc"], S.RVM_CLI_NOT_NUMBER.format(value="abc")),
+    (["train", "x.evoenv", "--restart", "0"], S.RVM_CLI_TOO_SMALL.format(minimum=1, value=0)),
+    (["train", "x.evoenv", "--qualify", "0"], S.RVM_CLI_TOO_SMALL.format(minimum=1, value=0)),
+    (["train", "x.evoenv", "--qualify-trials", "abc"], S.RVM_CLI_NOT_INT.format(value="abc")),
     (["reproduce", "x.zip", "--workers", "-1"], S.RVM_CLI_TOO_SMALL.format(minimum=0, value=-1)),
     (["selftest", "--no-gui", "--workers", "0"], S.RVM_CLI_TOO_SMALL.format(minimum=1, value=0)),
     (["selftest", "--no-gui", "--workers", "-2"], S.RVM_CLI_TOO_SMALL.format(minimum=1, value=-2)),
@@ -200,6 +203,12 @@ _COMMANDS = "'train', 'bench', 'judge', 'play', 'bundle', 'reproduce', 'csv', 's
     (["train", "x.evoenv", "--max", "3"], _T["ambiguous option: %(option)s could match %(matches)s"] % {
         "option": "--max", "matches": "--max-time, --max-generations, --max-evaluations"}),
     (["train", "x.evoenv", "--ipop=1"], _argument("--ipop", _T["ignored explicit argument %r"] % "1")),
+    # v1.1 자동 재시작: 켜기와 끄기는 함께 줄 수 없고, 새로 시작할 곳은 정해진 값만
+    (["train", "x.evoenv", "--restart", "5", "--no-restart"],
+     _argument("--no-restart", _T["not allowed with argument %s"] % "--restart")),
+    (["train", "x.evoenv", "--restart-from", "xx"], _argument("--restart-from", _T[
+        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "xx",
+                                                                 "choices": "'fresh', 'champion', 'alternate'"})),
 ])
 def test_cli_other_argument_errors_are_korean_too(capsys: pytest.CaptureFixture[str], argv: list[str],
                                                   detail: str) -> None:
@@ -244,6 +253,12 @@ def test_cli_accepts_valid_numbers() -> None:
     args = cli._build_parser().parse_args(["train", "x.evoenv", "--seed", "0", "--max-time", "1.5", "--workers", "0"])
     assert (args.seed, args.max_time, args.workers) == (0, 1.5, 0)
     assert cli._build_parser().parse_args(["bench", "x.evoenv"]).workers is None
+    args = cli._build_parser().parse_args(["train", "x.evoenv", "--restart", "1", "--restart-from", "alternate",
+                                           "--qualify", "8", "--qualify-trials", "1"])
+    assert (args.restart, args.no_restart, args.restart_from, args.qualify, args.qualify_trials) == (
+        1, False, "alternate", 8, 1)
+    args = cli._build_parser().parse_args(["train", "x.evoenv", "--no-restart"])
+    assert (args.restart, args.no_restart, args.restart_from, args.qualify) == (None, True, None, None)
 
 
 def test_commands_guard_bad_values_without_parser(capsys: pytest.CaptureFixture[str]) -> None:

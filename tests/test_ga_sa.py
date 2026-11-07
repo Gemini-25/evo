@@ -731,6 +731,16 @@ def test_make_learner_maps_train_config() -> None:
     assert sa.popsize == 6  # popsize 설정은 쓰지 않는다
     defaults = make_learner(TrainConfig(method="sa"), layout)
     assert defaults.popsize == 9
+    # v1.1: index=0(처음 학습 방법)은 번호를 넣기 전 호출과 같은 시드·같은 상태(v1.0 실행이 그대로 이어진다)
+    for config, cls, cfg in ((TrainConfig(method="ga", popsize=12, run_seed=5), GeneticAlgorithm, ga.config),
+                             (TrainConfig(method="sa", run_seed=5, sa_neighbors=5, sa_step=0.2,
+                                          sa_initial_temperature=3.0, sa_cooling=0.99), SimulatedAnnealing, sa.config)):
+        before = cls(layout.initial(), type(cfg)(**{**asdict(make_learner(config, layout).config),
+                                                    "seed": seeds.derive(4, 5) & 0xFFFFFFFF}))
+        zero = make_learner(config, layout, index=0)
+        assert pickle.dumps(zero.state_dict()) == pickle.dumps(before.state_dict())
+        third = make_learner(config, layout, index=3)
+        assert third.config.seed == seeds.learner_seed(5, 3) != zero.config.seed
 
 
 def test_train_config_defaults_and_validation() -> None:

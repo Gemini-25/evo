@@ -74,3 +74,46 @@ def test_cli_bundle_reproduce_csv(tmp_path: Path, capsys: Any) -> None:
     rows = list(csv.DictReader((tmp_path / "통계.csv").open(encoding="utf-8-sig")))
     assert [r["generation"] for r in rows] == ["1", "2", "3"]
     assert export_csv(run, tmp_path / "b.csv").exists()
+
+
+def test_bundle_with_restarts_qualifying_and_changes_reproduces(tmp_path: Path) -> None:
+    """v1.1: 예선(2 × 24회)과 자동 재시작이 있는 실행에 시험 수·P 변경, 재시작 끄기와 다시 켜기, 환경 교체를 넣어도
+    재현 통계가 같다(재시작·예선은 사건 기록에 없고 같은 세대 경계의 변경 재적용으로 다시 생긴다)."""
+    config = TrainConfig(popsize=6, trials=2, validate_every=24, validation_seeds=4, validation_candidates=1,
+                         checkpoint_every=2, run_seed=9, restart_patience=24, qualify_entrants=2, qualify_trials=24)
+    store = create_run(tmp_path / "원래", LANDER_TEXT, compile_env(LANDER_TEXT), config, 0)
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, config, pool, store)
+
+        def until(gen: int) -> None:
+            while t.state.generation < gen:
+                t.step()
+
+        def change(**values: Any) -> None:
+            changes = t.apply_config(values)
+            assert changes == values
+            store.append_event("config_change", t.state.generation, changes=changes)
+
+        until(4)  # 예선 끝
+        change(trials=3, restart_patience=36)
+        until(7)
+        change(restart_patience=None)
+        until(9)
+        change(restart_patience=24)  # 다시 켬: 기준점을 다시 잡는다
+        data = json.loads(LANDER_TEXT)
+        data["world"]["gravity"] = [0.0, -1.4]
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        t.replace_env(text)
+        store.append_event("env_change", 9, version=store.add_env_version(text, 9))
+        until(16)
+        t.checkpoint()
+    a = store.read_stats()
+    switches = [(int(r["generation"]), int(r["switch"])) for r in a if r["switch"] != "0"]
+    assert switches[:2] == [(2, 3), (4, 4)]  # 예선 다음 출전, 예선 끝
+    assert [g for g, c in switches if c in (1, 2)] == [6, 12]  # P를 바꾼 뒤, 다시 켜고 환경을 바꾼 뒤의 재시작
+    assert {e["kind"] for e in store.read_events()} == {"start", "config_change", "env_change"}
+    bundle = export_bundle(store.root, tmp_path / "재현.zip")
+    new = reproduce(bundle, tmp_path / "다시", workers=0)
+    b = RunStore.open(new).read_stats()
+    assert list(b[0]) == list(a[0])
+    assert compare_stats(a, b) is None
