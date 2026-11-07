@@ -35,7 +35,8 @@ BASE: dict[str, Any] = {
         {"kind": "body_state", "id": "st", "body": "car", "fields": ["v_fwd", "v_lat"], "frame": "body"},
     ],
     "checkpoints": [
-        {"id": "cp", "lines": [[[0.0, -5.0], [0.0, 5.0]], [[10.0, -5.0], [10.0, 5.0]], [[20.0, -5.0], [20.0, 5.0]]],
+        # 선은 진행 방향(+x)으로 볼 때 왼쪽 끝 → 오른쪽 끝
+        {"id": "cp", "lines": [[[0.0, 5.0], [0.0, -5.0]], [[10.0, 5.0], [10.0, -5.0]], [[20.0, 5.0], [20.0, -5.0]]],
          "loop": False},
     ],
     "events": [
@@ -135,7 +136,7 @@ def test_checkpoints_in_order_score_and_success() -> None:
 def test_wall_crash_and_stall() -> None:
     events = [dict(e) for e in BASE["events"]]
     events[1]["when"] = "cp.since > 10.0"
-    spec = env(checkpoints=[{"id": "cp", "lines": [[[0.0, -5.0], [0.0, 5.0]], [[40.0, -5.0], [40.0, 5.0]]],
+    spec = env(checkpoints=[{"id": "cp", "lines": [[[0.0, 5.0], [0.0, -5.0]], [[40.0, 5.0], [40.0, -5.0]]],
                              "loop": False}], events=events)
     ep = Episode(spec, None, Trial(1))
     run(ep, [1.0, 0.0], 2000)
@@ -147,7 +148,8 @@ def test_wall_crash_and_stall() -> None:
 
 
 def test_loop_checkpoints_count_laps() -> None:
-    lines = [[[0.0, -3.0], [0.0, 3.0]], [[0.0, 7.0], [0.0, 13.0]]]  # 반지름 5 원을 도는 두 점
+    # 반지름 5 원을 반시계로 돌 때 네 곳(아래, 오른쪽, 위, 왼쪽), 선마다 진행 방향의 왼쪽 → 오른쪽
+    lines = [[[0.0, 3.0], [0.0, -3.0]], [[3.0, 5.0], [7.0, 5.0]], [[0.0, 7.0], [0.0, 13.0]], [[-3.0, 5.0], [-7.0, 5.0]]]
     spec = env(bodies=[BASE["bodies"][0]], sensors=[BASE["sensors"][1]],
                checkpoints=[{"id": "cp", "lines": lines, "loop": True}],
                events=[{"id": "laps", "when": "cp.laps >= 2"}],
@@ -161,7 +163,7 @@ def test_loop_checkpoints_count_laps() -> None:
     run(ep, [0.3, steer], 60 * 60)
     r = ep.result()
     assert r.end_event == "laps"
-    assert r.blocks["n"] == 4.0
+    assert r.blocks["n"] == 8.0
     assert r.blocks["lap"] > 0
 
 
@@ -209,3 +211,54 @@ def test_lateral_accel_limit_makes_fast_cars_turn_wider() -> None:
     assert free == pytest.approx(2.0 / math.tan(0.5), rel=0.05)  # 제한 없으면 자전거 모형 반지름
     assert limited == pytest.approx(12.0**2 / 4.0, rel=0.05)  # v²/a: 최고 속도 12m/s, 4m/s²
     assert turn_radius(4.0, 0.2) < limited  # 느리면 더 꺾인다
+
+
+
+def test_checkpoints_count_only_forward_crossings() -> None:
+    """앞뒤로 흔들거나 뒤로 넘어서는 세지 않는다(리뷰: 바퀴 수 부풀리기)."""
+    lines = [[[0.0, 3.0], [0.0, -3.0]], [[3.0, 3.0], [3.0, -3.0]], [[30.0, 3.0], [30.0, -3.0]]]
+    spec = env(bodies=[BASE["bodies"][0]], sensors=[BASE["sensors"][1]],
+               checkpoints=[{"id": "cp", "lines": lines, "loop": True}],
+               events=[{"id": "laps", "when": "cp.laps >= 1"}],
+               termination=[{"event": "laps", "outcome": "success"}, {"event": "timeout", "outcome": "neutral"}],
+               scoring={"blocks": [{"kind": "checkpoints", "id": "n", "checkpoints": "cp"}]})
+    ep = Episode(spec, None, Trial(1))
+    for k in range(600):  # 앞으로 조금, 뒤로 조금을 되풀이
+        ep.step([1.0 if (k // 40) % 2 == 0 else -1.0, 0.0])
+    r = ep.result()
+    assert r.end_event != "laps" and r.blocks["n"] <= 1.0
+
+
+def test_fast_car_counts_every_line_it_passes_in_one_step() -> None:
+    lines = [[[x, 5.0], [x, -5.0]] for x in (0.0, 0.05, 0.1, 0.15, 0.2, 5.0)]
+    acts = [dict(BASE["actuators"][0], max_accel=200.0, drag=0.5)]
+    spec = env(bodies=[BASE["bodies"][0]], actuators=acts, sensors=[BASE["sensors"][1]],
+               checkpoints=[{"id": "cp", "lines": lines, "loop": False}], events=[],
+               termination=[{"event": "timeout", "outcome": "neutral"}],
+               scoring={"blocks": [{"kind": "checkpoints", "id": "n", "checkpoints": "cp"}]},
+               agent={"spawn": {"vx": 30.0}})
+    ep = Episode(spec, None, Trial(1))
+    run(ep, [1.0, 0.0], 30)
+    assert ep.result().blocks["n"] == 5.0  # 0.5m/스텝으로 달려 선 4개를 한 스텝에 지나도 모두 센다
+
+
+def test_large_drag_is_stable_and_top_speed_exact() -> None:
+    acts = [dict(BASE["actuators"][0], max_accel=6.0, drag=200.0)]
+    spec = env(bodies=[BASE["bodies"][0]], actuators=acts, sensors=[BASE["sensors"][1]], checkpoints=[],
+               events=[], termination=[{"event": "timeout", "outcome": "neutral"}], scoring={"blocks": []})
+    ep = Episode(spec, None, Trial(1))
+    run(ep, [1.0, 0.0], 300)
+    assert ep.channel_values()["st.v_fwd"] == pytest.approx(6.0 / 200.0, rel=1e-6)
+
+
+def test_big_hold_and_tiny_dt_do_not_overflow() -> None:
+    events = [dict(e) for e in BASE["events"]]
+    events[0]["hold"] = 1e308
+    Episode(env(events=events), None, Trial(1))
+    Episode(env(world={**BASE["world"], "dt": 5e-324}), None, Trial(1))
+
+
+
+def test_loop_checkpoints_need_three_lines() -> None:
+    with pytest.raises(EnvFileError):
+        env(checkpoints=[{"id": "cp", "lines": [[[0.0, 3.0], [0.0, -3.0]], [[3.0, 3.0], [3.0, -3.0]]], "loop": True}])

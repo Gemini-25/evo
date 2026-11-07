@@ -387,6 +387,8 @@ class _Compiler:
         for i, c in enumerate(env.checkpoints):
             if c.body is not None:
                 body_ref(f"checkpoints[{i}].body", c.body)
+            if c.loop and len(c.lines) < 3:
+                self.error(f"checkpoints[{i}].lines", S.SPEC_CHECKPOINTS_LOOP_MIN.format(id=c.id))
         tracks = [g for g in env.generators if isinstance(g, m.TrackGen)]
         for i, g in enumerate(env.generators):
             if isinstance(g, m.TrackGen) and g.source == "drawn" and (g.centerline is None or len(g.centerline) < 3):

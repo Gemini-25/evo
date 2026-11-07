@@ -331,6 +331,9 @@ class Region(_Model):
 class Checkpoints(_Model):
     """순서 있는 체크포인트 선. 0번은 출발선이다(출발할 때 지난 것으로 본다).
 
+    선마다 진행 방향으로 볼 때 왼쪽 끝 → 오른쪽 끝 순서로 적는다. 그 방향으로(뒤에서 앞으로) 지날 때만 센다.
+    loop면 선이 3개 이상이어야 한다.
+
     수식에서 <id>.count(지난 체크포인트 수), <id>.laps(바퀴 수, loop일 때), <id>.since(마지막으로 지난 뒤 초),
     <id>.progress(진행: 트랙 생성기의 체크포인트면 중심선을 따라 간 거리 m, 아니면 지난 체크포인트 수)를 쓴다.
     """
@@ -387,7 +390,8 @@ class TrackGen(_Model):
     segments: int = 12
     curvature: Num = 0.5
     length_range: tuple[float, float] = (150.0, 250.0)
-    checkpoints: int = 24
+    checkpoints: int = Field(default=24, ge=3, le=2000)
+    """한 바퀴의 체크포인트 선 수(3개 이상: 앞뒤로 흔들어 바퀴를 세지 못하게)."""
     friction: Num = 0.5
     wall_radius: float = Field(default=0.1, ge=0.0)
 

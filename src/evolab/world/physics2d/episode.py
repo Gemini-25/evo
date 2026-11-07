@@ -33,6 +33,11 @@ NUM_LIMIT = 1e15
 FORCE_LIMIT = 1e8
 FIELD_LIMIT = 1e4
 """중력, 바람의 크기 한계."""
+MAX_STEPS = 1e9
+"""스텝 수 상한(hold가 아주 크거나 dt가 아주 작아도 정수로 바꿀 수 있게)."""
+SHUFFLE_ABOVE = 1000
+"""정적 물체의 모양이 이보다 많으면 섞어서 넣는다(기본 예제는 이보다 적어 결과가 바뀌지 않는다)."""
+SHUFFLE_SEED = 0x5EED
 
 
 @dataclass(frozen=True)
@@ -152,17 +157,19 @@ def _sub_seed(seed: int, name: str) -> int:
 
 
 def _cross(p: geo.Point, q: geo.Point, a: geo.Point, b: geo.Point) -> bool:
-    """선분 pq와 ab가 만나는가(끝점이 선 위에 있는 경우 포함)."""
+    """p에서 q로 움직이며 체크포인트 선 ab를 앞쪽으로 지났는가.
+
+    선의 방향은 진행 방향으로 볼 때 왼쪽 끝 a → 오른쪽 끝 b다(트랙 생성기는 안쪽 벽 → 바깥쪽 벽). 그러면 앞쪽은
+    orient(a, b, ·) > 0인 쪽이다. 뒤쪽(또는 선 위)에서 앞쪽으로 넘어갈 때만 센다: 뒤로 넘거나 앞뒤로 흔들어도 세지 않는다.
+    """
     def orient(u: geo.Point, v: geo.Point, w: geo.Point) -> float:
         return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
 
-    d1, d2 = orient(a, b, p), orient(a, b, q)
+    d_from, d_to = orient(a, b, p), orient(a, b, q)
+    if not (d_from <= 0.0 < d_to):
+        return False
     d3, d4 = orient(p, q, a), orient(p, q, b)
-    if ((d1 > 0) != (d2 > 0) or d1 == 0 or d2 == 0) and ((d3 > 0) != (d4 > 0) or d3 == 0 or d4 == 0):
-        if d1 == 0 and d2 == 0:
-            return False  # 선 위를 따라 움직임
-        return True
-    return False
+    return (d3 > 0) != (d4 > 0) or d3 == 0 or d4 == 0
 
 
 def _rand_values(env: m.EnvFile, seed: int) -> dict[str, float]:
@@ -251,6 +258,10 @@ class _Vehicle:
     mass: float
     lat_max: float = 0.0
     slot: int = 0
+    decay: float = 1.0
+    """한 스텝 동안 구름 저항으로 남는 속도 비율 exp(-drag x dt)."""
+    gain: float = 0.0
+    """한 스텝 동안 가속 1(m/s²)이 더하는 속도 (1 - decay) / drag (drag가 0이면 dt)."""
 
 
 @dataclass
@@ -310,7 +321,7 @@ class Episode:
         self.env = env
         self.trial = trial
         self.dt = float(env.world.dt)
-        self.max_steps = max(1, math.ceil(env.world.max_time / self.dt - 1e-9))
+        self.max_steps = max(1, math.ceil(min(env.world.max_time / self.dt, MAX_STEPS) - 1e-9))
         self.steps = 0
         self.time = 0.0
         self._done = False
@@ -358,7 +369,8 @@ class Episode:
         self.moving_bodies = [g.id for g in self._geoms if g.moving]
         self._moving = [self.bodies[i] for i in self.moving_bodies]
         # hold초 유지: 조건이 처음 참이 된 스텝부터 hold초가 지난 스텝에 일어난다(hold=0이면 바로).
-        self._events = [_EventState(e, 1 + max(0, math.ceil(ev.hold / self.dt - 1e-9))) for e, ev in self._event_defs()]
+        self._events = [_EventState(e, 1 + max(0, math.ceil(min(ev.hold / self.dt, MAX_STEPS) - 1e-9)))
+                        for e, ev in self._event_defs()]
         self._builtin = {"timeout": _EventState("timeout", 1), "out_of_bounds": _EventState("out_of_bounds", 1)}
         states = {**self._builtin, **{st.id: st for st in self._events}}
         self._end_states = [(end, states[end.event]) for end in spec.terminations if end.event in states]
@@ -506,6 +518,11 @@ class Episode:
         for k, s in enumerate(pyshapes):
             t = per_shape_tags[k] if per_shape_tags is not None else tags
             self._shape_info[s] = (body_id, frozenset(t))
+        if body.body_type == pymunk.Body.STATIC and len(pyshapes) > SHUFFLE_ABOVE:
+            # Chipmunk의 경계 상자 트리는 한 줄로 늘어선 선분을 차례로 넣으면 한쪽으로 쏠려 넣기가 제곱 시간이 된다
+            # (2만 개: 차례로 4.4초, 섞으면 0.04초). 늘 같은 순서로 섞어 결정성은 그대로다.
+            order = np.random.default_rng(SHUFFLE_SEED).permutation(len(pyshapes))
+            pyshapes = [pyshapes[int(k)] for k in order]
         try:
             self.space.add(body, *pyshapes)
         except AssertionError:  # pymunk: 질량이나 관성이 0, 무한대, NaN
@@ -902,6 +919,11 @@ class Episode:
                 self.space.add(motor)
                 self._motors.append(_Motor(motor, index[a.id], _clamp(self._num(a.max_speed, "agent"), 0.0, 1e4)))
         for v in self._vehicles:
+            # 구름 저항은 지수 감쇠로 한 스텝을 정확히 푼다: 저항이 커도(drag x dt > 1) 발산하지 않고,
+            # 최고 속도가 정확히 max_accel / drag다(바람 항력과 같은 방식).
+            v.decay = math.exp(-v.drag * self.dt)
+            v.gain = (1.0 - v.decay) / v.drag if v.drag > 0.0 else self.dt
+        for v in self._vehicles:
             if v.bid not in slot_of:
                 slot_of[v.bid] = len(self._force_bodies)
                 self._force_bodies.append((v.bid, v.body))
@@ -938,23 +960,26 @@ class Episode:
             p = self._bpos(cp.body)
             q = cp.prev
             cp.prev = p
-            if not cp.done:
+            for _ in range(len(cp.lines)):  # 빠른 차가 한 스텝에 선을 여러 개 지나도 모두 센다
+                if cp.done:
+                    break
                 a, b = cp.lines[cp.next]
-                if _cross(q, p, a, b):
-                    cp.count += 1
-                    cp.last_time = t
-                    if cp.loop:
-                        if cp.next == 0:
-                            cp.laps += 1
-                            cp.lap_times.append(t - cp.lap_start)
-                            cp.lap_start = t
-                        cp.next = (cp.next + 1) % len(cp.lines)
-                    else:
-                        cp.next += 1
-                        if cp.next >= len(cp.lines):
-                            cp.done = True
-                            cp.laps = 1
-                            cp.lap_times.append(t)
+                if not _cross(q, p, a, b):
+                    break
+                cp.count += 1
+                cp.last_time = t
+                if cp.loop:
+                    if cp.next == 0:
+                        cp.laps += 1
+                        cp.lap_times.append(t - cp.lap_start)
+                        cp.lap_start = t
+                    cp.next = (cp.next + 1) % len(cp.lines)
+                else:
+                    cp.next += 1
+                    if cp.next >= len(cp.lines):
+                        cp.done = True
+                        cp.laps = 1
+                        cp.lap_times.append(t)
             if cp.need_progress:
                 if cp.track is not None:
                     from evolab.generators.track import progress_along
@@ -1031,7 +1056,8 @@ class Episode:
             v.body.angular_velocity = omega
             self._cache.pop(v.bid, None)
             acc = self._acc[v.slot]
-            acc[0] += (u[v.ch_throttle] * v.accel - v.drag * fwd) * v.mass
+            target = fwd * v.decay + u[v.ch_throttle] * v.accel * v.gain
+            acc[0] += (target - fwd) * v.mass / self.dt
         self._u_applied = applied
         sums = self._abs_sum
         for i, x in enumerate(applied):
@@ -1272,6 +1298,8 @@ class Episode:
         bid = s.body
         space = self.space
         memo: list[Any] = [-1, ()]
+        # 에이전트 물체는 질의 필터(에이전트 그룹)로 이미 빠진다. 세계 물체에 단 레이는 자기 모양을 직접 건너뛴다.
+        own = None if bid in self._agent_ids else set(self.bodies[bid].shapes)
 
         def rays() -> tuple[float, ...]:
             if memo[0] == self.steps:
@@ -1283,8 +1311,12 @@ class Episode:
             for ang in angles:
                 th = a + ang
                 end = (px + length * math.cos(th), py + length * math.sin(th))
-                hit = space.segment_query_first((px, py), end, 0.0, filt)
-                out.append(hit.alpha if hit is not None else 1.0)
+                if own is None:
+                    hit = space.segment_query_first((px, py), end, 0.0, filt)
+                    out.append(hit.alpha if hit is not None else 1.0)
+                else:
+                    alphas = [h.alpha for h in space.segment_query((px, py), end, 0.0, filt) if h.shape not in own]
+                    out.append(min(alphas) if alphas else 1.0)
             memo[0], memo[1] = self.steps, tuple(out)
             return memo[1]
 
