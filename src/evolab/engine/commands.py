@@ -352,6 +352,10 @@ def judge_command(args: Any) -> int:
 # ---------------------------------------------------------------------------
 
 
+BENCH_OBSERVE_ROUNDS = 3
+"""bench가 단일 코어 평가를 관찰 끔·켬으로 번갈아 재는 횟수(중앙값으로 비교)."""
+
+
 def bench_command(args: Any) -> int:
     # 명령줄 파서가 먼저 거른다(측정을 시작한 뒤 0으로 나누기·빈 중앙값으로 죽지 않게).
     counts = list(args.workers or []) or sorted({1, default_workers()})
@@ -375,28 +379,46 @@ def bench_command(args: Any) -> int:
     pairs = [(i, t) for i in range(pop) for t in trials]
     say(S.BENCH_TITLE.format(name=spec.file.name, pop=pop, trials=trials_n, dim=layout.dim))
 
-    # 단일 코어(이 프로세스)
+    # 단일 코어(이 프로세스). 같은 평가를 관찰 기록을 끄고·켜고 번갈아 BENCH_OBSERVE_ROUNDS번씩 재서 중앙값으로 비교한다:
+    # 한 번씩만 재면 회차 사이 흔들림(같은 평가가 ±10~15%, v1.2 측정)이 관찰 비용(학습에서 +0.4%)보다 훨씬 커서 부호까지
+    # 틀린다(한 번씩 잰 v1.2 초판은 −5~−23%로 나왔다). 켠 쪽에는 학습기가 세대마다 더하는 것(틀 계산, 쌍별 관찰, 세대 끝 요약)을 넣고 쓰기(세대 대표 파일 하나에
+    # 더하는 바이트)는 뺀다.
     single = WorkerPool(0)
-    t0 = time.perf_counter()
-    res = single.evaluate(version, env_text, layout, genomes, pairs)
-    el = time.perf_counter() - t0
+    codes = [OBSERVE_POSITIONS if k == 0 else OBSERVE_ACTIONS for _ in range(pop) for k in range(trials_n)]
+    single.evaluate(version, env_text, layout, genomes[:2], pairs[: 2 * trials_n])  # 환경 컴파일·첫 호출 시간 빼기
+
+    def plain() -> Any:
+        return single.evaluate(version, env_text, layout, genomes, pairs)
+
+    def observed() -> Any:
+        frame, world_key = observing.world_frame(spec, version, trials[0])
+        r = single.evaluate(version, env_text, layout, genomes, pairs, observe=codes, frame=frame)
+        agg = r.scores.reshape(pop, trials_n).mean(axis=1)
+        observing.summarize(generation=1, X=genomes, agg=agg, res=r, trials_per=trials_n,
+                            representative=int(np.argmax(agg)), learner=0, qualifying=False, layout=layout,
+                            end_ids=[t.event for t in spec.terminations], trial0=trials[0], frame=frame,
+                            world_key=world_key)
+        return r
+
+    off_times: list[float] = []
+    on_times: list[float] = []
+    for k in range(BENCH_OBSERVE_ROUNDS):  # 끔·켬, 켬·끔, 끔·켬 …: 기계가 점점 빨라지거나 느려져도 한쪽으로 쏠리지 않게
+        for mode in (("off", "on") if k % 2 == 0 else ("on", "off")):
+            t0 = time.perf_counter()
+            if mode == "off":
+                res = plain()
+                off_times.append(time.perf_counter() - t0)
+            else:
+                res_obs = observed()
+                on_times.append(time.perf_counter() - t0)
     steps = int(res.steps.sum())
+    el = statistics.median(off_times)
     nn_share = res.nn_seconds / max(res.nn_seconds + res.sim_seconds, 1e-12)
     say(S.BENCH_SINGLE.format(sps=steps / el, us=el / steps * 1e6, nn=100 * nn_share, steps=steps, sec=el))
-    # 같은 평가를 관찰 기록을 켜고 한 번 더(학습기가 세대마다 더하는 것: 틀 계산, 쌍별 관찰, 세대 끝 요약).
-    # 쓰기(세대 대표 파일 하나에 더하는 바이트)는 빼고 잰다. 결과는 같아야 한다(점수 비교).
-    t0 = time.perf_counter()
-    frame, world_key = observing.world_frame(spec, version, trials[0])
-    codes = [OBSERVE_POSITIONS if k == 0 else OBSERVE_ACTIONS for _ in range(pop) for k in range(trials_n)]
-    res_obs = single.evaluate(version, env_text, layout, genomes, pairs, observe=codes, frame=frame)
-    agg = res_obs.scores.reshape(pop, trials_n).mean(axis=1)
-    observing.summarize(generation=1, X=genomes, agg=agg, res=res_obs, trials_per=trials_n,
-                        representative=int(np.argmax(agg)), learner=0, qualifying=False, layout=layout,
-                        end_ids=[t.event for t in spec.terminations], trial0=trials[0], frame=frame,
-                        world_key=world_key)
-    el_obs = time.perf_counter() - t0
-    sps_obs = int(res_obs.steps.sum()) / el_obs
-    say(S.BENCH_OBSERVE.format(sps=sps_obs, pct=100.0 * (sps_obs / (steps / el) - 1.0)))
+    el_obs = statistics.median(on_times)
+    ratios = [100.0 * (off / on - 1.0) for off, on in zip(off_times, on_times, strict=True)]
+    say(S.BENCH_OBSERVE.format(sps=int(res_obs.steps.sum()) / el_obs, pct=100.0 * (el / el_obs - 1.0),
+                               rounds=BENCH_OBSERVE_ROUNDS, lo=min(ratios), hi=max(ratios)))
 
     for w in counts:
         with WorkerPool(w) as pool:

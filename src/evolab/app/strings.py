@@ -1324,7 +1324,8 @@ CLI_RESTART_TOO_SHORT_HINT: Final = "--restart 횟수로 늘리거나 --no-resta
 # 대시보드 타일 제목은 위 DASH_TILE_TITLES에 더했다.
 # ---------------------------------------------------------------------------
 # v1.2 관찰 기록 (engine/trainer.py, engine/session.py, engine/commands.py, cli.py)
-BENCH_OBSERVE: Final = "관찰 기록을 켠 단일 코어: 초당 {sps:,.0f}스텝 ({pct:+.1f}%)"
+BENCH_OBSERVE: Final = ("관찰 기록을 켠 단일 코어: 초당 {sps:,.0f}스텝 ({pct:+.1f}%, 끔·켬을 번갈아 {rounds}번 잰 중앙값, "
+                         "회차별 {lo:+.1f}~{hi:+.1f}%)")
 CLI_HELP_NO_OBSERVE: Final = ("그래프용 관찰 기록(집단 유전자, 행동 분포, 궤적 밀도)을 남기지 않는다. 학습 결과는 같다. "
                               "실험실에서 이어 가면 그 세대부터 다시 남긴다")
 
