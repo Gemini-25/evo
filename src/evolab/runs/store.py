@@ -830,7 +830,10 @@ class RunStore:
             arrays[key] = a
         folder = self.root / CHAMPIONS_DIR
         folder.mkdir(exist_ok=True)
-        _atomic_write(self._champion_path(g, kind), lambda f: np.savez(f, allow_pickle=False, **arrays))
+        # 관찰 기록(obs_*)이 든 세대 대표만 압축: 착륙선 초반 세대 30.4KB → 18.7KB, 쓰기 +1ms·읽기 +0.2ms(V12 측정).
+        # 다른 파일은 v1.1과 같은 무압축. np.load는 둘 다 읽는다.
+        save = np.savez_compressed if any(k.startswith(OBS_PREFIX) for k in arrays) else np.savez
+        _atomic_write(self._champion_path(g, kind), lambda f: save(f, allow_pickle=False, **arrays))
 
     def load_champion(self, generation: int, kind: str) -> dict[str, np.ndarray]:
         """챔피언·세대 대표 파일의 값(genome, score, env_version …). 관찰 기록 키(obs_*)는 빼고 돌려준다(v1.1과 같은

@@ -1039,8 +1039,9 @@ def _stability_keys(run: Path) -> tuple[Any, ...]:
     return tuple(c[k] for k in ("restart_patience", "restart_from", "qualify_entrants", "qualify_trials"))
 
 
-def test_cli_new_runs_get_restart_by_default_and_take_stability_flags(tmp_path: Path,
-                                                                      capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_new_runs_get_the_recommended_defaults_and_take_stability_flags(tmp_path: Path,
+                                                                           capsys: pytest.CaptureFixture[str]) -> None:
+    """새 실행 권장값(V11 실험으로 확정): 자동 재시작 끔, 예선 끔. 플래그로 켜면 그대로 들어간다."""
     code, runs = _train(tmp_path / "a", "--restart", "50", "--restart-from", "champion", "--qualify", "3",
                         "--qualify-trials", "100")
     assert code == 0 and _stability_keys(runs[0]) == (50, "champion", 3, 100)
@@ -1049,8 +1050,8 @@ def test_cli_new_runs_get_restart_by_default_and_take_stability_flags(tmp_path: 
                                     qualify=S.TRAIN_STABILITY_QUALIFY_ON.format(k=3, b=100)) in out
     assert RunStore.open(runs[0]).read_run_info()["seed_scheme"] == 2
     code, runs = _train(tmp_path / "b", gens="1")
-    assert code == 0 and _stability_keys(runs[0]) == (20000, "fresh", 1, 12000)
-    assert S.TRAIN_STABILITY.format(restart=S.TRAIN_STABILITY_RESTART_ON.format(p=20000, where=S.RESTART_FROM_NAMES["fresh"]),
+    assert code == 0 and _stability_keys(runs[0]) == (None, "fresh", 1, 12000)
+    assert S.TRAIN_STABILITY.format(restart=S.TRAIN_STABILITY_OFF,
                                     qualify=S.TRAIN_STABILITY_OFF) in capsys.readouterr().out
     code, runs = _train(tmp_path / "c", "--no-restart", gens="1")
     assert code == 0 and _stability_keys(runs[0])[0] is None
@@ -1073,9 +1074,11 @@ def test_cli_rejects_bad_stability_settings_before_creating_a_run(tmp_path: Path
     assert message in err and "Traceback" not in err
 
 
-def test_cli_default_restart_shorter_than_validation_says_how_to_fix(tmp_path: Path,
-                                                                      capsys: pytest.CaptureFixture[str]) -> None:
-    """v1.0에서 되던 --validate-every 25000: 권장 재시작(2만 회)보다 길면 시작하지 않고 고칠 플래그를 알린다."""
+def test_cli_default_restart_shorter_than_validation_says_how_to_fix(tmp_path: Path, capsys: pytest.CaptureFixture[str],
+                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """새 실행 기본 재시작을 켜 둔 경우(v1.1 실험 전 기본 2만 회), v1.0에서 되던 --validate-every 25000이 더 길면
+    시작하지 않고 고칠 플래그를 알린다. 지금 기본은 끔이라 이 경로는 기본값을 바꿔서만 시험한다."""
+    monkeypatch.setitem(trainer_mod.NEW_RUN_DEFAULTS, "restart_patience", 20000)
     out = tmp_path / "runs"
     args = ["train", str(LANDER), "--seed", "1", "--popsize", "4", "--trials", "1", "--max-generations", "1",
             "--validate-every", "25000", "--workers", "0", "--out", str(out)]

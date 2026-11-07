@@ -50,13 +50,16 @@ RESTART_FROM: tuple[str, ...] = ("fresh", "champion", "alternate")
 """자동 재시작 때 새 학습 방법의 출발점(설정 restart_from 값, 화면 선택 순서)."""
 MAX_QUALIFY_ENTRANTS = 8
 NEW_RUN_DEFAULTS: dict[str, Any] = {
-    "restart_patience": 20000,  # 실험(V11 R1·R3)으로 확정
+    "restart_patience": None,  # 끔. 실험(V11 R1)으로 확정: 켜면 권장 20,000(RECOMMENDED_RESTART_PATIENCE)
     "restart_from": "fresh",  # 실험(R2)으로 확정
     "qualify_entrants": 1,  # 1 = 예선 없음. 실험(R4)으로 확정
     "qualify_trials": 12000,  # 예선을 켤 때의 권장값. 실험(R4)으로 확정
 }
 """새 실행(실험실 폼, 명령줄 train, 반복 실행)에만 넣는 권장값. 데이터클래스 기본값은 '끔'이라
 예전 run.json, 체크포인트, 재현 묶음처럼 키가 없으면 v1.0과 같게 돈다."""
+
+RECOMMENDED_RESTART_PATIENCE = 20000
+"""자동 재시작을 켤 때의 권장 P(시험 수). 실험실 칸의 처음 값과 명세 A25."""
 
 SWITCH_NONE, SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION, SWITCH_QUALIFY_NEXT, SWITCH_QUALIFY_PICK = 0, 1, 2, 3, 4
 """통계 열 switch 값: 이 세대 끝에 일어난 학습 방법 교체(0 없음, 1 처음 상태에서 새로 시작, 2 챔피언에서 새로 시작,

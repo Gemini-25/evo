@@ -66,6 +66,7 @@ from evolab.engine.session import SessionRequest
 from evolab.engine.trainer import (
     MAX_QUALIFY_ENTRANTS,
     NEW_RUN_DEFAULTS,
+    RECOMMENDED_RESTART_PATIENCE,
     RESTART_FROM,
     SWITCH_QUALIFY_NEXT,
     SWITCH_QUALIFY_PICK,
@@ -86,7 +87,7 @@ COLOR_NOW = QColor(255, 120, 40)
 MARK_KINDS = ("resume", "env_change", "config_change", "branch")
 SHUTDOWN_WAIT_S = 120.0
 """창을 닫을 때 이번 세대를 마치고 체크포인트를 남길 때까지 기다리는 시간(큰 개체 수는 세대가 길다)."""
-SHOWN_RESTART_PATIENCE = int(NEW_RUN_DEFAULTS["restart_patience"] or 20000)
+SHOWN_RESTART_PATIENCE = int(NEW_RUN_DEFAULTS["restart_patience"] or RECOMMENDED_RESTART_PATIENCE)
 """자동 재시작을 끈 설정(None)일 때 '정체 판단 학습 시험' 칸에 보이는 값: 체크하면 이 값으로 켠다."""
 OPENED_RUN_CHECKPOINT_KEYS = ("restart_patience", "restart_from")
 """기록에서 연 실행에서 마지막 체크포인트 값을 쓰는 설정. 멈춘 상태에서 바꾼 자동 재시작 설정은 run.json(시작 때 설정)에
@@ -324,7 +325,7 @@ class LabView(QWidget):
         self._stopped_line = ""
         """학습이 끝난(finished) 까닭 줄. 끝난 상태에서 설정을 적용해 상태 글을 다시 만들 때도 붙인다."""
         self._session_note = ""
-        """상태 글 끝줄: 학습을 멈추지 않는 학습 프로세스 알림(관찰 기록 요약 실패, TRAIN_OBSERVE_FAILED). 실행이 바뀌면 지움."""
+        """상태 글 끝줄: 학습을 멈추지 않는 학습 프로세스 알림(관찰 기록 실패, TRAIN_OBSERVE_FAILED_ONWARD). 실행이 바뀌면 지움."""
 
         # 재생 상태
         self.view_mode = "live"  # live(관전), fast(고속 챔피언), replay(타임라인·겹쳐 보기)
@@ -1054,6 +1055,7 @@ class LabView(QWidget):
         self._world_pending.clear()
         self.dashboard.clear()  # 보는 재미 기록·보는 세대·뇌 원천도 비운다
         self._brain_key = None
+        self.canvas.set_hud("")  # 앞 실행의 「n세대 · 시험 0번」 글을 남기지 않는다
         self.timeline.setMaximum(1)
         self._update_timeline_label()
         self._close_inspect()
@@ -1921,7 +1923,12 @@ class LabView(QWidget):
                     self._update_brain_source()
                 return
             job["rep"] = result[0]
-        elif which == "play" and self._brain_play is job and not isinstance(result, Exception):
+        elif which == "play" and self._brain_play is job:
+            if isinstance(result, Exception):
+                # 실패: 재생이 되풀이되는 동안 「계산하는 중」에 머물지 않게 ①을 놓는다(② 또는 ③으로 내려감)
+                self._brain_play = None
+                self._update_brain_source()
+                return
             job["rep"] = result[0]
         else:
             return

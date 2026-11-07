@@ -250,6 +250,29 @@ def test_brain_tile_does_not_stay_preparing_after_spectating_on_the_learning_pag
     assert dash.brain_source is None and tile.source_kind in ("champion", "rep")
 
 
+def test_failed_brain_trace_of_a_playing_replay_falls_back_instead_of_preparing(qtbot: Any, lab: LabView) -> None:
+    """재생 중인 개체(①)의 뇌 추적이 실패하면 그 재생이 되풀이되는 동안에도 「계산하는 중」에 머물지 않는다."""
+    dash = lab.dashboard
+    dash.set_tile_visible("genemap", False)
+    lab.rb_fast.setChecked(True)
+    lab.fast_interval.setValue(1)
+    lab.max_generations.setValue(2)
+    assert lab.start_new()
+    wait_state(qtbot, lab, "finished")
+    qtbot.waitUntil(lambda: lab._brain_play is not None and not lab.brain_busy, timeout=60000)
+    job = lab._brain_play
+    job["rep"], job["tried"] = None, True
+    lab._brain_tag += 1
+    lab._brain_job = job
+    lab._brain_done(("brain", lab._brain_tag, "play", job), RuntimeError("boom"))
+    assert lab._brain_play is None and lab._brain_job is None
+    src = dash.brain_source
+    assert src is None or src.kind != "playing"
+    dash.flush()
+    tile = dash.tile("brain")
+    assert isinstance(tile, BrainTile) and S.BRAIN_PREPARING not in tile._notes
+
+
 # ---------------------------------------------------------------------------
 # T38: 고속 모드 — 챔피언 재생 뒤 뇌가 「재생 중」이고 play_t에 따라 뉴런이 바뀐다. 타임라인·세대 넘겨 보기
 # ---------------------------------------------------------------------------
@@ -574,13 +597,21 @@ def test_brain_source_priority_and_hidden_brain(qtbot: Any, lab: LabView, tmp_pa
     assert isinstance(tile, BrainTile) and tile.source_kind in ("champion", "rep")
 
 
+def test_opening_another_run_clears_the_canvas_hud(qtbot: Any, lab: LabView, tmp_path: Path) -> None:
+    """다른 실행을 열면 앞 실행의 HUD 글(「n세대 · 시험 0번」)이 남지 않는다."""
+    store = train_run(tmp_path / "runs", 2)
+    lab.canvas.set_hud(S.LAB_HUD_LIVE.format(gen=6, t=1.0, speed=1))
+    assert lab.open_run(store.root)
+    assert lab.canvas.hud == ""
+
+
 def test_observation_summary_failure_is_a_status_notice_not_a_box(
         qtbot: Any, lab: LabView, tmp_path: Path, message_boxes: list[tuple[str, str]]) -> None:
     """D9: 관찰 기록 요약 실패(notice가 붙은 error)는 학습을 멈추지 않으므로 막는 상자 대신 상태 글 끝줄로, 세대가 와서
     상태 글을 다시 만들어도, 되감아도 남고, 다른 실행을 열면 지운다. 다른 오류는 지금처럼 상자."""
     store = train_run(tmp_path / "runs", 2)
     assert lab.open_run(store.root)
-    note = S.TRAIN_OBSERVE_FAILED.format(reason="boom")
+    note = S.TRAIN_OBSERVE_FAILED_ONWARD.format(reason="boom")
     lab.client._dispatch({"type": "error", "fatal": False, "notice": True, "message": note})
     assert message_boxes == [] and lab.status.text().endswith("\n" + note)
     lab._update_status()

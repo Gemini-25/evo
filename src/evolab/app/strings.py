@@ -392,7 +392,6 @@ DASH_TILE_TITLES: Final = {
 }
 DASH_AXIS_LABEL: Final = "가로축"
 DASH_AXIS_NAMES: Final = {"generation": "세대", "evaluations": "누적 시험 횟수", "elapsed": "경과 시간(초)"}
-DASH_AXIS_TOOLTIP: Final = "점수 추이, 탐색 폭, 종료 원인, 처리 성능 그래프의 가로축을 바꿉니다."
 DASH_TILES_BUTTON: Final = "타일"
 DASH_TILES_TOOLTIP: Final = "보일 그래프와 배치를 고릅니다."
 DASH_TILES_COLUMNS: Final = "한 줄에 놓을 그래프 수"
@@ -510,7 +509,6 @@ LAB_FAST: Final = "고속"
 LAB_SPEED: Final = "재생 배속"
 LAB_SPEED_ITEM: Final = "{n}배"
 LAB_FAST_INTERVAL: Final = "챔피언 재생 간격(세대)"
-LAB_TIMELINE: Final = "세대"
 LAB_TIMELINE_PLAY: Final = "이 세대 대표 재생"
 LAB_VERSUS: Final = "1세대 대표와 지금 챔피언"
 LAB_LIVE: Final = "실시간 보기"
@@ -1326,8 +1324,6 @@ CLI_RESTART_TOO_SHORT_HINT: Final = "--restart 횟수로 늘리거나 --no-resta
 # 대시보드 타일 제목은 위 DASH_TILE_TITLES에 더했다.
 # ---------------------------------------------------------------------------
 # v1.2 관찰 기록 (engine/trainer.py, engine/session.py, engine/commands.py, cli.py)
-TRAIN_OBSERVE_FAILED: Final = ("그래프용 관찰 기록을 만들지 못했습니다. 학습은 그대로 이어지고 이 세대는 새 그래프에서 "
-                               "빠집니다: {reason}")
 BENCH_OBSERVE: Final = "관찰 기록을 켠 단일 코어: 초당 {sps:,.0f}스텝 ({pct:+.1f}%)"
 CLI_HELP_NO_OBSERVE: Final = ("그래프용 관찰 기록(집단 유전자, 행동 분포, 궤적 밀도)을 남기지 않는다. 학습 결과는 같다. "
                               "실험실에서 이어 가면 그 세대부터 다시 남긴다")
@@ -1454,7 +1450,6 @@ LAB_TIMELINE_OF: Final = "세대 {gen} / {total}"
 LAB_TIMELINE_TIP: Final = ("보는 세대를 고릅니다. '보는 재미' 그래프가 이 세대를 보여 주고, '이 세대 대표 재생'은 이 세대 대표를 "
                            "다시 돌립니다. 맨 오른쪽에 두면 새 세대를 따라갑니다.")
 LAB_FLIP: Final = "세대 넘겨 보기"
-LAB_FLIP_STOP: Final = "멈춤"
 LAB_FLIP_TIP: Final = ("슬라이더를 자동으로 한 세대씩 넘기며 '보는 재미' 그래프가 어떻게 바뀌는지 보여 줍니다. 전체를 20초 "
                        "안팎에 넘기고, 맨 끝에서 누르면 1세대부터 시작합니다.")
 LAB_RACE_GENERATIONS: Final = "세대끼리 경주"
