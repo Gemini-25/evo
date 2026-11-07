@@ -494,7 +494,7 @@ def test_gui_priority_busy_quiet_and_limit() -> None:
     with gp.busy(quiet=0.05):
         pass
     assert gp.is_busy
-    time.sleep(0.06)
+    time.sleep(0.25)  # 윈도우 time.monotonic 해상도(약 16ms)보다 넉넉히
     assert not gp.is_busy
     with gp.busy(quiet=0.0):
         pass
