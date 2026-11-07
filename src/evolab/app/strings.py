@@ -383,6 +383,12 @@ DASH_TILE_TITLES: Final = {
     "blocks": "점수 블록 기여도",
     "ends": "종료 원인 비율",
     "perf": "처리 성능",
+    # v1.2 「보는 재미」 쪽
+    "genemap": "유전자 지도",
+    "brain": "뇌 들여다보기",
+    "density": "궤적 밀도",
+    "actions": "행동 분포",
+    "body": "몸 수치 추이",
 }
 DASH_AXIS_LABEL: Final = "가로축"
 DASH_AXIS_NAMES: Final = {"generation": "세대", "evaluations": "누적 시험 횟수", "elapsed": "경과 시간(초)"}
@@ -1315,3 +1321,188 @@ CMP_REPEAT_RESTART: Final = "정체하면 새로 시작"
 CMP_REPEAT_QUALIFY_OFF_HINT: Final = "예산이 작아 예선을 껐습니다(예선 {total:,}회가 예산의 절반을 넘음)."
 LAB_STABILITY_HINT_QUALIFY_ONLY: Final = "예선 합계 학습 시험 {total:,}회(약 {qgens}세대)"
 CLI_RESTART_TOO_SHORT_HINT: Final = "--restart 횟수로 늘리거나 --no-restart로 끄세요."
+
+# ---------------------------------------------------------------------------
+# v1.2 보는 재미: 2차 그래프 다섯 개와 나란히 경주 (0단계: 설계 6절 전체 목록)
+# 대시보드 타일 제목은 위 DASH_TILE_TITLES에 더했다.
+# ---------------------------------------------------------------------------
+# v1.2 관찰 기록 (engine/trainer.py, engine/session.py, engine/commands.py, cli.py)
+TRAIN_OBSERVE_FAILED: Final = ("그래프용 관찰 기록을 만들지 못했습니다. 학습은 그대로 이어지고 이 세대는 새 그래프에서 "
+                               "빠집니다: {reason}")
+BENCH_OBSERVE: Final = "관찰 기록을 켠 단일 코어: 초당 {sps:,.0f}스텝 ({pct:+.1f}%)"
+CLI_HELP_NO_OBSERVE: Final = ("그래프용 관찰 기록(집단 유전자, 행동 분포, 궤적 밀도)을 남기지 않는다. 학습 결과는 같다. "
+                              "실험실에서 이어 가면 그 세대부터 다시 남긴다")
+
+# v1.2 대시보드 공통 (app/lab/dashboard.py)
+DASH_PAGES: Final = {"learning": "학습 그래프", "fun": "보는 재미"}
+DASH_PAGES_TIP: Final = {
+    "learning": "점수, 탐색 폭, 종료 원인처럼 학습이 잘 되고 있는지 보는 그래프입니다.",
+    "fun": "집단이 어디로 모이는지, 뇌가 어떻게 움직이는지, 어디를 지나가는지 구경하는 그래프입니다.",
+}
+DASH_FUN_NEW_TIP: Final = "새 그래프: 유전자 지도, 뇌 들여다보기, 궤적 밀도, 행동 분포, 몸 수치 추이"
+DASH_TILE_HELP: Final = {
+    "genemap": ("유전자는 수백 개의 숫자라 그대로는 그릴 수 없어서, 집단이 가장 크게 달라지는 두 방향으로 눌러 펼쳤습니다. "
+                "점 하나가 개체 하나이고, 가까운 점일수록 비슷한 개체입니다. 축의 숫자에는 뜻이 없습니다."),
+    "brain": ("신경망은 왼쪽의 센서 값을 받아 가운데 뉴런들을 거쳐 오른쪽 구동기 출력을 냅니다. 선은 연결이고, 학습은 이 "
+              "연결의 세기를 바꾸는 일입니다. 재생 중에는 뉴런 색이 그 순간의 값을 보여 줍니다."),
+    "density": ("시험 0번(관전 화면과 같은 세계)에서 집단 전체가 각 자리를 지나간 횟수를 칠했습니다. 세대가 지나며 색이 목표 "
+                "쪽으로 모이는지 보세요."),
+    "actions": ("구동기 출력 세기를 20칸으로 나눠, 그 세기로 쓴 시간이 얼마인지 세대마다 칠했습니다. 예를 들어 착륙선이 주 "
+                "추진기를 얼마나 세게, 얼마나 자주 켜는지 보입니다."),
+    "body": ("진화하는 몸 수치(바퀴 크기, 다리 길이 등)의 집단 평균(선)과 가장 작은 값~가장 큰 값(띠)입니다. 띠가 좁아지면 "
+             "집단이 한 몸 모양으로 모인 것입니다."),
+}
+DASH_LOADING: Final = "기록을 읽는 중… ({done}/{total}세대)"
+DASH_OLD_RUN_NOTE: Final = "v1.2보다 먼저 학습한 세대라 집단 기록이 없어 세대 대표만 보입니다."
+DASH_OBSERVE_FROM: Final = "{gen}세대부터 집단 기록이 있습니다(그 앞은 세대 대표만)."
+DASH_NO_RECORD: Final = "이 세대에는 기록이 없습니다."
+DASH_GENOME_STRIDE: Final = "집단이 커서 유전자는 {k}세대마다 남깁니다. 가까운 기록: {gen}세대"
+DASH_FOCUS_CURSOR: Final = "보는 세대"
+
+# 유전자 지도 (app/lab/watch_tiles.py, app/lab/history.py)
+GMAP_EMPTY: Final = "학습을 시작하면 세대마다 집단이 이 지도 위의 점으로 나타납니다. 가까운 점일수록 비슷한 개체입니다."
+GMAP_AXIS_X: Final = "지도 가로: 가장 크게 달라지는 방향 ({pct:.0f}%)"
+GMAP_AXIS_Y: Final = "지도 세로: 그다음으로 달라지는 방향 ({pct:.0f}%)"
+GMAP_COLOR_LABEL: Final = "색"
+GMAP_COLOR_MODES: Final = {"score": "점수", "success": "성공 비율"}
+GMAP_COLOR_TIP: Final = "점 색을 점수(색 막대)로 칠할지, 학습 시험에서 성공한 비율로 칠할지 고릅니다."
+GMAP_SCORE_BAR: Final = "점수"
+GMAP_SUCCESS_BAR: Final = "성공 비율"
+GMAP_REFIT: Final = "지도 다시 맞추기"
+GMAP_REFIT_TIP: Final = "지금까지의 세대 전체를 보고 지도 방향을 다시 잡습니다. 기록 세대 수가 두 배가 될 때마다 저절로도 다시 잡습니다."
+GMAP_REFITTED: Final = "지도를 다시 맞췄습니다({n}세대 기준)."
+GMAP_BIG_DIM: Final = "유전자가 커서({dim}차원) 지도를 표본으로 맞추는 중…"
+GMAP_LEGEND: Final = "{gen}세대 · 개체 {n}"
+GMAP_REP: Final = "세대 대표"
+GMAP_CHAMPION: Final = "그때 챔피언"
+GMAP_START: Final = "출발점"
+GMAP_TRAIL: Final = "집단 가운데가 지나온 길"
+GMAP_GHOST: Final = "앞 세대"
+GMAP_HINT: Final = "점에 마우스를 올리면 개체 정보가 보이고, 흐린 점을 누르면 그 세대로, 두 번 누르면 그 개체를 다시 봅니다."
+GMAP_POINT_TIP: Final = "{gen}세대 {index}번 개체 · 점수 {score} · 시험 성공 {success}/{trials}"
+GMAP_POINT_TIP_REP: Final = "{gen}세대 대표({index}번 개체) · 점수 {score}"
+GMAP_CHAMPION_TIP: Final = "그때 챔피언({gen}세대에 뽑힘) · 검증 점수 {score}"
+GMAP_START_TIP: Final = "출발점: 처음 유전자(몸은 처음 값, 뇌는 모두 0)"
+GMAP_LABEL_INDIVIDUAL: Final = "{gen}세대 {index}번 개체"
+GMAP_INEXACT: Final = "이 세대는 정확한 유전자를 메모리에 두지 않아 {gen}세대 대표를 대신 재생합니다."
+
+# 몸 수치 추이 (app/lab/watch_tiles.py)
+BODY_EMPTY_NONE: Final = ("이 환경은 몸 수치를 진화시키지 않습니다. 에디터에서 숫자 속성 옆 「진화」를 켜면 몸이 어떻게 "
+                          "바뀌는지 여기에 나옵니다.")
+BODY_EMPTY: Final = "학습을 시작하면 진화하는 몸 수치의 집단 평균과 범위(가장 작은 값~가장 큰 값)를 그립니다."
+BODY_PICK_LABEL: Final = "수치"
+BODY_PICK_TIP: Final = "볼 몸 수치를 고릅니다. '모두'는 수치마다 진화 범위를 0~100%로 맞춰 함께 그립니다."
+BODY_ALL: Final = "모두(범위 대비 %)"
+BODY_AXIS_ALL: Final = "진화 범위 안 위치(%)"
+BODY_MEAN: Final = "평균"
+BODY_RANGE: Final = "가장 작은 값~가장 큰 값"
+BODY_REP: Final = "세대 대표"
+BODY_LIMITS: Final = "진화 범위 끝"
+BODY_HOVER: Final = "{name}: 평균 {mean} ({lo}~{hi}) · 대표 {rep}"
+BODY_REPS_ONLY: Final = "집단 기록이 없는 세대는 세대 대표의 값만 보입니다."
+
+# 뇌 들여다보기 (app/lab/brain_view.py)
+BRAIN_EMPTY: Final = "학습을 시작하면 지금 가장 잘하는 개체의 뇌(신경망)를 그립니다. 재생하면 뉴런이 켜지는 모습이 보입니다."
+BRAIN_TITLE_CHAMPION: Final = "그때 챔피언({gen}세대) · 멈춘 그림"
+BRAIN_TITLE_LIVE: Final = "{gen}세대 대표 · 관전 화면과 같은 시험 · {t:.1f}초"
+BRAIN_TITLE_PLAYING: Final = "{label} · {t:.1f}초"
+BRAIN_PREPARING: Final = "뉴런 움직임을 계산하는 중…"
+BRAIN_LEGEND: Final = "파랑 = 더하는 연결, 주황 = 빼는 연결, 굵을수록 셈 · 뉴런 색이 강할수록 지금 값이 큼"
+BRAIN_LEGEND_STILL: Final = "파랑 = 더하는 연결, 주황 = 빼는 연결, 굵을수록 셈 · 재생하면 뉴런이 켜집니다"
+BRAIN_RELU_NOTE: Final = "은닉층이 relu라 층마다 그 재생에서 가장 큰 값을 가장 진한 색으로 칠했습니다."
+BRAIN_INPUTS: Final = "입력(센서)"
+BRAIN_HIDDEN: Final = "층 {k}"
+BRAIN_OUTPUTS: Final = "출력(구동기)"
+BRAIN_EDGES_CAPPED: Final = "연결 {total:,}개 중 층마다 센 것 {per:,}개까지만 그렸습니다."
+BRAIN_NODE_INPUT_TIP: Final = "입력 {name} ({label}) · 지금 값 {value}"
+BRAIN_NODE_HIDDEN_TIP: Final = "층 {k} 뉴런 {j} · 지금 값 {value} · 편향 {bias}"
+BRAIN_NODE_OUTPUT_TIP: Final = "출력 {name} ({label}) · 지금 값 {value} · 편향 {bias}"
+
+# 궤적 밀도 (app/lab/watch_tiles.py)
+DENS_EMPTY: Final = "학습을 시작하면 집단이 지나간 곳을 열화상처럼 칠합니다(시험 0번, 관전 화면과 같은 세계)."
+DENS_WINDOW_LABEL: Final = "합치기"
+DENS_WINDOWS: Final = {"one": "이 세대만", "recent": "최근 {n}세대", "all": "처음부터"}
+DENS_WINDOW_TIP: Final = "시험 세계가 같은 세대끼리만 합칩니다(트랙처럼 세계가 그대로인 환경)."
+DENS_CANNOT_MERGE: Final = "세대마다 시험 세계(지형·트랙)가 달라 이 세대만 보입니다. '세대 넘겨 보기'로 바뀌는 모습을 보세요."
+DENS_LEGEND: Final = "{gen}세대 · 시험 0번 · 개체 {n} · 칸 {cell:.1f}m · 색 막대의 위쪽 색일수록 자주 지나간 곳"
+DENS_LEGEND_MERGED: Final = "{first}~{last}세대 중 같은 세계 {count}세대 합침 · 칸 {cell:.1f}m"
+DENS_OUTSIDE: Final = " · 격자 밖 {pct:.0f}%"
+DENS_BAR: Final = "지나간 횟수"
+DENS_HOVER: Final = "x {x:.1f}m, y {y:.1f}m · 지나간 횟수 {count} (전체의 {pct:.1f}%)"
+DENS_NONE: Final = "이 세대에는 궤적 기록이 없습니다."
+DENS_PREPARING: Final = "세계 모양을 만드는 중…"
+
+# 행동 분포 (app/lab/watch_tiles.py)
+ACT_EMPTY: Final = "학습을 시작하면 구동기(추진기, 모터, 바퀴)를 얼마나 세게, 얼마나 자주 쓰는지 보여 줍니다."
+ACT_CHANNEL_LABEL: Final = "구동기"
+ACT_CHANNEL_TIP: Final = "볼 구동기 출력을 고릅니다."
+ACT_MODES: Final = {"pop": "집단 전체", "rep": "세대 대표"}
+ACT_MODE_TIP: Final = "집단 전체가 쓴 시간을 셀지, 세대 대표(그 세대 학습 점수 1등) 하나만 셀지 고릅니다."
+ACT_AXIS: Final = "출력 세기"
+ACT_FRACTION: Final = "시간 비율"
+ACT_MEAN_LINE: Final = "평균 출력"
+ACT_HINT: Final = "색 막대의 위쪽 색일수록 그 세기로 오래 썼습니다. 쉬는 값(0) 둘레 칸은 거의 쓰지 않은 시간입니다."
+ACT_HOVER: Final = "{gen}세대 · 출력 {lo:+.2f}~{hi:+.2f} · 시간 {pct:.0f}%"
+ACT_SUMMARY: Final = "{name}: 쓰는 시간 {on:.0f}% · 평균 출력 {mean:+.2f} ({gen}세대, 모든 학습 시험)"
+ACT_CHANNEL_SUFFIX: Final = {"throttle": "가속", "steer": "조향"}
+ACT_CHANNEL_NAME: Final = "{label} · {suffix}"
+ACT_NONE: Final = "이 세대에는 행동 기록이 없습니다."
+
+# 실험실 타임라인 (app/lab/view.py)
+LAB_TIMELINE_OF: Final = "세대 {gen} / {total}"
+LAB_TIMELINE_TIP: Final = ("보는 세대를 고릅니다. '보는 재미' 그래프가 이 세대를 보여 주고, '이 세대 대표 재생'은 이 세대 대표를 "
+                           "다시 돌립니다. 맨 오른쪽에 두면 새 세대를 따라갑니다.")
+LAB_FLIP: Final = "세대 넘겨 보기"
+LAB_FLIP_STOP: Final = "멈춤"
+LAB_FLIP_TIP: Final = ("슬라이더를 자동으로 한 세대씩 넘기며 '보는 재미' 그래프가 어떻게 바뀌는지 보여 줍니다. 전체를 20초 "
+                       "안팎에 넘기고, 맨 끝에서 누르면 1세대부터 시작합니다.")
+LAB_RACE_GENERATIONS: Final = "세대끼리 경주"
+LAB_RACE_GENERATIONS_TIP: Final = "1세대, 중간 세대들, 마지막 세대의 대표와 지금 챔피언을 같은 코스에서 나란히 달리게 합니다."
+
+# 나란히 경주 (app/race/view.py, app/race/model.py, app/compare/view.py, app/export/video.py)
+CMP_RACE_BUTTON: Final = "나란히 경주"
+CMP_RACE_BUTTON_TIP: Final = "고른 실행(2~6개)의 챔피언을 같은 코스(같은 시작 조건)에서 나란히 달리게 합니다."
+RACE_TITLE: Final = "나란히 경주"
+RACE_TITLE_GENERATIONS: Final = "세대끼리 경주 · {run}"
+RACE_COURSE_LABEL: Final = "코스"
+RACE_COURSE_ITEM: Final = "코스 {n}"
+RACE_COURSE_TIP: Final = ("모든 칸이 같은 시작 조건(시드)에서 달립니다. 코스 1~32는 챔피언을 고를 때 쓰지 않은 비교 평가 "
+                          "시드라 어느 칸에도 유리하지 않습니다.")
+RACE_NEXT_COURSE: Final = "다른 코스"
+RACE_WHO_LABEL: Final = "누구를"
+RACE_WHO: Final = {"last": "마지막 챔피언", "budget": "같은 학습 시험 수일 때의 챔피언"}
+RACE_WHO_TIP: Final = ("같은 학습 시험 수: 가장 짧게 학습한 실행의 누적 학습 시험({trials:,}회) 시점에서 실행마다 그때의 "
+                       "챔피언끼리 겨룹니다(학습 방법끼리 공정하게).")
+RACE_VIEW_LABEL: Final = "보기"
+RACE_VIEW: Final = {"split": "나란히", "overlay": "한 화면에 겹쳐서"}
+RACE_OVERLAY_OFF_TIP: Final = "칸마다 환경이 달라 한 화면에 겹쳐 볼 수 없습니다."
+RACE_SPEED_LABEL: Final = "배속"
+RACE_SPEED_ITEM: Final = "{n:g}배"
+RACE_START: Final = "출발"
+RACE_PAUSE: Final = "일시 정지"
+RACE_RESTART: Final = "처음부터"
+RACE_SAVE_GIF: Final = "경주 영상 저장…"
+RACE_GIF_NAME: Final = "경주_코스{n}_{stamp}.gif"
+RACE_PREPARING: Final = "경주 준비 중… ({done}/{total})"
+RACE_LANE_RUN: Final = "{method} · 시드 {seed}"
+RACE_LANE_RUN_ENV: Final = "{env} · {method} · 시드 {seed}"
+RACE_LANE_GEN: Final = "{gen}세대 대표"
+RACE_LANE_NOW: Final = "지금 챔피언({gen}세대)"
+RACE_LANE_CHAMPION: Final = "{gen}세대 챔피언 · 학습 시험 {evals:,}회"
+RACE_LANE_REP_INSTEAD: Final = "{gen}세대 대표(그때 챔피언 없음)"
+RACE_RUNNING: Final = "달리는 중 · {t:.1f}초"
+RACE_LANE_DONE: Final = "끝 · {end} · {t:.1f}초 · 점수 {score:.1f}"
+RACE_LANE_RANK: Final = "{rank}위 · {end} · {t:.1f}초 · 점수 {score:.1f}"
+RACE_LANE_RANK_TIE: Final = "공동 {rank}위 · {end} · {t:.1f}초 · 점수 {score:.1f}"
+RACE_RESULT: Final = "결과: {order}"
+RACE_RESULT_ITEM: Final = "{rank}위 {name}"
+RACE_RESULT_SEP: Final = " · "
+RACE_DIFFERENT_ENV: Final = "칸마다 학습한 환경이 달라 같은 코스 번호라도 세계가 다를 수 있습니다. 순위는 매기지 않습니다."
+RACE_TOO_FEW: Final = "경주할 실행을 2개 이상 고르세요."
+RACE_TOO_MANY: Final = "경주는 한 번에 {max}개까지입니다. 앞의 {max}개만 넣었습니다."
+RACE_NEED_GENS: Final = "세대 대표가 2세대 이상 있어야 세대끼리 경주할 수 있습니다."
+RACE_NO_CHAMPION: Final = "{name}: 그 시점까지 챔피언이 없어 세대 대표({gen}세대)로 달립니다."
+RACE_SKIPPED: Final = "{name}: 재생할 유전자를 읽지 못해 뺐습니다({reason})."
+RACE_FAILED: Final = "경주를 준비하지 못했습니다: {reason}"
+RACE_HUD: Final = "코스 {n} · {t:.1f}초 · {speed:g}배"
+VIDEO_RACE_TITLE: Final = "나란히 경주 · 코스 {n}"
