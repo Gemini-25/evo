@@ -73,37 +73,51 @@ def world_frame(spec: EnvSpec, env_version: str, trial: Trial) -> tuple[GridFram
 def frame_from_geometry(geo: WorldGeometry, env_version: str) -> tuple[GridFrame | None, str | None]:
     """world_frame의 계산 부분: Episode.geometry()의 세계 소유 물체(시작 자세)·영역·경계만 본다(에이전트 물체는
     보지 않으므로 몸 수치와 무관하다). 범위가 비었거나 유한하지 않으면 (None, None)."""
-    h = hashlib.sha256()
-    h.update(b"evolab-world-key-1\0")
-    h.update(str(env_version).encode("utf-8") + b"\0")
-    h.update(_rounded(geo.bounds, _MM))
-    lo_x = lo_y = math.inf
-    hi_x = hi_y = -math.inf
+    meta: list[Any] = []  # 물체·모양·영역의 이름과 개수(열쇠용)
+    pose_xy: list[float] = []
+    pose_angle: list[float] = []
+    local: list[float] = []  # 모양의 물체 좌표·영역 꼭짓점(열쇠용, 1mm)
+    radii: list[float] = []
+    wx: list[float] = []  # 세계 좌표 점과 반지름(범위용)
+    wy: list[float] = []
+    wr: list[float] = []
     for b in geo.bodies:
         if b.owner != "world":
             continue
-        x, y, a = b.pose
-        h.update(repr((b.id, b.moving, len(b.shapes))).encode("utf-8"))
-        h.update(_rounded((x, y), _MM) + _rounded((a,), _ANGLE))
+        x, y, a = (float(v) for v in b.pose)
+        meta.append((b.id, b.moving, len(b.shapes)))
+        pose_xy += (x, y)
+        pose_angle.append(a)
         c, s = math.cos(a), math.sin(a)
         for sh in b.shapes:
-            h.update(repr((sh.kind, len(sh.points))).encode("utf-8"))
-            h.update(_rounded([v for p in sh.points for v in p], _MM) + _rounded((sh.radius,), _MM))
-            if not sh.points:
-                continue
-            p = np.asarray(sh.points, dtype=np.float64).reshape(-1, 2)
-            wx = x + c * p[:, 0] - s * p[:, 1]
-            wy = y + s * p[:, 0] + c * p[:, 1]
+            meta.append((sh.kind, len(sh.points)))
             r = max(0.0, float(sh.radius))
-            lo_x, hi_x = min(lo_x, float(wx.min()) - r), max(hi_x, float(wx.max()) + r)
-            lo_y, hi_y = min(lo_y, float(wy.min()) - r), max(hi_y, float(wy.max()) + r)
+            radii.append(float(sh.radius))
+            for px, py in sh.points:
+                local += (px, py)
+                wx.append(x + c * px - s * py)
+                wy.append(y + s * px + c * py)
+                wr.append(r)
     for reg in geo.regions:
-        h.update(repr((reg.id, reg.kind, len(reg.points))).encode("utf-8"))
-        h.update(_rounded([v for p in reg.points for v in p], _MM))
-        if reg.points:
-            p = np.asarray(reg.points, dtype=np.float64).reshape(-1, 2)
-            lo_x, hi_x = min(lo_x, float(p[:, 0].min())), max(hi_x, float(p[:, 0].max()))
-            lo_y, hi_y = min(lo_y, float(p[:, 1].min())), max(hi_y, float(p[:, 1].max()))
+        meta.append((reg.id, reg.kind, len(reg.points)))
+        for px, py in reg.points:
+            local += (px, py)
+            wx.append(px)
+            wy.append(py)
+            wr.append(0.0)
+    h = hashlib.sha256()
+    h.update(b"evolab-world-key-1\0")
+    h.update(str(env_version).encode("utf-8") + b"\0")
+    h.update(repr(meta).encode("utf-8") + b"\0")
+    for part in (_rounded(geo.bounds, _MM), _rounded(pose_xy, _MM), _rounded(pose_angle, _ANGLE),
+                 _rounded(local, _MM), _rounded(radii, _MM)):
+        h.update(len(part).to_bytes(8, "little") + part)
+    lo_x = lo_y = math.inf
+    hi_x = hi_y = -math.inf
+    if wx:
+        X, Y, R = (np.asarray(v, dtype=np.float64) for v in (wx, wy, wr))
+        lo_x, hi_x = float((X - R).min()), float((X + R).max())
+        lo_y, hi_y = float((Y - R).min()), float((Y + R).max())
     bx0, by0, bx1, by1 = (float(v) for v in geo.bounds)
     if math.isfinite(lo_x + lo_y + hi_x + hi_y):
         m = max(FRAME_MIN_MARGIN, FRAME_MARGIN * max(hi_x - lo_x, hi_y - lo_y))

@@ -20,6 +20,8 @@
   빈칸, 읽을 수 없는 파일은 NaN으로 읽어 예전 실행이나 쓰는 중인 실행도 화면이 멈추지 않는다.
 - 반복 실행(repeat.py)이 도는 동안 새 실행 폴더가 생기면 목록에 바로 보이고, 묶음을 고른 상태면 새 실행도 고른다.
   그래프는 세대가 끝날 때마다(1초에 한 번까지) 다시 읽는다.
+- 「나란히 경주」(v1.2): 고른 실행(묶음은 구성 실행) 2개 이상의 챔피언을 같은 코스에서 나란히 재생하는 경주 창
+  (app/race)을 연다. 칸 색은 그래프에서 그 실행에 준 색(묶음 구성 실행은 그 묶음 색), 7개 이상이면 앞 6개만.
 """
 
 from __future__ import annotations
@@ -741,6 +743,11 @@ class CompareView(QWidget):
         self.png_button.clicked.connect(self._on_save_png)
         self.csv_button = QPushButton(S.CMP_SAVE_CSV)
         self.csv_button.clicked.connect(self._on_save_csv)
+        self.race_button = QPushButton(S.CMP_RACE_BUTTON)
+        self.race_button.setToolTip(S.CMP_RACE_BUTTON_TIP)
+        self.race_button.clicked.connect(self.open_race)
+        self.race_dialog: Any = None
+        """마지막으로 연 경주 창(RaceDialog). 다시 누르면 같은 창의 내용을 바꾼다."""
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel(S.CMP_Y_LABEL))
@@ -751,6 +758,7 @@ class CompareView(QWidget):
         bar.addSpacing(8)
         bar.addWidget(self.mean_check)
         bar.addStretch(1)
+        bar.addWidget(self.race_button)
         bar.addWidget(self.png_button)
 
         t = self.theme
@@ -1212,6 +1220,7 @@ class CompareView(QWidget):
         has = bool(shown)
         self.png_button.setEnabled(has)
         self.csv_button.setEnabled(has)
+        self._update_race_button()
 
     def _draw(self, keep_view: bool) -> None:
         t = self.theme
@@ -1398,6 +1407,39 @@ class CompareView(QWidget):
             self.save_table_csv(path)
         except OSError as exc:
             self.show_error(S.CMP_SAVE_FAILED.format(path=path, reason=exc.strerror or exc))
+
+    # ------------------------------------------------------------------
+    # 나란히 경주
+    # ------------------------------------------------------------------
+    def race_runs(self) -> list[tuple[Path, str]]:
+        """경주에 넣을 실행(그래프 순서, 묶음은 구성 실행)과 그래프에서 그 실행에 준 색(묶음 구성 실행은 묶음 색)."""
+        return [(e.path, s.color) for s in self.shown for e in s.entries]
+
+    def _update_race_button(self) -> None:
+        enough = len(self.race_runs()) >= 2
+        self.race_button.setEnabled(enough)
+        self.race_button.setToolTip(S.CMP_RACE_BUTTON_TIP if enough else
+                                    S.CMP_RACE_BUTTON_TIP + "\n" + S.RACE_TOO_FEW)
+
+    def open_race(self) -> Any:
+        """고른 실행들의 마지막 챔피언으로 경주 창을 연다(이미 열려 있으면 그 창을 바꿔 앞으로). 열지 못하면 None."""
+        from evolab.app.race.model import entries_from_runs
+        from evolab.app.race.view import show_race
+
+        runs = self.race_runs()
+        if len(runs) < 2:
+            self.show_error(S.RACE_TOO_FEW)
+            return None
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            entries, warnings, _n = entries_from_runs(runs, "last")
+        finally:
+            self.unsetCursor()
+        if len(entries) < 2:  # 읽을 수 없는 실행을 빼고 나니 모자람
+            self.show_error("\n".join([*warnings, S.RACE_TOO_FEW]))
+            return None
+        self.race_dialog = show_race(self, entries, title=S.RACE_TITLE, warnings=warnings, runs=runs)
+        return self.race_dialog
 
     # ------------------------------------------------------------------
     # 반복 실행

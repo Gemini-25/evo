@@ -266,7 +266,7 @@ class GeneMapTile(_WatchTile):
             g.setZValue(3 - k)
             self.plot.addItem(g)
             self.ghosts.append(g)
-        self.points = pg.ScatterPlotItem(size=7, pen=pg.mkPen(None))
+        self.points = pg.ScatterPlotItem(size=7, pen=pg.mkPen(None), brush=_qcolor(t.muted))
         self.points.setZValue(5)
         self.plot.addItem(self.points)
         self.rep_ring = pg.ScatterPlotItem(size=11, pen=_pen(t.ink, 2), brush=pg.mkBrush(None))
@@ -480,11 +480,11 @@ class GeneMapTile(_WatchTile):
         self.plot.setLabel("left", S.GMAP_AXIS_Y.format(pct=float(ex[1])), color=t.ink2)
         if self.color_mode == "success":
             self.bar.setLevels(values=(0.0, 1.0))
-            self.bar.axis.setLabel(S.GMAP_SUCCESS_BAR)
+            self.bar.getAxis("left").setLabel(S.GMAP_SUCCESS_BAR)
         else:
             rng = h.score_range() or (0.0, 1.0)
             self.bar.setLevels(values=rng)
-            self.bar.axis.setLabel(S.GMAP_SCORE_BAR)
+            self.bar.getAxis("left").setLabel(S.GMAP_SCORE_BAR)
         self.shown_generation = target
         notes = []
         focus_entry = h.entry(gen)
@@ -500,14 +500,17 @@ class GeneMapTile(_WatchTile):
         self.set_notes(notes)
 
     def _draw_trail(self, pca: hs.GenePCA) -> None:
+        trail = self.history.trail()
+        missing = [(g, mean) for g, _learner, mean in trail if g not in self._trail_proj]
+        if missing:  # 축이 바뀐 뒤 처음이면 모든 세대를 한 번에 투영
+            proj = pca.project(np.vstack([m for _g, m in missing]))
+            for (g, _m), p in zip(missing, proj, strict=True):
+                self._trail_proj[g] = p
         xs: list[float] = []
         ys: list[float] = []
         prev: int | None = None
-        for g, learner, mean in self.history.trail():
-            p = self._trail_proj.get(g)
-            if p is None:
-                p = pca.project(mean)[0]
-                self._trail_proj[g] = p
+        for g, learner, _mean in trail:
+            p = self._trail_proj[g]
             if prev is not None and learner is not None and learner != prev:
                 xs.append(math.nan)
                 ys.append(math.nan)
@@ -873,7 +876,8 @@ class ActionsTile(_WatchTile):
             self.image.clear()
             self.mean_line.setData([], [])
             self.summary = ""
-            self.show_message(S.ACT_EMPTY)
+            # 기록은 있는데 행동 기록이 하나도 없으면(v1.2 전 실행, 관찰하지 않는 평가기) 그렇다고 알린다
+            self.show_message(S.ACT_NONE if meta is not None and len(self.history) else S.ACT_EMPTY)
             return
         self.stack.setCurrentWidget(self.view)
         ch = meta.channels[self.channel]

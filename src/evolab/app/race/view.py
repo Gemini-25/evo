@@ -1,0 +1,851 @@
+"""나란히 경주 창 (명세: 비교 > 나란히 경주, 설계 4.6·5.2·D26~D31).
+
+- RaceView: 위 줄(코스, 다른 코스, 누구를(실행 경주만), 보기), 알림 띠(환경이 다를 때, 뺀 실행, 실패), 칸 격자(2 → 1×2,
+  3 → 1×3, 4 → 2×2, 5·6 → 2×3), 결과 줄, 아래 줄(출발/일시 정지, 처음부터, 배속, 시각, 경주 영상 저장).
+- 칸: 제목(색 점 + 이름, 둘째 줄) / 관전 캔버스(늘 어두운 바탕, 그 칸 개체를 따라감) / 상태 글(달리는 중 → 끝 → 순위).
+- 준비: _RaceThread가 같은 환경 글은 한 번만 컴파일하고 칸마다 replay(spec, layout_for(spec), 유전자, 코스 시험)를
+  돌린다(워커와 같은 Episode·순전파라 점수가 워커 점수와 비트 단위로 같다). 코스·누구를 바꾸면 다시 준비하고, 앞
+  준비의 결과는 꼬리표로 버린다.
+- 시계: QTimer 하나. t += 실제 dt × 배속, 모든 칸 set_time(t). 칸 캔버스의 그리기 시간을 재어 최근 30프레임 중앙값이
+  12ms를 넘으면 60fps(16ms) → 30fps(33ms). 모든 칸이 끝나고 1초(실제 시간) 뒤 멈추고 순위를 채운다(점수 내림차순,
+  같은 점수는 「공동 n위」). 환경이 섞이면 순위 대신 끝 글만.
+- 「한 화면에 겹쳐서」: 캔버스 하나에 모든 칸을 겹쳐 그린다(1세대 vs 지금과 같은 그림). 모든 칸의 환경이 같을 때만.
+- RaceDialog: RaceView를 담는 주인 있는 창(연 화면의 window()가 주인이라 주 창 뒤로 숨지 않음, 최대화 가능).
+  show_race는 그 주인에 이미 있는 경주 창을 다시 쓴다(내용을 바꾸고 앞으로).
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import html
+import statistics
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QPaintEvent, QShowEvent, QStandardItemModel
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from evolab import paths
+from evolab.app import strings as S
+from evolab.app.lab.canvas import SpectatorCanvas
+from evolab.app.race.model import (
+    COURSES,
+    MAX_LANES,
+    WHO_MODES,
+    RaceEntry,
+    common_budget,
+    compile_cached,
+    course_trial,
+    entries_from_runs,
+    lane_grid,
+    next_course,
+    ranks,
+    same_env,
+)
+from evolab.engine.replay import Replay, replay
+from evolab.policy.genome import layout_for
+from evolab.world.physics2d.episode import Trial
+
+FAST_MS = 16
+"""처음 프레임 간격(약 60fps)."""
+SLOW_MS = 33
+"""그리기가 느릴 때 프레임 간격(약 30fps)."""
+SLOW_PAINT_MS = 12.0
+PAINT_WINDOW = 30
+"""60→30fps 판단에 쓰는 최근 프레임 수."""
+HOLD_SECONDS = 1.0
+"""모든 칸이 끝난 뒤 순위를 채우기까지 기다리는 실제 시간(초)."""
+SPEEDS = (0.5, 1.0, 2.0, 4.0)
+DEFAULT_SPEED = 1.0
+VIEW_MODES = ("split", "overlay")
+DEFAULT_SIZE = (1280, 800)
+LANE_MIN_SIZE = (160, 120)
+PAINT_LOG_MAX = 20000
+WARN_MARK = "⚠ "
+DOT = "●"
+
+
+# ---------------------------------------------------------------------------
+# 준비 스레드
+class _RaceThread(QThread):
+    progress = Signal(object, int, int)
+    """(꼬리표, 끝낸 칸 수, 전체 칸 수)"""
+    finished_job = Signal(object, object)
+    """(꼬리표, Replay 목록 또는 예외)"""
+
+    def __init__(self, tag: Any, jobs: list[tuple[str, np.ndarray, Trial]], cancel: threading.Event,
+                 parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.tag = tag
+        self.jobs = jobs
+        self.cancel = cancel
+
+    def run(self) -> None:
+        try:
+            prepared: dict[str, tuple[Any, Any]] = {}
+            out: list[Replay] = []
+            for k, (text, genome, trial) in enumerate(self.jobs):
+                if self.cancel.is_set():
+                    return
+                if text not in prepared:  # 같은 환경 글은 한 번만 컴파일
+                    spec = compile_cached(text)
+                    prepared[text] = (spec, layout_for(spec))
+                spec, layout = prepared[text]
+                out.append(replay(spec, layout, genome, trial))
+                self.progress.emit(self.tag, k + 1, len(self.jobs))
+        except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
+            self.finished_job.emit(self.tag, exc)
+            return
+        self.finished_job.emit(self.tag, out)
+
+
+def _start_thread(th: _RaceThread) -> None:
+    th.finished.connect(th.deleteLater)  # 주인이 프로그램이라 창을 닫아도 도는 중에 지워지지 않는다
+    th.start()
+
+
+# ---------------------------------------------------------------------------
+# 칸
+class _LaneCanvas(SpectatorCanvas):
+    """그리기 시간을 재는 관전 캔버스(60→30fps 규칙과 성능 측정)."""
+
+    def __init__(self, on_paint: Callable[[float], None], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._on_paint = on_paint
+        self.setMinimumSize(*LANE_MIN_SIZE)
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        t0 = time.perf_counter()
+        super().paintEvent(event)
+        self._on_paint((time.perf_counter() - t0) * 1000.0)
+
+
+class _Lane(QFrame):
+    """경주 칸 하나: 제목, 캔버스, 상태 글."""
+
+    def __init__(self, entry: RaceEntry, on_paint: Callable[[float], None], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.entry = entry
+        self.replay: Replay | None = None
+        self.duration = 0.0
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.title = QLabel()
+        self.title.setTextFormat(Qt.TextFormat.RichText)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        text = f'<span style="color:{html.escape(entry.color)}">{DOT}</span>&nbsp;<b>{html.escape(entry.label)}</b>'
+        if entry.sub:
+            text += f"<br>{html.escape(entry.sub)}"
+        self.title.setText(text)
+        self.title.setToolTip("\n".join(t for t in (entry.label, entry.sub) if t))
+        self.canvas = _LaneCanvas(on_paint)
+        self.status = QLabel()
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 3, 4, 3)
+        lay.setSpacing(2)
+        lay.addWidget(self.title)
+        lay.addWidget(self.canvas, 1)
+        lay.addWidget(self.status)
+
+    def set_replay(self, rep: Replay | None) -> None:
+        self.replay = rep
+        if rep is None:
+            self.canvas.set_overlay([])
+            self.duration = 0.0
+            return
+        self.canvas.set_scene(rep.geometry, None, channels=rep.channels)
+        self.canvas.set_population([])
+        # 이름은 칸 제목에 있으므로 캔버스 범례는 그리지 않는다(빈 이름)
+        self.canvas.set_overlay([(rep.trajectory, rep.agent, QColor(self.entry.color), "")])
+        self.canvas.set_follow("champion")
+        self.duration = rep.trajectory.duration
+
+    def set_status(self, text: str) -> None:
+        if self.status.text() != text:
+            self.status.setText(text)
+
+
+# ---------------------------------------------------------------------------
+# 화면
+class RaceView(QWidget):
+    """나란히 경주 화면(창 안의 내용)."""
+
+    prepared = Signal()
+    """모든 칸의 재생이 준비됐다(테스트·측정용)."""
+    finished_race = Signal()
+    """모든 칸이 끝나고 순위를 채웠다."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.entries: list[RaceEntry] = []
+        self.warnings: list[str] = []
+        self.runs: list[tuple[Path, str]] | None = None
+        self.course = 1
+        self.who = "last"
+        self.mode = "split"
+        self.speed = DEFAULT_SPEED
+        self.t = 0.0
+        self.ready = False
+        self.playing = False
+        self.finished = False
+        self.failure: str | None = None
+        self.rank_list: list[tuple[int, bool]] | None = None
+        self.lanes: list[_Lane] = []
+        self.frame_ms: deque[float] = deque(maxlen=PAINT_WINDOW)
+        self.paint_log: list[float] = []
+        """프레임마다 그린 시간(ms, 보이는 캔버스 합). 성능 측정용."""
+        self._paint_accum = 0.0
+        self._hold = 0.0
+        self._tag = 0
+        self._cancel: threading.Event | None = None
+        self._last_tick = 0.0
+        self._quiet = False
+        self._resume_on_show = False
+
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(FAST_MS)
+        self._timer.timeout.connect(self._tick)
+
+        # -- 위 줄 --------------------------------------------------------------
+        self.course_box = QComboBox()
+        for n in range(1, COURSES + 1):
+            self.course_box.addItem(S.RACE_COURSE_ITEM.format(n=n), n)
+        self.course_box.setToolTip(S.RACE_COURSE_TIP)
+        self.course_box.currentIndexChanged.connect(self._on_course_box)
+        self.next_button = QPushButton(S.RACE_NEXT_COURSE)
+        self.next_button.setToolTip(S.RACE_COURSE_TIP)
+        self.next_button.clicked.connect(self.next_course)
+        self.who_label = QLabel(S.RACE_WHO_LABEL)
+        self.who_box = QComboBox()
+        for w in WHO_MODES:
+            self.who_box.addItem(S.RACE_WHO[w], w)
+        self.who_box.currentIndexChanged.connect(self._on_who_box)
+        self.view_box = QComboBox()
+        for m in VIEW_MODES:
+            self.view_box.addItem(S.RACE_VIEW[m], m)
+        self.view_box.currentIndexChanged.connect(self._on_view_box)
+        top = QHBoxLayout()
+        top.addWidget(QLabel(S.RACE_COURSE_LABEL))
+        top.addWidget(self.course_box)
+        top.addWidget(self.next_button)
+        top.addSpacing(12)
+        top.addWidget(self.who_label)
+        top.addWidget(self.who_box)
+        top.addSpacing(12)
+        top.addWidget(QLabel(S.RACE_VIEW_LABEL))
+        top.addWidget(self.view_box)
+        top.addStretch(1)
+
+        # -- 알림 띠 ------------------------------------------------------------
+        self.band = QLabel()
+        self.band.setWordWrap(True)
+        self.band.setFrameShape(QFrame.Shape.StyledPanel)
+        self.band.setContentsMargins(6, 3, 6, 3)
+        self.band.hide()
+
+        # -- 칸 격자와 겹쳐 보기 --------------------------------------------------
+        self.grid_widget = QWidget()
+        self.grid = QGridLayout(self.grid_widget)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(4)
+        self.overlay_canvas = _LaneCanvas(self._on_paint)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.grid_widget)
+        self.stack.addWidget(self.overlay_canvas)
+
+        # -- 결과, 아래 줄 --------------------------------------------------------
+        self.result_label = QLabel()
+        self.result_label.setWordWrap(True)
+        self.message = QLabel()
+        self.message.setWordWrap(True)
+        self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.message.hide()
+        self.start_button = QPushButton(S.RACE_START)
+        self.start_button.clicked.connect(self.toggle)
+        self.restart_button = QPushButton(S.RACE_RESTART)
+        self.restart_button.clicked.connect(self.restart)
+        self.speed_box = QComboBox()
+        for s in SPEEDS:
+            self.speed_box.addItem(S.RACE_SPEED_ITEM.format(n=s), s)
+        self.speed_box.setCurrentIndex(SPEEDS.index(DEFAULT_SPEED))
+        self.speed_box.currentIndexChanged.connect(lambda _i: self.set_speed(float(self.speed_box.currentData())))
+        self.hud_label = QLabel()
+        self.gif_button = QPushButton(S.RACE_SAVE_GIF)
+        self.gif_button.clicked.connect(lambda: self.save_gif())
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.start_button)
+        bottom.addWidget(self.restart_button)
+        bottom.addSpacing(12)
+        bottom.addWidget(QLabel(S.RACE_SPEED_LABEL))
+        bottom.addWidget(self.speed_box)
+        bottom.addSpacing(12)
+        bottom.addWidget(self.hud_label)
+        bottom.addStretch(1)
+        bottom.addWidget(self.gif_button)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.addLayout(top)
+        root.addWidget(self.band)
+        root.addWidget(self.stack, 1)
+        root.addWidget(self.result_label)
+        root.addWidget(self.message)
+        root.addLayout(bottom)
+        self._set_who_visible(False)
+        self._update_controls()
+
+    # ------------------------------------------------------------------
+    # 내용
+    # ------------------------------------------------------------------
+    def set_race(self, entries: Sequence[RaceEntry], *, warnings: Sequence[str] = (),
+                 runs: Sequence[tuple[Path, str]] | None = None) -> None:
+        """칸을 바꾸고 다시 준비한다. runs가 있으면(비교 화면) 「누구를」을 보이고 바꿀 때 칸을 다시 만든다."""
+        self.runs = [(Path(p), str(c)) for p, c in runs] if runs else None
+        self.who = "last"
+        self._quiet = True
+        try:
+            self.who_box.setCurrentIndex(WHO_MODES.index("last"))
+        finally:
+            self._quiet = False
+        self._set_who_visible(self.runs is not None)
+        if self.runs is not None:
+            self.who_box.setToolTip(S.RACE_WHO_TIP.format(trials=common_budget(self.runs) or 0))
+        self.message.hide()
+        self._set_entries(entries, warnings)
+
+    def _set_who_visible(self, on: bool) -> None:
+        self.who_label.setVisible(on)
+        self.who_box.setVisible(on)
+
+    def _set_entries(self, entries: Sequence[RaceEntry], warnings: Sequence[str]) -> None:
+        entries = list(entries)
+        warnings = list(warnings)
+        if len(entries) > MAX_LANES:
+            entries = entries[:MAX_LANES]
+            warnings.append(S.RACE_TOO_MANY.format(max=MAX_LANES))
+        self.entries = entries
+        self.warnings = warnings
+        self.failure = None
+        self._build_lanes()
+        overlay_ok = self.overlay_allowed()
+        model = self.view_box.model()
+        if isinstance(model, QStandardItemModel):
+            item = model.item(VIEW_MODES.index("overlay"))
+            if item is not None:
+                item.setEnabled(overlay_ok)
+                item.setToolTip("" if overlay_ok else S.RACE_OVERLAY_OFF_TIP)
+        self.view_box.setToolTip("" if overlay_ok else S.RACE_OVERLAY_OFF_TIP)
+        if not overlay_ok and self.mode == "overlay":
+            self.set_mode("split")
+        self._update_band()
+        self.prepare()
+
+    def overlay_allowed(self) -> bool:
+        """「한 화면에 겹쳐서」를 켤 수 있는가: 칸이 있고 모든 칸의 환경이 같을 때."""
+        return bool(self.entries) and same_env(self.entries)
+
+    def _build_lanes(self) -> None:
+        for lane in self.lanes:
+            self.grid.removeWidget(lane)
+            lane.hide()
+            lane.deleteLater()
+        self.lanes = []
+        for r in range(self.grid.rowCount()):
+            self.grid.setRowStretch(r, 0)
+        for c in range(self.grid.columnCount()):
+            self.grid.setColumnStretch(c, 0)
+        if not self.entries:
+            return
+        rows, cols = lane_grid(len(self.entries))
+        for k, entry in enumerate(self.entries):
+            lane = _Lane(entry, self._on_paint)
+            self.grid.addWidget(lane, k // cols, k % cols)
+            self.lanes.append(lane)
+        for r in range(rows):
+            self.grid.setRowStretch(r, 1)
+        for c in range(cols):
+            self.grid.setColumnStretch(c, 1)
+
+    def _update_band(self) -> None:
+        lines = list(self.warnings)
+        if self.entries and not same_env(self.entries):
+            lines.append(S.RACE_DIFFERENT_ENV)
+        if self.failure:
+            lines.append(self.failure)
+        self.band.setText("\n".join(WARN_MARK + line for line in lines))
+        self.band.setVisible(bool(lines))
+
+    def band_lines(self) -> list[str]:
+        """알림 띠의 줄들(표시 기호 없이)."""
+        text = self.band.text() if self.band.isVisibleTo(self) else ""
+        return [line.removeprefix(WARN_MARK) for line in text.split("\n") if line]
+
+    # ------------------------------------------------------------------
+    # 코스, 누구를, 보기, 배속
+    # ------------------------------------------------------------------
+    def set_course(self, n: int) -> None:
+        n = int(n)
+        if not 1 <= n <= COURSES:
+            raise ValueError(f"course must be 1..{COURSES}, got {n}")
+        if self.course_box.currentData() != n:
+            self._quiet = True
+            try:
+                self.course_box.setCurrentIndex(n - 1)
+            finally:
+                self._quiet = False
+        if n == self.course:
+            return
+        self.course = n
+        self.prepare()
+
+    def next_course(self) -> None:
+        """「다른 코스」: 다음 번호(32 다음 1)."""
+        self.set_course(next_course(self.course))
+
+    def _on_course_box(self, _index: int) -> None:
+        if not self._quiet:
+            self.set_course(int(self.course_box.currentData()))
+
+    def set_who(self, who: str) -> None:
+        """누구를 달리게 할지(실행 경주만): 칸을 다시 만들고 다시 준비한다."""
+        if who not in WHO_MODES:
+            raise ValueError(f"unknown race mode {who!r}")
+        if self.who_box.currentData() != who:
+            self._quiet = True
+            try:
+                self.who_box.setCurrentIndex(WHO_MODES.index(who))
+            finally:
+                self._quiet = False
+        if who == self.who or self.runs is None:
+            self.who = who
+            return
+        self.who = who
+        entries, warnings, _n = entries_from_runs(self.runs, who)
+        self._set_entries(entries, warnings)
+
+    def _on_who_box(self, _index: int) -> None:
+        if not self._quiet:
+            self.set_who(str(self.who_box.currentData()))
+
+    def set_mode(self, mode: str) -> None:
+        """나란히(칸마다 캔버스) 또는 한 화면에 겹쳐서(환경이 모두 같을 때만)."""
+        if mode not in VIEW_MODES:
+            raise ValueError(f"unknown view mode {mode!r}")
+        if mode == "overlay" and not self.overlay_allowed():
+            mode = "split"
+        if self.view_box.currentData() != mode:
+            self._quiet = True
+            try:
+                self.view_box.setCurrentIndex(VIEW_MODES.index(mode))
+            finally:
+                self._quiet = False
+        if mode == self.mode:
+            return
+        self.mode = mode
+        self.stack.setCurrentWidget(self.overlay_canvas if mode == "overlay" else self.grid_widget)
+        self.frame_ms.clear()
+        if self.ready:
+            self._show_time()
+
+    def _on_view_box(self, _index: int) -> None:
+        if not self._quiet:
+            self.set_mode(str(self.view_box.currentData()))
+
+    def set_speed(self, speed: float) -> None:
+        speed = float(speed)
+        if speed not in SPEEDS:
+            raise ValueError(f"speed must be one of {SPEEDS}, got {speed}")
+        if self.speed_box.currentData() != speed:
+            self._quiet = True
+            try:
+                self.speed_box.setCurrentIndex(SPEEDS.index(speed))
+            finally:
+                self._quiet = False
+        self.speed = speed
+        self._update_hud()
+
+    # ------------------------------------------------------------------
+    # 준비
+    # ------------------------------------------------------------------
+    def prepare(self) -> None:
+        """지금 코스로 모든 칸을 다시 시뮬레이션한다(배경 스레드). 앞 준비는 버린다."""
+        self.stop_clock()
+        self._tag += 1
+        if self._cancel is not None:
+            self._cancel.set()
+            self._cancel = None
+        self.ready = False
+        self.finished = False
+        self.rank_list = None
+        self.t = 0.0
+        self._hold = 0.0
+        self._timer.setInterval(FAST_MS)
+        self.frame_ms.clear()
+        self.result_label.clear()
+        self.overlay_canvas.set_overlay([])
+        for lane in self.lanes:
+            lane.set_replay(None)
+            lane.set_status(S.RACE_PREPARING.format(done=0, total=len(self.lanes)))
+        self._update_controls()
+        if not self.entries:
+            return
+        trial = course_trial(self.course)
+        jobs = [(e.env_text, e.genome, trial) for e in self.entries]
+        self._cancel = threading.Event()
+        th = _RaceThread(self._tag, jobs, self._cancel, QCoreApplication.instance())
+        th.progress.connect(self._on_progress)
+        th.finished_job.connect(self._on_ready)
+        _start_thread(th)
+
+    def _on_progress(self, tag: Any, done: int, total: int) -> None:
+        if tag != self._tag:
+            return
+        for lane in self.lanes:
+            if lane.replay is None:
+                lane.set_status(S.RACE_PREPARING.format(done=done, total=total))
+
+    def _on_ready(self, tag: Any, result: Any) -> None:
+        if tag != self._tag:
+            return  # 더 새로운 준비가 있다
+        self._cancel = None
+        if isinstance(result, Exception):
+            self.failure = S.RACE_FAILED.format(reason=str(result).strip() or type(result).__name__)
+            for lane in self.lanes:
+                lane.set_status("")
+            self._update_band()
+            self._update_controls()
+            return
+        reps: list[Replay] = result
+        for lane, rep in zip(self.lanes, reps, strict=True):
+            lane.set_replay(rep)
+        if self.overlay_allowed() and reps:
+            self.overlay_canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels)
+            self.overlay_canvas.set_population([])
+            self.overlay_canvas.set_overlay([(r.trajectory, r.agent, QColor(e.color), e.label)
+                                             for r, e in zip(reps, self.entries, strict=True)])
+            self.overlay_canvas.set_follow("fit")
+        self.ready = True
+        self.t = 0.0
+        self._show_time()
+        self._update_controls()
+        self.prepared.emit()
+        if self.isVisible():
+            self.start()
+
+    @property
+    def replays(self) -> list[Replay]:
+        return [lane.replay for lane in self.lanes if lane.replay is not None]
+
+    @property
+    def scores(self) -> list[float]:
+        """칸마다 이 코스의 점수(준비 전에는 빈 목록)."""
+        return [float(r.result.score) for r in self.replays] if self.ready else []
+
+    def race_duration(self) -> float:
+        """가장 긴 칸의 길이(초)."""
+        return max((lane.duration for lane in self.lanes), default=0.0)
+
+    # ------------------------------------------------------------------
+    # 시계
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        """출발(끝난 경주면 처음부터)."""
+        if not self.ready:
+            return
+        if self.finished:
+            self.seek(0.0)
+        self.playing = True
+        self._last_tick = time.perf_counter()
+        self._paint_accum = 0.0
+        self._timer.start()
+        self._update_controls()
+
+    def pause(self) -> None:
+        self.stop_clock()
+        self._update_controls()
+
+    def stop_clock(self) -> None:
+        self._timer.stop()
+        self.playing = False
+
+    def toggle(self) -> None:
+        if self.playing:
+            self.pause()
+        else:
+            self.start()
+
+    def restart(self) -> None:
+        """처음부터 다시 달린다."""
+        if not self.ready:
+            return
+        self.seek(0.0)
+        self.start()
+
+    def seek(self, t: float) -> None:
+        """경주 시계를 t초로(순위를 지우고 다시 센다)."""
+        self.t = max(0.0, min(float(t), self.race_duration()))
+        self._hold = 0.0
+        self.finished = False
+        self.rank_list = None
+        self.result_label.clear()
+        if self.ready:
+            self._show_time()
+
+    def advance(self, dt_real: float) -> None:
+        """실제 시간 dt_real초만큼 경주 시계를 움직인다(배속을 곱함). 타이머가 부르고, 테스트가 직접 부른다."""
+        if not self.ready or self.finished:
+            return
+        step = max(0.0, float(dt_real))
+        end = self.race_duration()
+        if self.t < end:
+            self.t = min(end, self.t + step * self.speed)
+        else:
+            self._hold += step
+        self._show_time()
+        if self.t >= end and self._hold >= HOLD_SECONDS:
+            self._finish()
+
+    def _tick(self) -> None:
+        now = time.perf_counter()
+        dt_real = now - self._last_tick
+        self._last_tick = now
+        self._record_paint()
+        self.advance(dt_real)
+
+    def _on_paint(self, ms: float) -> None:
+        self._paint_accum += ms
+
+    def _record_paint(self) -> None:
+        """앞 프레임에 그린 시간을 남기고, 최근 30프레임 중앙값이 12ms를 넘으면 30fps로 낮춘다."""
+        if self._paint_accum <= 0.0:
+            return
+        ms, self._paint_accum = self._paint_accum, 0.0
+        self.frame_ms.append(ms)
+        if len(self.paint_log) < PAINT_LOG_MAX:
+            self.paint_log.append(ms)
+        if (self._timer.interval() == FAST_MS and len(self.frame_ms) >= PAINT_WINDOW
+                and statistics.median(self.frame_ms) > SLOW_PAINT_MS):
+            self._timer.setInterval(SLOW_MS)
+
+    @property
+    def interval_ms(self) -> int:
+        """지금 프레임 간격(16 = 약 60fps, 33 = 약 30fps)."""
+        return int(self._timer.interval())
+
+    def _show_time(self) -> None:
+        t = self.t
+        if self.mode == "overlay":
+            self.overlay_canvas.set_time(t)
+            self.overlay_canvas.set_hud(S.RACE_HUD.format(n=self.course, t=t, speed=self.speed))
+        else:
+            for lane in self.lanes:
+                lane.canvas.set_time(t)
+        for k, lane in enumerate(self.lanes):
+            lane.set_status(self._lane_text(k))
+        self._update_hud()
+
+    def _lane_text(self, k: int) -> str:
+        lane = self.lanes[k]
+        rep = lane.replay
+        if rep is None:
+            return ""
+        res = rep.result
+        if self.t < lane.duration:
+            return S.RACE_RUNNING.format(t=self.t)
+        if self.rank_list is not None:
+            rank, tie = self.rank_list[k]
+            fmt = S.RACE_LANE_RANK_TIE if tie else S.RACE_LANE_RANK
+            return fmt.format(rank=rank, end=res.end_label, t=res.time, score=res.score)
+        return S.RACE_LANE_DONE.format(end=res.end_label, t=res.time, score=res.score)
+
+    def _update_hud(self) -> None:
+        self.hud_label.setText(S.RACE_HUD.format(n=self.course, t=self.t, speed=self.speed))
+
+    def _finish(self) -> None:
+        self.stop_clock()
+        self.finished = True
+        self.rank_list = ranks(self.entries, self.scores)
+        for k, lane in enumerate(self.lanes):
+            lane.set_status(self._lane_text(k))
+        if self.rank_list is not None:
+            order = sorted(range(len(self.entries)), key=lambda k: (self.rank_list[k][0], k))  # type: ignore[index]
+            items = [S.RACE_RESULT_ITEM.format(rank=self.rank_list[k][0], name=self.entries[k].label) for k in order]
+            self.result_label.setText(S.RACE_RESULT.format(order=S.RACE_RESULT_SEP.join(items)))
+        else:
+            self.result_label.clear()
+        self._update_controls()
+        self.finished_race.emit()
+
+    def _update_controls(self) -> None:
+        self.start_button.setText(S.RACE_PAUSE if self.playing else S.RACE_START)
+        self.start_button.setEnabled(self.ready)
+        self.restart_button.setEnabled(self.ready)
+        self.gif_button.setEnabled(self.ready)
+        self._update_hud()
+
+    # ------------------------------------------------------------------
+    # 경주 영상
+    # ------------------------------------------------------------------
+    def default_gif_path(self) -> Path:
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = S.RACE_GIF_NAME.format(n=self.course, stamp=stamp)
+        run = self.entries[0].run if self.entries else None
+        folder = (run / "exports") if run is not None else paths.data_dir()
+        return folder / name
+
+    def ask_save_path(self, default: Path) -> Path | None:
+        """저장할 GIF 경로를 묻는다. 테스트는 이 메서드를 바꿔 끼운다."""
+        chosen, _ = QFileDialog.getSaveFileName(self, S.VIDEO_SAVE_TITLE, str(default), S.VIDEO_FILTER)
+        return Path(chosen) if chosen else None
+
+    def show_error(self, message: str) -> None:
+        QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, message)
+
+    def save_gif(self, path: Path | None = None) -> Path | None:
+        """지금 경주를 GIF 하나로 저장한다(나란히: 칸 격자 320×200, 20fps / 겹쳐서: 기존 겹친 영상). 취소하면 None."""
+        from PySide6.QtWidgets import QApplication
+
+        from evolab.app.export.video import export_gif, export_race_gif
+
+        if not self.ready:
+            return None
+        if path is None:
+            path = self.ask_save_path(self.default_gif_path())
+            if path is None:
+                return None
+        path = Path(path)
+        if path.suffix.lower() != ".gif":
+            path = path.with_suffix(".gif")
+        was_playing = self.playing
+        self.pause()
+        title = S.VIDEO_RACE_TITLE.format(n=self.course)
+        items = [(lane.replay, QColor(lane.entry.color), lane.entry.label) for lane in self.lanes
+                 if lane.replay is not None]
+        dlg = QProgressDialog(S.VIDEO_PROGRESS, S.VIDEO_CANCEL, 0, 100, self)
+        dlg.setMinimumDuration(300)
+
+        def progress(done: int, total: int) -> bool:
+            dlg.setMaximum(total)
+            dlg.setValue(done)
+            QApplication.processEvents()
+            return not dlg.wasCanceled()
+
+        try:
+            if self.mode == "overlay":
+                out = export_gif(items, path, title=title, progress=progress)
+            else:
+                out = export_race_gif(items, path, lane_grid(len(items))[1], title=title, progress=progress)
+        except (OSError, ValueError) as exc:
+            self.show_error(str(exc))
+            return None
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+            if was_playing and not self.finished:
+                self.start()
+        if out is not None:
+            self.message.setText(S.VIDEO_DONE.format(path=out))
+            self.message.show()
+        return out
+
+    # ------------------------------------------------------------------
+    def shutdown(self) -> None:
+        """창을 닫을 때: 시계를 멈추고 도는 준비를 버린다."""
+        self.stop_clock()
+        self._tag += 1
+        if self._cancel is not None:
+            self._cancel.set()
+            self._cancel = None
+        self._update_controls()
+
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802
+        # 창을 내리거나 닫으면 멈추고, 다시 보이면 달리던 경주만 이어 간다(사용자가 멈춘 경주는 그대로)
+        self._resume_on_show = self.playing
+        self.stop_clock()
+        try:
+            self._update_controls()
+        except RuntimeError:  # 프로그램을 끝낼 때: 단추가 먼저 지워졌다
+            pass
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self.ready and self._resume_on_show and not self.finished:
+            self.start()
+        elif not self.ready and self._cancel is None and self.entries and not self.failure:
+            self.prepare()  # 준비 중에 닫았다가 다시 연 창
+        self._resume_on_show = False
+
+
+class RaceDialog(QDialog):
+    """나란히 경주 창. 연 화면의 창이 주인이고, 하나를 다시 쓴다(show_race)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint
+                            | Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowCloseButtonHint)
+        self.setModal(False)
+        self.setWindowTitle(S.RACE_TITLE)
+        self.view = RaceView(self)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.view)
+        self.resize(*DEFAULT_SIZE)
+
+    def set_race(self, entries: Sequence[RaceEntry], *, title: str, warnings: Sequence[str] = (),
+                 runs: Sequence[tuple[Path, str]] | None = None) -> None:
+        self.setWindowTitle(title)
+        self.view.set_race(entries, warnings=warnings, runs=runs)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.view.shutdown()
+        super().closeEvent(event)
+
+    def reject(self) -> None:  # Esc
+        self.view.shutdown()
+        super().reject()
+
+
+def show_race(parent: QWidget | None, entries: list[RaceEntry], *, title: str, warnings: Sequence[str] = (),
+              runs: Sequence[tuple[Path, str]] | None = None) -> RaceDialog:
+    """경주 창을 연다. 주인(parent.window())에 이미 경주 창이 있으면 그 창의 내용을 바꾸고 앞으로 가져온다.
+
+    runs가 있으면(비교 화면) 「누구를」을 보이고, 바꾸면 entries_from_runs(runs, 누구를)로 칸을 다시 만든다.
+    """
+    owner = parent.window() if parent is not None else None
+    dlg: RaceDialog | None = None
+    if owner is not None:
+        found = owner.findChildren(RaceDialog, options=Qt.FindChildOption.FindDirectChildrenOnly)
+        dlg = found[0] if found else None
+    if dlg is None:
+        dlg = RaceDialog(owner)
+    dlg.set_race(entries, title=title, warnings=warnings, runs=runs)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg
+
+
+__all__ = ["RaceDialog", "RaceView", "show_race"]

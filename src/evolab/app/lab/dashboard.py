@@ -1729,7 +1729,8 @@ class Dashboard(QWidget):
         champion: tuple[int, np.ndarray] | None,
     ) -> None:
         """학습 중 세대 하나: 세대 메시지의 관찰 기록(obs_ 키 사전, 없으면 None), 집단 유전자(float64, 최근 64세대만
-        화면 메모리에 둔다), 세대 대표 번호, 지금 챔피언 (세대, 유전자). 이름표(set_watch_meta)가 없으면 무시한다."""
+        화면 메모리에 둔다), 세대 대표 번호, 바뀐 챔피언 (세대, 유전자) 또는 (세대, 유전자, 검증 점수). 점수를 주지 않으면
+        그 세대 통계 줄의 champion_score를 쓴다. 이름표(set_watch_meta)가 없으면 무시한다."""
         from evolab.app.lab.history import live_entry
 
         meta = self.watch_meta
@@ -1741,8 +1742,9 @@ class Dashboard(QWidget):
         if entry is not None:
             self.history.add(entry, exact=exact)
         if champion is not None:
-            cg, genome = champion
-            self.history.add_champion(int(cg), genome, self.row_value(int(cg), "champion_score"))
+            cg, genome = champion[0], champion[1]
+            score = champion[2] if len(champion) > 2 else self.row_value(int(cg), "champion_score")  # type: ignore[misc]
+            self.history.add_champion(int(cg), genome, score)
         self._invalidate(FUN_TILE_IDS)
 
     def set_focus(self, gen: int | None) -> None:

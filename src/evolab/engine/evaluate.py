@@ -14,9 +14,9 @@ output_channel_index, anchor_body)와 pymunk Body.position만 읽고 난수를 �
 from __future__ import annotations
 
 import time
+from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 
@@ -109,102 +109,80 @@ class PairObservation:
 
 
 class _Observer:
-    """쌍 하나의 행동 관찰(코드 1). ep.step 뒤에 부른다. 상태를 읽기만 한다(applied_outputs).
+    """쌍 하나의 관찰 버퍼와 세기. 상태를 읽기만 한다(applied_outputs, 기준 물체 Body.position).
 
-    스텝마다 하는 일은 그 스텝의 실제 출력 리스트를 붙이는 것뿐이다(Episode는 스텝마다 새 리스트로 바꾸고 옛 리스트를
-    고치지 않는다). FLUSH 스텝마다와 끝에 numpy로 센다: 칸 = int((x - low) · 20 / (high - low))를 0..19로 자름(파이썬
-    int()와 같은 버림), 합은 cumsum이라 스텝 순서로 더한 값과 비트 단위로 같다. 파이썬 루프로 스텝마다 세는 것보다 싸다
-    (착륙선 0.53 → 0.28µs/스텝, 부하 걸린 기계에서 잼, 보고서 M2).
+    스텝마다 하는 일(이 스텝의 실제 출력을 버퍼에 잇기, POSITION_EVERY 스텝마다 기준 물체 위치 잇기)은 evaluate 루프가
+    메서드를 부르지 않고 바로 한다(after_step과 같은 두 줄): 파이썬 함수 호출과 스텝마다 세는 루프가 착륙선 스텝 비용의
+    몇 %라서다(보고서 M2). FLUSH_EVERY 루프마다와 끝(build)에 numpy로 센다:
+    - 칸 = int((x - low) · 20 / (high - low))를 0..19로 자름(파이썬 int()와 같은 0 쪽 버림, x == high는 19칸)
+    - 합 = cumsum(스텝 순서로 더한 값과 비트 단위로 같다)
+    - 위치 칸 = int(fy)·nx + int(fx), fx = (x - x0) / 칸 크기. 0 ≤ fx < nx, 0 ≤ fy < ny가 아니면(NaN 포함) 틀 밖
+      (비교를 먼저 해서 int() 버림 함정을 피함, GridFrame.cell_at과 같은 규칙)
     """
 
-    __slots__ = ("idx", "lo", "k", "offs", "buf", "hist", "total", "done")
-    FLUSH = 128
-    """버퍼 크기(스텝). 쌍마다 출력 리스트 이만큼만 붙잡는다(약 20KB)."""
+    __slots__ = ("acts", "pos", "body", "C", "idx", "lo", "k", "offs", "hist", "total", "done", "frame", "outside",
+                 "cells")
 
-    def __init__(self, ep: Episode, ranges: Sequence[tuple[float, float]]) -> None:
+    def __init__(self, ep: Episode, ranges: Sequence[tuple[float, float]], frame: Sequence[float] | None = None,
+                 body: str | None = None) -> None:
+        self.acts = array("d")
+        """이어 붙인 실제 출력(스텝마다 채널 C개, Episode의 채널 순서). C double로 바로 옮긴다: 파이썬 float 객체를
+        붙잡지 않아야 스텝마다 새 메모리를 건드리지 않는다(캐시가 덜 밀림)."""
+        self.pos = array("d")
+        """이어 붙인 기준 물체 위치(x, y)."""
+        self.body = ep.bodies[body] if frame is not None and body is not None else None
+        self.C = len(ep.applied_outputs)
         self.idx = np.asarray(ep.output_channel_index, dtype=np.intp)
         self.lo = np.array([float(lo) for lo, _ in ranges], dtype=np.float64)
         self.k = np.array([ACTION_BINS / (float(hi) - float(lo)) for lo, hi in ranges], dtype=np.float64)
         self.offs = np.arange(len(ranges), dtype=np.int64) * ACTION_BINS
-        self.buf: list[list[float]] = []
         self.hist = np.zeros(len(ranges) * ACTION_BINS, dtype=np.int64)
         self.total = np.zeros((1, len(ranges)), dtype=np.float64)
         self.done = 0
-
-    def after_step(self, ep: Episode) -> None:
-        buf = self.buf
-        buf.append(ep.applied_outputs)
-        if len(buf) >= self.FLUSH:
-            self._flush()
-
-    def _flush(self) -> None:
-        if not self.buf:
-            return
-        a = np.array(self.buf, dtype=np.float64).reshape(len(self.buf), -1)[:, self.idx]  # (스텝, 출력) 신경망 순서
-        self.done += len(self.buf)
-        self.buf = []
-        b = ((a - self.lo) * self.k).astype(np.int64)  # x == high면 20 → 19칸, low보다 작으면 0칸
-        np.clip(b, 0, ACTION_BINS - 1, out=b)
-        b += self.offs
-        self.hist += np.bincount(b.ravel(), minlength=self.hist.size)
-        self.total = np.cumsum(np.concatenate((self.total, a)), axis=0)[-1:]  # 스텝 순서로 더함
-
-    def _positions(self) -> tuple[np.ndarray, np.ndarray, int]:
-        return np.zeros(0, np.int32), np.zeros(0, np.uint32), 0
-
-    def build(self) -> PairObservation:
-        self._flush()
-        cells, counts, outside = self._positions()
-        return PairObservation(self.hist.astype(np.uint32), self.total[0].copy(), self.done, cells, counts, outside)
-
-
-class _PositionObserver(_Observer):
-    """행동 + 위치 관찰(코드 2): POSITION_EVERY 스텝마다 기준 물체 위치(pymunk Body.position)를 붙여 두었다가 격자
-    칸으로 센다. 칸 = int(fy)·nx + int(fx), fx = (x - x0) / 칸 크기. 틀 밖(0 ≤ fx < nx, 0 ≤ fy < ny가 아님, NaN 포함)은
-    outside로 센다(비교를 먼저 해서 int() 버림 함정을 피함, GridFrame.cell_at과 같은 규칙)."""
-
-    __slots__ = ("body", "frame", "pos", "wait", "outside", "cells")
-
-    def __init__(self, ep: Episode, ranges: Sequence[tuple[float, float]], frame: Sequence[float], body: str) -> None:
-        super().__init__(ep, ranges)
-        x0, y0, cell, nx, ny = frame
-        self.frame = (float(x0), float(y0), float(cell), int(nx), int(ny))
-        self.body = ep.bodies[body]
-        self.pos: list[Any] = []
-        self.wait = POSITION_EVERY
+        self.frame = None if self.body is None or frame is None else (
+            float(frame[0]), float(frame[1]), float(frame[2]), int(frame[3]), int(frame[4]))
         self.outside = 0
         self.cells: list[np.ndarray] = []
 
     def after_step(self, ep: Episode) -> None:
-        buf = self.buf
-        buf.append(ep.applied_outputs)
-        w = self.wait - 1
-        if w:
-            self.wait = w
+        """한 스텝(evaluate 루프가 같은 일을 바로 한다). ep.steps는 방금 끝낸 스텝 수."""
+        self.acts.fromlist(ep.applied_outputs)
+        if self.body is not None and ep.steps % POSITION_EVERY == 0:
+            self.pos.extend(self.body.position)
+
+    def flush(self) -> None:
+        """버퍼를 세고 비운다."""
+        if self.acts:
+            a = np.frombuffer(self.acts, dtype=np.float64).reshape(-1, self.C)[:, self.idx]  # 색인이 사본을 만든다
+            self.acts = array("d")
+            self.done += a.shape[0]
+            b = ((a - self.lo) * self.k).astype(np.int64)  # 0 쪽 버림(int()와 같음)
+            np.clip(b, 0, ACTION_BINS - 1, out=b)
+            b += self.offs
+            self.hist += np.bincount(b.ravel(), minlength=self.hist.size)
+            self.total = np.cumsum(np.concatenate((self.total, a)), axis=0)[-1:]  # 스텝 순서로 더함
+        if self.pos and self.frame is not None:
+            x0, y0, cell, nx, ny = self.frame
+            p = np.frombuffer(self.pos, dtype=np.float64).reshape(-1, 2).copy()
+            self.pos = array("d")
+            fx = (p[:, 0] - x0) / cell
+            fy = (p[:, 1] - y0) / cell
+            inside = (fx >= 0.0) & (fx < nx) & (fy >= 0.0) & (fy < ny)
+            self.outside += int(p.shape[0] - np.count_nonzero(inside))
+            self.cells.append(fy[inside].astype(np.int64) * nx + fx[inside].astype(np.int64))
+
+    def build(self) -> PairObservation:
+        self.flush()
+        if self.cells:
+            cells, counts = np.unique(np.concatenate(self.cells), return_counts=True)
         else:
-            self.wait = POSITION_EVERY
-            self.pos.append(self.body.position)
-        if len(buf) >= self.FLUSH:
-            self._flush()
+            cells, counts = np.zeros(0, np.int64), np.zeros(0, np.int64)
+        return PairObservation(self.hist.astype(np.uint32), self.total[0].copy(), self.done,
+                               cells.astype(np.int32), counts.astype(np.uint32), self.outside)
 
-    def _flush(self) -> None:
-        super()._flush()
-        if not self.pos:
-            return
-        x0, y0, cell, nx, ny = self.frame
-        p = np.array(self.pos, dtype=np.float64).reshape(len(self.pos), 2)
-        self.pos = []
-        fx = (p[:, 0] - x0) / cell
-        fy = (p[:, 1] - y0) / cell
-        inside = (fx >= 0.0) & (fx < nx) & (fy >= 0.0) & (fy < ny)
-        self.outside += int(len(p) - np.count_nonzero(inside))
-        self.cells.append(fy[inside].astype(np.int64) * nx + fx[inside].astype(np.int64))
 
-    def _positions(self) -> tuple[np.ndarray, np.ndarray, int]:
-        if not self.cells:
-            return super()._positions()
-        cells, counts = np.unique(np.concatenate(self.cells), return_counts=True)
-        return cells.astype(np.int32), counts.astype(np.uint32), self.outside
+FLUSH_EVERY = 512
+"""관찰 버퍼를 세는 간격(묶음 루프 횟수). 쌍마다 실제 출력 512스텝분까지만 붙잡는다(착륙선 출력 3개면 12KB)."""
 
 
 def _make_observer(ep: Episode, ranges: Sequence[tuple[float, float]], code: int,
@@ -213,9 +191,7 @@ def _make_observer(ep: Episode, ranges: Sequence[tuple[float, float]], code: int
     if code == OBSERVE_NONE:
         return None
     anchor = ep.anchor_body if code == OBSERVE_POSITIONS and frame is not None else None
-    if anchor is not None and frame is not None:
-        return _PositionObserver(ep, ranges, frame, anchor)
-    return _Observer(ep, ranges)
+    return _Observer(ep, ranges, frame if anchor is not None else None, anchor)
 
 
 @dataclass
@@ -306,6 +282,7 @@ def evaluate(
         observers = [_make_observer(episodes[i], ranges, int(code), frame) for i, code in enumerate(observe)]
 
     nn_t = 0.0
+    sweeps = 0
     active = _Active(np.arange(n), all_brains.select(rows)) if n else None
     while active is not None and len(active.index):
         idx = active.index
@@ -325,10 +302,18 @@ def evaluate(
                 rec.after_step(ep)
             if observers is not None:
                 ob = observers[i]
-                if ob is not None:
-                    ob.after_step(ep)
+                if ob is not None:  # = ob.after_step(ep), 메서드 호출 없이(상태를 읽기만 한다)
+                    ob.acts.fromlist(ep.applied_outputs)
+                    if ob.body is not None and ep.steps % POSITION_EVERY == 0:
+                        ob.pos.extend(ob.body.position)
             if not ep.done:
                 still.append(j)
+        if observers is not None:
+            sweeps += 1
+            if sweeps % FLUSH_EVERY == 0:
+                for ob in observers:
+                    if ob is not None:
+                        ob.flush()
         if len(still) == len(idx):
             continue
         if not still:

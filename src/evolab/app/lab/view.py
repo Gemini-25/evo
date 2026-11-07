@@ -3,6 +3,18 @@
 가운데 관전 화면, 오른쪽 제어 패널, 아래 통계 대시보드. 학습은 학습 프로세스(TrainingClient)가 하고, 이 화면은
 결과를 받아 그리기만 한다. 다시 시뮬레이션(타임라인, 1세대 vs 지금, 고속 모드 챔피언, 개체 클릭 검사)은
 백그라운드 스레드에서 같은 런타임 코드로 한다.
+
+v1.2 「보는 재미」(설계 4.3, 5.1, D16·D17·D19·D24):
+- 실행을 열거나 학습을 시작하면 대시보드에 이름표(WatchMeta)를 주고 세대 대표 파일의 관찰 기록을 배경으로 읽게 한다
+  (load_history). 학습 중에는 세대 메시지(관찰 기록 포함)를 add_generation으로 넘긴다. 되감기면 다시 읽는다.
+- 타임라인 슬라이더 하나가 보는 세대를 정한다(80ms 묶음, 맨 끝이면 최신 따라가기). 「세대 넘겨 보기」는 슬라이더를
+  clamp(세대 수 ÷ 20, 2, 15)세대/초로 넘기고, 손으로 잡으면 멈춘다.
+- 뇌 들여다보기 원천(D24): ① 캔버스가 재생 중인 개체(타임라인, 1세대 vs 지금의 "지금", 고속 챔피언, 클릭 검사,
+  지도 점) ② 관전 중이면 그 세대 대표를 시험 0번으로 따로 다시 돌린 것 ③ 없으면 대시보드가 챔피언 멈춘 그림.
+  ②와 뇌 타일이 늦게 보인 경우의 추적은 _brain_tag로 따로 세는 작업이라 _replay_tag를 올리지 않는다(사용자가
+  시작한 타임라인·겹쳐 보기 재생을 지우지 않게). 한 번에 하나만 돌고, 돌고 있으면 새 작업을 띄우지 않는다.
+- 유전자 지도 점 두 번 누르기: 최근 64세대는 화면 메모리의 정확한 유전자, 아니면 세대 대표(GMAP_INEXACT).
+- 「세대끼리 경주」: app/race의 entries_from_generations + show_race.
 """
 
 from __future__ import annotations
@@ -46,9 +58,10 @@ from evolab.app import strings as S
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.lab.client import TrainingClient
 from evolab.app.lab.dashboard import Dashboard
+from evolab.app.lab.watch_types import BrainSource, WatchMeta
 from evolab.engine import seeds
 from evolab.engine.pool import default_workers
-from evolab.engine.replay import Replay, agent_geoms, replay
+from evolab.engine.replay import TRACE_BRAIN, Replay, TraceMode, agent_geoms, replay
 from evolab.engine.session import SessionRequest
 from evolab.engine.trainer import (
     MAX_QUALIFY_ENTRANTS,
@@ -80,6 +93,13 @@ OPENED_RUN_CHECKPOINT_KEYS = ("restart_patience", "restart_from")
 남지 않고 체크포인트와 사건 줄에만 남는다. 다른 설정은 v1.0처럼 run.json 값을 보인다."""
 SHOWN_QUALIFY_TRIALS = 12000
 """키가 없는 예전 설정일 때 '출전마다 학습 시험' 칸에 보이는 값(데이터클래스 기본값, 예선 없음이라 쓰이지 않는다)."""
+FOCUS_BATCH_MS = 80
+"""타임라인 슬라이더 → 보는 세대를 묶어 넘기는 간격(끌어 옮기는 동안 대시보드를 세대마다 다시 그리지 않게)."""
+FLIP_SECONDS = 20.0
+FLIP_RATE = (2.0, 15.0)
+"""「세대 넘겨 보기」 속도 = clamp(기록 세대 수 ÷ FLIP_SECONDS, 최소, 최대)세대/초."""
+ReplayJob = tuple[EnvSpec, GenomeLayout, np.ndarray, Trial, TraceMode]
+"""다시 시뮬레이션 작업 하나: (환경, 유전자 배치, 유전자, 시험, 추적 종류 False | True | "brain")."""
 
 
 def settings_store() -> QSettings:
@@ -95,8 +115,7 @@ class _ReplayThread(QThread):
     finished_job = Signal(object, object)
     """(꼬리표, Replay 목록 또는 예외)"""
 
-    def __init__(self, tag: Any, jobs: list[tuple[EnvSpec, GenomeLayout, np.ndarray, Trial, bool]],
-                 parent: QObject | None = None) -> None:
+    def __init__(self, tag: Any, jobs: list[ReplayJob], parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.tag = tag
         self.jobs = jobs
@@ -163,6 +182,27 @@ class _SceneThread(QThread):
         try:
             out = build_scene(*self.args, cancel=self.isInterruptionRequested)
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다(멈춘 것도: 꼬리표가 달라 버려진다)
+            self.finished_job.emit(self.tag, exc)
+            return
+        self.finished_job.emit(self.tag, out)
+
+
+class _WorldThread(QThread):
+    """궤적 밀도 타일의 세계 그림(그 세대 시험 0번 세계, 개체 없음)을 백그라운드에서 만든다(설계 4.4)."""
+
+    finished_job = Signal(object, object)
+    """(꼬리표, WorldGeometry 또는 예외)"""
+
+    def __init__(self, tag: Any, spec: EnvSpec, trial: Trial, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.tag = tag
+        self.args = (spec, trial)
+
+    def run(self) -> None:
+        spec, trial = self.args
+        try:
+            out = Episode(spec, None, trial).geometry()
+        except Exception as exc:  # 결과를 화면 스레드로 넘긴다(못 만들면 밀도 타일은 계속 준비 중 글)
             self.finished_job.emit(self.tag, exc)
             return
         self.finished_job.emit(self.tag, out)
@@ -318,6 +358,36 @@ class LabView(QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
 
+        # v1.2 보는 재미: 보는 세대, 세대 넘겨 보기, 뇌 원천
+        self._focus_timer = QTimer(self)
+        self._focus_timer.setSingleShot(True)
+        self._focus_timer.setInterval(FOCUS_BATCH_MS)
+        self._focus_timer.timeout.connect(self._apply_focus)
+        self._flip_timer = QTimer(self)
+        self._flip_timer.timeout.connect(self._flip_step)
+        self.flip_rate = 0.0
+        """「세대 넘겨 보기」 속도(세대/초). 넘기는 중이 아니면 0."""
+        self._brain_play: dict[str, Any] | None = None
+        """뇌 원천 ①: 캔버스가 재생 중인 개체 {label, gen, genome, spec, trial, rep, tried, inspect}."""
+        self._brain_live: dict[str, Any] | None = None
+        """뇌 원천 ②: 관전 중인 세대의 대표 {gen, genome, spec, trial, rep, tried}."""
+        self._brain_tag = 0
+        """뇌 추적 작업의 꼬리표(_replay_tag와 따로 센다: 뇌 작업이 사용자 재생을 지우지 않게)."""
+        self._brain_thread: QThread | None = None
+        self._brain_key: tuple[Any, ...] | None = None
+        self._brain_serial = 0
+        self._next_brain: tuple[str, int | None] | None = None
+        """_run_replays가 띄울 작업 중 마지막 개체의 (뇌 제목, 세대). 부르는 쪽이 _run_replays 바로 앞에 정한다."""
+        self._replay_brain: tuple[int, str, int | None, np.ndarray, EnvSpec, Trial] | None = None
+        """지금 재생 작업(_replay_tag)의 뇌 원천 후보: (꼬리표, 제목, 세대, 유전자, 환경, 시험)."""
+        self._race_dialog: Any = None
+        self._world_thread: _WorldThread | None = None
+        self._world_pending: collections.OrderedDict[str, int] = collections.OrderedDict()
+        """세계 그림을 만드는 동안 새로 청한 세계 열쇠 → 세대. 밀도 타일은 열쇠마다 한 번만 청하므로 다 답한다
+        (가장 나중에 청한 것부터: 지금 보는 세대가 먼저)."""
+        self.last_notice = ""
+        """상태 글 끝에 덧붙인 마지막 알림(지도 점 재생의 GMAP_INEXACT 등)."""
+
         self._build_ui()
         self._restore_settings()
         self._method_changed(set_defaults=False)
@@ -330,20 +400,36 @@ class LabView(QWidget):
         self.canvas = SpectatorCanvas()
         self.canvas.individual_clicked.connect(self._inspect)
         self.dashboard = Dashboard(settings=self.settings)
+        self.dashboard.focus_requested.connect(self.focus_generation)
+        self.dashboard.individual_requested.connect(self.play_individual)
+        self.dashboard.geometry_needed.connect(self._geometry_needed)
         self.inspect = InspectPanel()
         self.inspect.hide()
         self.inspect.closed.connect(self._close_inspect)
 
-        # 타임라인
+        # 타임라인(보는 세대: 설계 D16·D17)
         self.timeline = QSlider(Qt.Orientation.Horizontal)
         self.timeline.setMinimum(1)
         self.timeline.setMaximum(1)
-        self.timeline_label = QLabel(S.LAB_TIMELINE)
-        self.timeline.valueChanged.connect(lambda v: self.timeline_label.setText(f"{S.LAB_TIMELINE} {v}"))
+        self.timeline.setToolTip(S.LAB_TIMELINE_TIP)
+        self.timeline_label = QLabel()
+        self._update_timeline_label()
+        self.timeline.valueChanged.connect(self._timeline_moved)
+        self.timeline.rangeChanged.connect(lambda _lo, _hi: self._update_timeline_label())
+        # 손으로 잡거나 키·휠로 옮기면 넘겨 보기를 멈춘다(setValue로 옮긴 것은 actionTriggered가 오지 않는다)
+        self.timeline.sliderPressed.connect(self.stop_flip)
+        self.timeline.actionTriggered.connect(lambda _action: self.stop_flip())
+        self.btn_flip = QPushButton(S.LAB_FLIP)
+        self.btn_flip.setCheckable(True)
+        self.btn_flip.setToolTip(S.LAB_FLIP_TIP)
+        self.btn_flip.clicked.connect(lambda on: self.start_flip() if on else self.stop_flip())
         self.btn_timeline = QPushButton(S.LAB_TIMELINE_PLAY)
         self.btn_timeline.clicked.connect(lambda: self.play_generation(self.timeline.value()))
         self.btn_versus = QPushButton(S.LAB_VERSUS)
         self.btn_versus.clicked.connect(self.play_versus)
+        self.btn_race = QPushButton(S.LAB_RACE_GENERATIONS)
+        self.btn_race.setToolTip(S.LAB_RACE_GENERATIONS_TIP)
+        self.btn_race.clicked.connect(lambda: self.race_generations())
         self.btn_live = QPushButton(S.LAB_LIVE)
         self.btn_live.clicked.connect(self.back_to_live)
         self.btn_video = QPushButton(S.VIDEO_SAVE)
@@ -351,10 +437,14 @@ class LabView(QWidget):
         tl = QHBoxLayout()
         tl.addWidget(self.timeline_label)
         tl.addWidget(self.timeline, 1)
+        tl.addWidget(self.btn_flip)
         tl.addWidget(self.btn_timeline)
-        tl.addWidget(self.btn_versus)
-        tl.addWidget(self.btn_live)
-        tl.addWidget(self.btn_video)
+        tl2 = QHBoxLayout()
+        tl2.addWidget(self.btn_versus)
+        tl2.addWidget(self.btn_race)
+        tl2.addWidget(self.btn_live)
+        tl2.addStretch(1)
+        tl2.addWidget(self.btn_video)
 
         center = QWidget()
         cl = QVBoxLayout(center)
@@ -364,6 +454,7 @@ class LabView(QWidget):
         row.addWidget(self.inspect)
         cl.addLayout(row, 1)
         cl.addLayout(tl)
+        cl.addLayout(tl2)
 
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(center)
@@ -665,6 +756,7 @@ class LabView(QWidget):
         self.run_info = {}
         self.state = "idle"
         self.env_path, self.env_text, self.spec, self.layout = path, text, spec, layout
+        self._set_watch_meta()
         self.env_label.setText(f"{spec.file.name}\n{where}")
         # 복제할 때만 칸이 없는 설정까지 가져간다(검토 24). 그냥 환경을 불러오면 그런 값은 기본값으로 돌아간다.
         self._base_config = dict(config) if config else None
@@ -911,9 +1003,12 @@ class LabView(QWidget):
         if self.view_mode in ("live", "fast"):
             self.view_mode = "live" if on else "fast"
             self.playing = None
+            self._brain_live = None  # 관전·고속을 바꾸면 앞 원천은 캔버스에서 사라진다(고속은 새 챔피언 재생이 ①)
+            self._brain_play = None
             if not on:
                 self._fast_last = 0
                 self._maybe_fast_replay(force=True)
+            self._update_brain_source()
         self._save_settings()
 
     def set_speed(self, n: int) -> None:
@@ -940,8 +1035,16 @@ class LabView(QWidget):
         self._last_video = None
         self._fast_last = 0
         self._replay_tag += 1  # 아직 도는 앞 실행의 다시 시뮬레이션 결과는 버린다
-        self.dashboard.clear()
+        self.stop_flip()
+        self._brain_tag += 1  # 앞 실행의 뇌 추적 결과도 버린다
+        self._brain_play = None
+        self._brain_live = None
+        self._replay_brain = None
+        self._world_pending.clear()
+        self.dashboard.clear()  # 보는 재미 기록·보는 세대·뇌 원천도 비운다
+        self._brain_key = None
         self.timeline.setMaximum(1)
+        self._update_timeline_label()
         self._close_inspect()
 
     def _adopt_run(self, msg: dict[str, Any]) -> None:
@@ -967,9 +1070,14 @@ class LabView(QWidget):
         self._form_from_config(msg.get("config") or {})
         self._setup_dashboard()
         self.dashboard.set_rows(self.rows)
+        # 보는 재미: 이름표를 주고 세대 대표 파일의 관찰 기록을 배경으로 읽는다(새 실행도: 앞 세대 대표를 파일에서 읽게)
+        self._set_watch_meta()
+        self.dashboard.load_history(self.run_dir, self.rows)
         self._warn_other_platform()
         self.timeline.setMaximum(max(1, self.generation))
         self.timeline.setValue(max(1, self.generation))
+        self._update_timeline_label()
+        self._apply_focus()
         self._show_still_scene()
 
     def _warn_other_platform(self) -> None:
@@ -1029,6 +1137,7 @@ class LabView(QWidget):
         self.dashboard.add_row(row)
         if msg.get("champion") is not None:
             self.champion = msg["champion"]
+        self._feed_dashboard(msg)
         at_end = self.timeline.value() >= self.timeline.maximum()
         self.timeline.setMaximum(max(1, self.generation))
         if at_end:
@@ -1207,6 +1316,8 @@ class LabView(QWidget):
         has_gen = self.generation > 0 and self.run_dir is not None
         self.btn_timeline.setEnabled(has_gen)
         self.btn_versus.setEnabled(has_gen)
+        self.btn_flip.setEnabled(self.generation >= 2 or self._flip_timer.isActive())
+        self.btn_race.setEnabled(self.generation >= 2 and self.run_dir is not None)
 
     # ------------------------------------------------------------------
     # 관전 재생
@@ -1231,6 +1342,7 @@ class LabView(QWidget):
         self.canvas.set_population(list(msg["trajectories"]), ranks=ranks, champion=int(msg["representative"]))
         self.canvas.set_overlay([])
         self._start_clock()
+        self._live_brain_for(msg, spec)
 
     def _scene_for(self, spec: EnvSpec, population: np.ndarray, trial: Trial) -> tuple[Any, list[Any] | None]:
         assert self.layout is not None
@@ -1295,6 +1407,9 @@ class LabView(QWidget):
             self.canvas.set_hud(S.LAB_HUD_REPLAY.format(label=self._replay_label, t=self.play_t))
         if self._inspect_index is not None:
             self.inspect.show_time(self.play_t)
+        if self._brain_wanted():
+            self._brain_check()
+            self.dashboard.show_time(self.play_t)
         if self.play_t < self.canvas.duration() + 0.5:
             return
         if self.view_mode == "live" and self.playing is not None:
@@ -1339,8 +1454,12 @@ class LabView(QWidget):
         except (RunStoreError, OSError, KeyError, ValueError):
             return None
 
-    def _run_replays(self, tag: Any, jobs: list[tuple[EnvSpec, GenomeLayout, np.ndarray, Trial, bool]]) -> None:
+    def _run_replays(self, tag: Any, jobs: list[ReplayJob]) -> None:
         self._replay_tag += 1
+        brain, self._next_brain = self._next_brain, None
+        if brain is not None and jobs:  # 마지막 개체가 뇌 원천 ① 후보(겹쳐 보기는 "지금" 쪽)
+            spec, _layout, genome, trial, _trace = jobs[-1]
+            self._replay_brain = (self._replay_tag, brain[0], brain[1], np.asarray(genome, dtype=np.float64), spec, trial)
         th = _ReplayThread((self._replay_tag, tag), jobs, self)
         th.finished_job.connect(self._replay_done)
         th.finished.connect(lambda t=th: self._forget_thread(t))
@@ -1358,6 +1477,7 @@ class LabView(QWidget):
         if isinstance(result, Exception):
             QMessageBox.warning(self, S.LAB_ERROR_TITLE, str(result))
             return
+        self._adopt_play_brain(seq, result[-1], inspect=kind == "inspect")
         if kind == "inspect":
             index = info
             self._inspect_index = index
@@ -1430,8 +1550,9 @@ class LabView(QWidget):
         self._replay_label = S.LAB_LABEL_CHAMPION.format(gen=gen)
         # 고친 환경이면 챔피언을 뽑은 세대의 환경 버전으로 재생한다(1세대 vs 지금과 같게)
         spec = self.spec_for(None, max(1, gen))
+        self._next_brain = (self._replay_label, gen)
         self._run_replays(("fast", [self._replay_label]),
-                          [(spec, self.layout, genome, seeds.display_trial(), False)])
+                          [(spec, self.layout, genome, seeds.display_trial(), self._brain_trace())])
 
     def _current_champion(self) -> tuple[np.ndarray | None, int]:
         if self.champion is not None and self.champion.get("genome") is not None:
@@ -1461,7 +1582,9 @@ class LabView(QWidget):
         self._ack_pending()
         self._replay_label = S.LAB_LABEL_REP.format(gen=generation)
         spec = self.spec_for(None, generation)
-        self._run_replays(("timeline", [self._replay_label]), [(spec, self.layout, genome, seeds.display_trial(), False)])
+        self._next_brain = (self._replay_label, generation)
+        self._run_replays(("timeline", [self._replay_label]),
+                          [(spec, self.layout, genome, seeds.display_trial(), self._brain_trace())])
         return True
 
     def play_versus(self) -> bool:
@@ -1478,13 +1601,16 @@ class LabView(QWidget):
         labels = [S.LAB_LABEL_REP.format(gen=1), S.LAB_LABEL_CHAMPION.format(gen=gen)]
         self._replay_label = " vs ".join(labels)
         trial = seeds.display_trial()
+        self._next_brain = (labels[1], gen)  # 뇌 그림은 "지금" 쪽
         self._run_replays(("versus", labels), [(self.spec_for(None, 1), self.layout, first, trial, False),
-                                                (self.spec_for(None, max(1, gen)), self.layout, now, trial, False)])
+                                                (self.spec_for(None, max(1, gen)), self.layout, now, trial,
+                                                 self._brain_trace())])
         return True
 
     def _ack_pending(self) -> None:
         """관전 재생을 그만 볼 때 기다리는 학습이 멈추지 않게 받은 세대를 다 봤다고 알린다."""
         self.loop_overlay = False
+        self._brain_live = None  # 관전 재생을 그만 본다: 뇌 원천 ②도 없다
         if self.playing is not None:
             self.client.send({"type": "played", "generation": int(self.playing["generation"])})
             self.playing = None
@@ -1501,6 +1627,8 @@ class LabView(QWidget):
         self._replay_tag += 1  # 아직 도는 타임라인·겹쳐 보기 결과가 실시간 화면을 덮지 않게
         self.canvas.set_overlay([])
         self._close_inspect()
+        self._brain_play = None  # 캔버스가 그 재생을 그만 보인다
+        self._update_brain_source()
         self.view_mode = "live" if self.rb_spectate.isChecked() else "fast"
         if self.view_mode == "fast":
             self._maybe_fast_replay(force=True)
@@ -1515,8 +1643,10 @@ class LabView(QWidget):
         if msg is None or self.layout is None:
             return
         seed, track = msg["trial"]
-        spec = self.spec_for(msg.get("env_version"), int(msg["generation"]))
+        gen = int(msg["generation"])
+        spec = self.spec_for(msg.get("env_version"), gen)
         genome = np.asarray(msg["population"][index], dtype=np.float64)
+        self._next_brain = (S.GMAP_LABEL_INDIVIDUAL.format(gen=gen, index=index), gen)
         self._run_replays(("inspect", index), [(spec, self.layout, genome, Trial(int(seed), track), True)])
 
     def _close_inspect(self) -> None:
@@ -1525,6 +1655,316 @@ class LabView(QWidget):
         self.canvas.set_rays(None)
         if self.view_mode == "live":
             self.canvas.set_overlay([])
+        if self._brain_play is not None and self._brain_play.get("inspect"):
+            self._brain_play = None  # 클릭 검사한 개체를 더 보이지 않는다
+            self._update_brain_source()
+
+    # ------------------------------------------------------------------
+    # 보는 재미(v1.2): 기록, 보는 세대, 세대 넘겨 보기, 뇌 원천, 지도 점, 궤적 밀도 세계, 세대끼리 경주
+    # ------------------------------------------------------------------
+    def _set_watch_meta(self) -> None:
+        """대시보드 「보는 재미」 이름표(유전자 구조, 몸 수치, 구동기, 신경망 입출력 이름)를 지금 환경으로."""
+        if self.spec is None or self.layout is None:
+            return
+        try:
+            meta = WatchMeta.from_spec(self.spec, self.layout)
+        except (ValueError, KeyError):  # 이름표를 못 만들면 보는 재미 쪽만 비어 있다(학습·재생과 무관)
+            return
+        self.dashboard.set_watch_meta(meta)
+
+    def _feed_dashboard(self, msg: Mapping[str, Any]) -> None:
+        """세대 메시지의 관찰 기록·집단·세대 대표·바뀐 챔피언을 대시보드로(설계 7.3 add_generation)."""
+        champion: tuple[Any, ...] | None = None
+        champ = msg.get("champion")
+        if isinstance(champ, Mapping) and champ.get("genome") is not None:
+            cg = _int_value(champ.get("generation"))
+            genome = np.asarray(champ["genome"], dtype=np.float64)
+            score = _float_value(champ.get("score"))
+            if cg is not None:
+                champion = (cg, genome) if score is None else (cg, genome, score)
+        rep = _int_value(msg.get("representative"))
+        self.dashboard.add_generation(self.generation, msg.get("observation"), msg.get("population"),
+                                      rep if rep is not None else 0, champion)  # type: ignore[arg-type]
+
+    # -- 보는 세대(타임라인) -----------------------------------------------------
+    def _update_timeline_label(self) -> None:
+        total = self.timeline.maximum() if self.generation > 0 else 0
+        gen = min(self.timeline.value(), total)
+        self.timeline_label.setText(S.LAB_TIMELINE_OF.format(gen=gen, total=total))
+
+    def _timeline_moved(self, _value: int) -> None:
+        self._update_timeline_label()
+        if not self._focus_timer.isActive():  # 끌어 옮기는 동안 FOCUS_BATCH_MS마다 한 번만 넘긴다
+            self._focus_timer.start()
+
+    def _apply_focus(self) -> None:
+        """슬라이더 값 → 대시보드 보는 세대(맨 끝이면 None = 최신 따라가기)."""
+        self._focus_timer.stop()
+        v = self.timeline.value()
+        self.dashboard.set_focus(None if self.generation <= 0 or v >= self.timeline.maximum() else v)
+
+    def focus_generation(self, generation: int) -> None:
+        """그 세대를 보는 세대로(유전자 지도의 앞 세대 점을 눌렀다): 타임라인을 옮긴다."""
+        self.stop_flip()
+        if self.generation <= 0:
+            return
+        self.timeline.setValue(max(1, min(int(generation), self.timeline.maximum())))
+        self._apply_focus()
+
+    # -- 세대 넘겨 보기(D17) -----------------------------------------------------
+    def start_flip(self) -> bool:
+        """슬라이더를 clamp(세대 수 ÷ 20, 2, 15)세대/초로 한 세대씩 넘긴다. 맨 끝에서 누르면 1세대부터."""
+        n = self.timeline.maximum()
+        if self.generation < 2 or n < 2:
+            self.btn_flip.setChecked(False)
+            return False
+        self.flip_rate = min(max(n / FLIP_SECONDS, FLIP_RATE[0]), FLIP_RATE[1])
+        if self.timeline.value() >= n:
+            self.timeline.setValue(1)
+        self._apply_focus()
+        self.dashboard.set_flipping(True)
+        self._flip_timer.setInterval(max(1, round(1000.0 / self.flip_rate)))
+        self._flip_timer.start()
+        self.btn_flip.setChecked(True)
+        self.btn_flip.setText(S.LAB_FLIP_STOP)
+        return True
+
+    def stop_flip(self) -> None:
+        if not self._flip_timer.isActive() and not self.btn_flip.isChecked():
+            return
+        self._flip_timer.stop()
+        self.flip_rate = 0.0
+        self.dashboard.set_flipping(False)
+        self.btn_flip.setChecked(False)
+        self.btn_flip.setText(S.LAB_FLIP)
+        self.btn_flip.setEnabled(self.generation >= 2)
+
+    @property
+    def flipping(self) -> bool:
+        return self._flip_timer.isActive()
+
+    def _flip_step(self) -> None:
+        n = self.timeline.maximum()
+        v = self.timeline.value() + 1
+        if v >= n:
+            self.timeline.setValue(n)
+            self.stop_flip()
+        else:
+            self.timeline.setValue(v)
+        self._apply_focus()  # 넘겨 보기는 정한 속도라 묶지 않고 세대마다 넘긴다
+
+    # -- 뇌 원천(D24) ----------------------------------------------------------
+    def _brain_wanted(self) -> bool:
+        """뇌 그림이 보이는가(대시보드가 떠 있고 「보는 재미」 쪽이며 뇌 타일을 숨기지 않음)."""
+        return self.dashboard.brain_visible()
+
+    def _brain_trace(self) -> TraceMode:
+        """캔버스 재생 작업의 추적: 뇌 그림이 보이면 가벼운 추적("brain"), 아니면 없음."""
+        return TRACE_BRAIN if self._brain_wanted() else False
+
+    def _next_serial(self) -> int:
+        self._brain_serial += 1
+        return self._brain_serial
+
+    def _adopt_play_brain(self, seq: int, rep: Replay, *, inspect: bool) -> None:
+        """캔버스 재생 결과가 왔다: 그 재생의 (마지막) 개체가 뇌 원천 ①."""
+        cand = self._replay_brain
+        if cand is None or cand[0] != seq:
+            return
+        _seq, label, gen, genome, spec, trial = cand
+        traced = rep.observations is not None and rep.activations is not None
+        self._brain_play = {"serial": self._next_serial(), "label": label, "gen": gen, "genome": genome,
+                            "spec": spec, "trial": trial, "rep": rep if traced else None, "tried": traced,
+                            "inspect": inspect}
+        self._update_brain_source()
+        if self._brain_wanted():
+            self._brain_check()
+
+    def _live_brain_for(self, msg: dict[str, Any], spec: EnvSpec) -> None:
+        """관전으로 새 세대를 재생하기 시작했다: 원천 ②를 그 세대 대표(시험 0번)로. 추적은 뇌 그림이 보일 때만 따로."""
+        try:
+            rep_i = int(msg["representative"])
+            genome = np.asarray(msg["population"][rep_i], dtype=np.float64)
+            seed, track = msg["trial"]
+            trial = Trial(int(seed), track)
+        except (KeyError, IndexError, TypeError, ValueError):
+            self._brain_live = None
+        else:
+            self._brain_live = {"serial": self._next_serial(), "gen": int(msg["generation"]), "genome": genome,
+                                "spec": spec, "trial": trial, "rep": None, "tried": False, "msg": msg}
+        self._update_brain_source()
+        if self._brain_wanted():
+            self._brain_check()
+
+    def _update_brain_source(self) -> None:
+        """우선순위(① 캔버스 재생 → ② 관전 중 대표 → 없음)로 뇌 원천을 정해 대시보드에 넘긴다(바뀔 때만)."""
+        play, live = self._brain_play, self._brain_live
+        src: BrainSource | None = None
+        key: tuple[Any, ...] | None = None
+        if play is not None:
+            key = ("playing", play["serial"], play["rep"] is not None)
+            if key != self._brain_key:
+                src = BrainSource(play["label"], "playing", play["gen"], play["genome"], play["rep"])
+        elif live is not None and self.view_mode == "live":
+            key = ("live", live["serial"], live["rep"] is not None)
+            if key != self._brain_key:
+                src = BrainSource("", "live", live["gen"], live["genome"], live["rep"])
+        if key == self._brain_key:
+            return
+        self._brain_key = key
+        self.dashboard.set_brain_source(src)
+
+    def _brain_check(self) -> None:
+        """뇌 그림이 보일 때(_tick, 새 재생): 지금 원천에 추적이 없으면 따로 다시 돌린다(trace="brain").
+
+        _run_replays를 거치지 않고 _brain_tag로 따로 센다(_replay_tag를 올리면 사용자가 시작한 재생이 버려진다).
+        한 번에 하나만: 앞 작업이 돌고 있으면 띄우지 않는다(관전 세대는 그 세대를 건너뛸 수 있다).
+        """
+        if self._brain_thread is not None or self.layout is None or self._closing:
+            return
+        job: dict[str, Any] | None = None
+        which = ""
+        play, live = self._brain_play, self._brain_live
+        if play is not None:
+            if play["rep"] is None and not play["tried"]:
+                job, which = play, "play"
+        elif live is not None and self.view_mode == "live":
+            if live["rep"] is None and not live["tried"] and self.playing is live["msg"]:
+                job, which = live, "live"
+        if job is None:
+            return
+        job["tried"] = True
+        self._brain_tag += 1
+        th = _ReplayThread(("brain", self._brain_tag, which, job),
+                           [(job["spec"], self.layout, job["genome"], job["trial"], TRACE_BRAIN)], self)
+        th.finished_job.connect(self._brain_done)
+        th.finished.connect(lambda t=th: self._brain_thread_finished(t))
+        self._threads.append(th)
+        self._brain_thread = th
+        th.start()
+
+    def _brain_thread_finished(self, th: _ReplayThread) -> None:
+        if self._brain_thread is th:
+            self._brain_thread = None
+        self._forget_thread(th)
+
+    def _brain_done(self, tag: Any, result: Any) -> None:
+        _kind, seq, which, job = tag
+        if seq != self._brain_tag or isinstance(result, Exception):
+            return  # 더 새로운 작업·다른 실행이거나 실패(뇌 그림은 덧붙이는 것이라 재생은 그대로 두고 알리지 않는다)
+        rep: Replay = result[0]
+        if which == "play" and self._brain_play is job:
+            job["rep"] = rep
+        elif which == "live" and self._brain_live is job and self.view_mode == "live" and self.playing is job["msg"]:
+            job["rep"] = rep  # 끝났을 때 같은 세대가 아직 재생 중이면 붙인다
+        else:
+            return
+        self._update_brain_source()
+
+    @property
+    def brain_busy(self) -> bool:
+        """뇌 추적 작업이 도는 중인가(시험·측정용)."""
+        return self._brain_thread is not None
+
+    # -- 지도 점 재생(D19), 궤적 밀도 세계, 세대끼리 경주 ----------------------------
+    def _notice(self, text: str) -> None:
+        self.last_notice = text
+        if text:
+            self.status.setText(self.status.text() + "\n" + text)
+
+    def play_individual(self, generation: int, index: int) -> bool:
+        """유전자 지도 점을 두 번 눌렀다: 그 개체를 전시 시드로 재생한다. 학습 중 받은 최근 64세대는 정확한 유전자,
+        아니면 그 세대 대표(정확한 유전자가 대표 자신이 아니면 GMAP_INEXACT). index −1은 세대 대표 점."""
+        if self.layout is None or self.spec is None:
+            return False
+        gen, idx = int(generation), int(index)
+        genome = self.dashboard.exact_genome(gen, idx) if idx >= 0 else None
+        notice = ""
+        if genome is not None:
+            label = S.GMAP_LABEL_INDIVIDUAL.format(gen=gen, index=idx)
+        else:
+            genome = self.dashboard.rep_genome(gen)
+            if genome is None:
+                return False
+            exact = idx < 0 or idx == self.dashboard.rep_index(gen)
+            label = S.GMAP_LABEL_INDIVIDUAL.format(gen=gen, index=idx) if exact and idx >= 0 else \
+                S.LAB_LABEL_REP.format(gen=gen)
+            if not exact:
+                notice = S.GMAP_INEXACT.format(gen=gen)
+        self.view_mode = "replay"
+        self._ack_pending()
+        self._replay_label = label
+        spec = self.spec_for(None, gen)
+        self._next_brain = (label, gen)
+        self._run_replays(("individual", [label]),
+                          [(spec, self.layout, np.asarray(genome, dtype=np.float64), seeds.display_trial(),
+                            self._brain_trace())])
+        self._notice(notice)
+        return True
+
+    def _geometry_needed(self, generation: int, world_key: str) -> None:
+        """궤적 밀도 타일이 그 세대 시험 0번 세계 그림을 청했다: 그 세대 환경 버전으로 세계만 백그라운드에서 만들어
+        dashboard.set_world_geometry로 준다(Episode 하나, 1.8~5.5ms). 한 번에 하나, 도는 동안 온 청은 모아 두었다가
+        가장 나중 것부터 답한다(타일은 열쇠마다 한 번만 청한다)."""
+        if self._world_thread is not None:
+            self._world_pending[str(world_key)] = int(generation)
+            self._world_pending.move_to_end(str(world_key))
+            return
+        obs = self.dashboard.observation(int(generation))
+        if obs is None or self.spec is None or self._closing:
+            return
+        try:
+            spec = self.spec_for(None, int(generation))
+            trial = Trial(int(obs.trial_seed), obs.track)
+        except (EnvFileError, ValueError, KeyError):
+            return  # 세계를 못 만들면 밀도 타일은 계속 DENS_PREPARING(학습·재생과 무관)
+        th = _WorldThread((self.dashboard.history.epoch, str(world_key)), spec, trial, self)
+        th.finished_job.connect(self._world_done)
+        th.finished.connect(lambda t=th: self._world_thread_finished(t))
+        self._threads.append(th)
+        self._world_thread = th
+        th.start()
+
+    def _world_done(self, tag: Any, result: Any) -> None:
+        epoch, world_key = tag
+        if isinstance(result, Exception) or epoch != self.dashboard.history.epoch:
+            return  # 실패했거나 그동안 기록을 비웠다(다른 실행·되감기)
+        self.dashboard.set_world_geometry(world_key, result)
+
+    def _world_thread_finished(self, th: _WorldThread) -> None:
+        if self._world_thread is th:
+            self._world_thread = None
+        self._forget_thread(th)
+        while self._world_pending and self._world_thread is None and not self._closing:
+            key, gen = self._world_pending.popitem(last=True)
+            if self.dashboard.world_geometry(key) is None:
+                self._geometry_needed(gen, key)
+
+    @property
+    def world_busy(self) -> bool:
+        """세계 그림을 만드는 중인가(시험용)."""
+        return self._world_thread is not None or bool(self._world_pending)
+
+    def race_generations(self) -> Any:
+        """「세대끼리 경주」: 1세대·¼·½·¾·마지막 세대 대표와 지금 챔피언을 나란히 경주 창으로(설계 4.6)."""
+        if self.run_dir is None or self.generation < 2:
+            QMessageBox.information(self, S.LAB_RACE_GENERATIONS, S.RACE_NEED_GENS)
+            return None
+        from evolab.app.lab.dashboard import DARK
+        from evolab.app.race.model import entries_from_generations
+        from evolab.app.race.view import show_race
+
+        champion: tuple[int, np.ndarray] | None = None
+        c = self.champion
+        if c is not None and c.get("genome") is not None and (_int_value(c.get("generation")) or 0) >= 1:
+            champion = (int(c["generation"]), np.asarray(c["genome"], dtype=np.float64))
+        entries, warnings = entries_from_generations(self.run_dir, self.generation, champion, DARK.series)
+        if len(entries) < 2:
+            QMessageBox.information(self, S.LAB_RACE_GENERATIONS, "\n".join(warnings) or S.RACE_NEED_GENS)
+            return None
+        title = S.RACE_TITLE_GENERATIONS.format(run=self.run_dir.name)
+        self._race_dialog = show_race(self, entries, title=title, warnings=warnings)
+        return self._race_dialog
 
     # ------------------------------------------------------------------
     # 기록 화면에서 연 실행 (학습 없이 보기)
@@ -1568,6 +2008,8 @@ class LabView(QWidget):
         제한 없이 기다린다. 장면 만들기(개체 수에 비례해 길다)는 멈추라고 해서 개체 하나 안에 끝나게 한다.
         """
         self._timer.stop()
+        self.stop_flip()
+        self._focus_timer.stop()
         self._closing = True  # 학습 프로세스가 끝나기를 기다리는 동안 온 세대의 장면은 만들지 않는다
         try:
             self._drop_scene_jobs()

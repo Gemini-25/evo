@@ -1509,3 +1509,6 @@ VIDEO_RACE_TITLE: Final = "나란히 경주 · 코스 {n}"
 
 # ---- v1.2 그룹 B(대시보드 「보는 재미」 타일)에서 더한 문구 ----
 GMAP_POINT_TIP_OLD: Final = "{gen}세대 대표 · 점수 {score} (이 세대는 집단 기록이 없어 대표만 보입니다)"
+
+# ---- v1.2 그룹 D(나란히 경주: app/race/model.py)에서 더한 문구 ----
+RACE_NO_GENERATIONS: Final = "아직 끝낸 세대가 없습니다"

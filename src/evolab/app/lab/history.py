@@ -49,6 +49,8 @@ DENS_RECENT: Final = 20
 DENSITY_WINDOWS: Final = ("one", "recent", "all")
 ACTION_MODES: Final = ("pop", "rep")
 """행동 분포: 집단 전체(obs_act_hist[0]) / 세대 대표(obs_act_hist[1])."""
+SCORE_RANGE_SAMPLE: Final = 100_000
+"""지도 점 색 범위(2~98% 백분위)를 셀 점수 수의 상한. 넘으면 고른 간격 표본으로 센다."""
 REST_FRACTION: Final = 0.05
 """「쓰는 시간」의 쉬는 칸: 0이 범위 안이면 0 ± 범위의 5%에 걸친 칸(ACT_SUMMARY)."""
 
@@ -620,6 +622,8 @@ class RunHistory:
             if not parts:
                 return None
             s = np.concatenate(parts)
+            if len(s) > SCORE_RANGE_SAMPLE:  # 아주 긴 실행: 고른 간격 표본(결정적)으로 백분위
+                s = s[:: math.ceil(len(s) / SCORE_RANGE_SAMPLE)]
             s = s[np.isfinite(s)]
             if not len(s):
                 return None
@@ -706,13 +710,15 @@ class RunHistory:
                 if o.world_key == key and o.frame == frame:
                     merged.append(g)
             size = frame.nx * frame.ny
-            obs_list = [self._entries[g].obs for g in merged]
-            cells = np.concatenate([np.asarray(o.dens_cells, dtype=np.int64) for o in obs_list if o is not None
-                                    and o.dens_cells is not None] or [np.zeros(0, np.int64)])
-            counts = np.concatenate([np.asarray(o.dens_counts, dtype=np.float64) for o in obs_list if o is not None
-                                     and o.dens_counts is not None] or [np.zeros(0)])
-            total = np.bincount(cells, weights=counts, minlength=size) if len(cells) else np.zeros(size)
-            outside = int(sum(o.outside for o in obs_list if o is not None))
+            obs_list = [o for g in merged if (o := self._entries[g].obs) is not None and o.dens_cells is not None
+                        and o.dens_counts is not None]
+            if obs_list:  # 원래 형(int32·uint32)대로 한 번에 이은 뒤 바꾼다(세대마다 바꾸면 긴 실행에서 느림)
+                cells = np.concatenate([o.dens_cells for o in obs_list]).astype(np.int64)  # type: ignore[misc]
+                counts = np.concatenate([o.dens_counts for o in obs_list]).astype(np.float64)  # type: ignore[misc]
+                total = np.bincount(cells, weights=counts, minlength=size)
+            else:
+                total = np.zeros(size)
+            outside = int(sum(o.outside for o in obs_list))
             return DensityView(
                 generation=gen, frame=frame, world_key=key, counts=total.reshape(frame.ny, frame.nx),
                 merged=tuple(merged), outside=outside, population=obs.population,
