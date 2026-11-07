@@ -84,8 +84,9 @@ def collect(out: Path) -> Path:
                         dest = folder / f"{f.parent.name}_{f.name}"
                     shutil.copyfile(src, dest)
                     copied += 1
-        if not copied and name.lower().startswith(("pyside6", "shiboken6")):
-            # PySide6 휠에는 라이선스 파일이 없다: Qt for Python은 LGPLv3(GPLv3를 참조)로 쓴다.
+        if name.lower().startswith(("pyside6", "shiboken6")):
+            # Qt for Python은 LGPLv3(GPLv3를 참조)로 쓴다. 휠에 라이선스 파일이 없거나(리눅스) 일부만 있어서(윈도우)
+            # 전문을 늘 함께 넣는다.
             folder.mkdir(exist_ok=True)
             here = Path(__file__).resolve().parent / "licenses"
             for f in ("LGPL-3.0.txt", "GPL-3.0.txt"):
