@@ -20,7 +20,15 @@ from evolab.app import strings as S
 from evolab.engine import seeds
 from evolab.engine.pool import PoolError, WorkerPool, default_workers
 from evolab.engine.runsetup import create_run
-from evolab.engine.trainer import TrainConfig, Trainer, training_trials
+from evolab.engine.trainer import (
+    SWITCH_QUALIFY_NEXT,
+    SWITCH_RESTART_CHAMPION,
+    SWITCH_RESTART_FRESH,
+    TrainConfig,
+    Trainer,
+    qualify_budget_problem,
+    training_trials,
+)
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStoreError
 from evolab.spec.compiled import EnvFileError
@@ -28,6 +36,10 @@ from evolab.spec.io import compile_env, env_hash, load_env
 
 METHOD_NAMES = S.METHOD_NAMES
 RESUME_OVERRIDES = ("max_generations", "max_evaluations", "max_time", "target_score", "stagnation_generations")
+RESUME_LIVE = ("restart_patience", "restart_from")
+"""이어 할 때 플래그로 바꿀 수 있는 학습 중 변경(화면의 「적용」과 같은 길: apply_config → 체크포인트 → 보호 → 사건)."""
+RESUME_FIXED_FLAGS = (("--qualify", "qualify"), ("--qualify-trials", "qualify_trials"))
+"""이어 할 때 바꿀 수 없는 플래그(예선은 실행 처음에만 뜻이 있다)."""
 
 
 def say(text: str) -> None:
@@ -67,23 +79,81 @@ class _StopFlag:
 
 
 def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig:
-    c = base.to_dict() if base is not None else TrainConfig().to_dict()
+    """명령줄 인수로 설정을 만든다. base가 없으면 새 실행: 자동 재시작 같은 권장값(NEW_RUN_DEFAULTS) 위에 인수."""
+    c = base.to_dict() if base is not None else TrainConfig.for_new_run().to_dict()
     for key, attr in (
         ("method", "method"), ("run_seed", "seed"), ("popsize", "popsize"), ("sigma0", "sigma"),
         ("max_generations", "max_generations"), ("max_evaluations", "max_evaluations"), ("max_time", "max_time"),
         ("target_score", "target"), ("stagnation_generations", "stagnation"), ("trials", "trials"),
         ("validate_every", "validate_every"), ("diagonal_threshold", "diagonal_threshold"), ("ipop", "ipop"),
+        ("restart_patience", "restart"), ("restart_from", "restart_from"), ("qualify_entrants", "qualify"),
+        ("qualify_trials", "qualify_trials"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
             c[key] = value
+    if getattr(args, "no_restart", False):
+        c["restart_patience"] = None
     if base is None and getattr(args, "popsize", None) is None and c.get("method") == "ga":
         c["popsize"] = 64  # 명세: 유전 알고리즘 기본 개체 수 64(CMA-ES는 32)
     return TrainConfig.from_dict(c)
 
 
+def _live_changes(args: Any, config: TrainConfig) -> dict[str, Any]:
+    """이어 할 때 실제로 준 재시작 플래그만(RESUME_LIVE). 주지 않은 설정은 체크포인트 값 그대로."""
+    given = {
+        "restart_patience": getattr(args, "restart", None) is not None or bool(getattr(args, "no_restart", False)),
+        "restart_from": getattr(args, "restart_from", None) is not None,
+    }
+    return {k: getattr(config, k) for k in RESUME_LIVE if given[k]}
+
+
+def _stability_text(config: TrainConfig) -> str:
+    """새 실행 시작 때 한 줄: 자동 재시작과 예선 설정."""
+    if config.restart_patience is not None:
+        restart = S.TRAIN_STABILITY_RESTART_ON.format(
+            p=config.restart_patience, where=S.RESTART_FROM_NAMES.get(config.restart_from, config.restart_from))
+    else:
+        restart = S.TRAIN_STABILITY_OFF
+    qualify = (S.TRAIN_STABILITY_QUALIFY_ON.format(k=config.qualify_entrants, b=config.qualify_trials)
+               if config.qualify_entrants > 1 else S.TRAIN_STABILITY_OFF)
+    return S.TRAIN_STABILITY.format(restart=restart, qualify=qualify)
+
+
+def _score_text(value: Any) -> str:
+    return f"{value:.1f}" if isinstance(value, (int, float)) and math.isfinite(value) else "-"
+
+
+def _switch_text(trainer: Trainer, row: dict[str, Any]) -> str | None:
+    """이 세대 끝에 학습 방법을 바꿨으면 알림 한 줄. 옛 열 머리로 시작한 실행은 열이 없어 None."""
+    code = row.get("switch")
+    if not isinstance(code, int) or code <= 0:
+        return None
+    gen = row["generation"]
+    if code in (SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION):
+        where = S.RESTART_FROM_NAMES_SHORT["champion" if code == SWITCH_RESTART_CHAMPION else "fresh"]
+        return S.TRAIN_SWITCH_RESTART.format(gen=gen, stall=row["learner_stall"], where=where, n=row["restarts"] + 2)
+    if code == SWITCH_QUALIFY_NEXT:
+        return S.TRAIN_SWITCH_QUALIFY_NEXT.format(gen=gen, n=row["learner"] + 1, score=_score_text(row["learner_best"]),
+                                                  next=row["learner"] + 2)
+    cur = trainer.state.current  # 예선 끝: 통과자는 이 세대 끝에 이미 불러왔다
+    return S.TRAIN_SWITCH_QUALIFY_PICK.format(gen=gen, winner=cur.index + 1, score=_score_text(cur.best))
+
+
+def _progress_suffix(trainer: Trainer, row: dict[str, Any]) -> str:
+    """진행 줄 끝: 예선 중이면 출전 번호, 아니면 시도 번호(옛 열 머리 실행은 없음)."""
+    if "qualifying" not in row:
+        return ""
+    if row["qualifying"]:
+        return S.TRAIN_PROGRESS_QUALIFY.format(n=row["learner"] + 1, k=trainer.config.qualify_entrants)
+    return S.TRAIN_PROGRESS_ATTEMPT.format(n=row["restarts"] + 1)
+
+
 def _progress(trainer: Trainer, state: dict[str, float]) -> Any:
     def on_generation(row: dict[str, Any]) -> None:
+        note = _switch_text(trainer, row)
+        if note is not None:  # 학습 방법 교체는 진행 줄 간격과 상관없이 바로 알린다
+            say(note)
         now = time.perf_counter()
         if now - state["last"] < 2.0:
             return
@@ -97,28 +167,44 @@ def _progress(trainer: Trainer, state: dict[str, float]) -> Any:
             champ=f"{champ:.1f}" if champ != "" else "-",
             elapsed=row["elapsed"],
             sps=row["steps_per_second"],
-        ))
+        ) + _progress_suffix(trainer, row))
 
     return on_generation
 
 
 def train_command(args: Any) -> int:
     workers = args.workers if args.workers is not None else default_workers()
+    pool: WorkerPool | None = None
     try:
         if args.resume is not None:
             from evolab.runs.store import RunStore
 
+            fixed = [flag for flag, attr in RESUME_FIXED_FLAGS if getattr(args, attr, None) is not None]
+            if fixed:
+                warn(S.TRAIN_RESUME_QUALIFY_FIXED.format(flags=", ".join(fixed)))
+                return 2
             store = RunStore.open(Path(args.resume))
             gen, ckpt = store.load_checkpoint(None)
             config = _config_from_args(args, TrainConfig.from_dict(ckpt["config"]))
-            # 이어할 때는 정지 조건만 바꿀 수 있다(학습 방법·시드·개체 수를 바꾸면 다른 실험이 된다).
+            # 이어할 때는 정지 조건과 자동 재시작 설정만 바꿀 수 있다(학습 방법·시드·개체 수를 바꾸면 다른 실험이 된다).
             overrides = {k: getattr(config, k) for k in RESUME_OVERRIDES}
-            # 잘못된 정지 조건(--max-generations 0 등)은 워커를 띄우고 체크포인트 뒤를 잘라 내기 전에 거른다.
-            TrainConfig.from_dict({**TrainConfig().to_dict(), **overrides}).validate()
+            live = _live_changes(args, config)
+            # 잘못된 값(--max-generations 0, 검증 주기보다 짧은 --restart 등)은 워커를 띄우고 체크포인트 뒤를 잘라 내기
+            # 전에 거른다.
+            TrainConfig.from_dict({**ckpt["config"], **overrides, **live}).validate()
             pool = WorkerPool(workers)
             trainer = Trainer.resume(store, pool, None, **overrides)
             store.append_event("resume", gen, workers=workers)
             say(S.TRAIN_RESUMED.format(gen=gen, path=store.root))
+            if live:
+                # 화면의 「적용」(세션)과 같은 순서: 트레이너에 적용 → 체크포인트(바뀐 상태) → 보호 → 사건 줄
+                changes = trainer.apply_config(live)
+                if changes:
+                    g = trainer.state.generation
+                    trainer.checkpoint()
+                    store.protect(g)
+                    store.append_event("config_change", g, changes=changes)
+                    say(S.TRAIN_CONFIG_CHANGED.format(gen=g, changes=", ".join(f"{k}={v}" for k, v in changes.items())))
         else:
             if args.env is None:
                 warn(S.TRAIN_NEED_ENV)
@@ -130,13 +216,20 @@ def train_command(args: Any) -> int:
 
             base_dir = Path(args.out) if args.out else paths.runs_dir()
             config.validate()
+            problem = qualify_budget_problem(config)
+            if problem is not None:  # 예선만으로 예산을 다 쓰는 실행은 시작하지 않는다(폴더도 만들지 않음)
+                warn(problem)
+                return 2
             layout = layout_for(spec)
             store = create_run(base_dir, env_text, spec, config, workers)
             pool = WorkerPool(workers)
             trainer = Trainer(env_text, config, pool, store)
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
+            say(_stability_text(config))
     except (EnvFileError, RunStoreError, ValueError, OSError) as exc:
+        if pool is not None:
+            pool.close()  # 워커를 띄운 뒤 실패(깨진 체크포인트 등): 워커를 남기지 않는다
         warn(S.TRAIN_CANNOT_START.format(reason=exc))
         return 2
     try:
@@ -153,10 +246,14 @@ def train_command(args: Any) -> int:
     store.append_event("stop", s.generation, reason=reason)
     champ = (S.TRAIN_CHAMPION.format(score=s.champion.score, gen=s.champion.generation)
              if math.isfinite(s.champion.score) else S.TRAIN_NO_CHAMPION_YET)
-    say(S.TRAIN_FINISHED.format(
+    text = S.TRAIN_FINISHED.format(
         reason=S.TRAIN_STOP_REASONS.get(reason, reason), gen=s.generation, evals=s.evaluations,
         champ=champ, elapsed=s.elapsed, path=store.root,
-    ))
+    )
+    if s.restarts:  # 요약 줄(첫 줄) 끝에 붙인다. 실행 폴더 줄은 그대로 마지막 줄
+        first, sep, rest = text.partition("\n")
+        text = first + S.TRAIN_FINISHED_RESTARTS.format(n=s.restarts) + sep + rest
+    say(text)
     return 0
 
 

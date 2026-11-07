@@ -131,6 +131,8 @@ def _worker_list(text: str) -> list[int]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from evolab.engine.trainer import RESTART_FROM  # numpy 스레드 제한(main 맨 앞) 뒤에 불러온다
+
     parser = _Parser(prog="evolab", description=S.CLI_DESCRIPTION)
     # 이름을 정해 두지 않으면 잘못된 명령 오류에 "command"라는 영어 이름이 나온다
     sub = parser.add_subparsers(dest="command", metavar=S.RV2_CLI_COMMAND_METAVAR)
@@ -154,6 +156,13 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--validate-every", type=_int_arg(), default=None, help=S.CLI_HELP_VALIDATE_EVERY)
     train.add_argument("--diagonal-threshold", type=_int_arg(), default=None, help=S.CLI_HELP_DIAGONAL)
     train.add_argument("--ipop", action="store_true", default=None, help=S.CLI_HELP_IPOP)
+    # 학습 안정성(v1.1). 새 실행은 자동 재시작이 기본으로 켜진다. 이어 할 때는 재시작 설정만 바꿀 수 있다.
+    restart = train.add_mutually_exclusive_group()
+    restart.add_argument("--restart", type=_int_arg(1), default=None, dest="restart", help=S.CLI_HELP_RESTART)
+    restart.add_argument("--no-restart", action="store_true", default=False, help=S.CLI_HELP_NO_RESTART)
+    train.add_argument("--restart-from", choices=list(RESTART_FROM), default=None, help=S.CLI_HELP_RESTART_FROM)
+    train.add_argument("--qualify", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY)
+    train.add_argument("--qualify-trials", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY_TRIALS)
 
     bench = sub.add_parser("bench", help=S.CLI_HELP_BENCH)
     bench.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
