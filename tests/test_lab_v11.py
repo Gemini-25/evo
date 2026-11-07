@@ -155,7 +155,12 @@ def test_plain_new_run_uses_new_run_defaults(qtbot: Any, lab: LabView) -> None:
     assert [lab.restart_from.itemText(i) for i in range(lab.restart_from.count())] == \
         [S.RESTART_FROM_NAMES[k] for k in RESTART_FROM]
     assert lab.qualify_entrants.text() == S.LAB_QUALIFY_OFF  # 1 = 예선 없음
-    assert lab.restart_patience.isEnabled() and not lab.qualify_trials.isEnabled()
+    # 새 실행 기본(V11 실험): 자동 재시작 끔, 켤 때 보이는 권장값 20,000회. 둘 다 끄면 어림 글 없음
+    assert not lab.restart_on.isChecked() and not lab.restart_patience.isEnabled()
+    assert lab.restart_patience.value() == 20000 and not lab.qualify_trials.isEnabled()
+    assert lab.stability_hint.text() == ""
+    lab.restart_on.setChecked(True)
+    assert lab.restart_patience.isEnabled() and lab.config_from_form().restart_patience == 20000
     # 어림 글: 세대마다 12회(개체 6 × 시험 2)
     assert lab.stability_hint.text() == S.LAB_STABILITY_HINT_NO_QUALIFY.format(rgens=math.ceil(20000 / 12))
     lab.qualify_entrants.setValue(3)
@@ -242,6 +247,7 @@ def test_qualify_locked_while_training_restart_applied_when_paused(qtbot: Any, l
                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[dict[str, Any]] = []
     monkeypatch.setattr(lab.client, "send", lambda msg: sent.append(msg) or True)
+    lab.restart_on.setChecked(True)  # 새 실행 기본은 끔
     lab.qualify_entrants.setValue(2)
     assert lab.qualify_entrants.isEnabled() and lab.qualify_trials.isEnabled()
     lab.client._proc = object()  # 학습 프로세스가 있는 것처럼(가짜)
@@ -434,6 +440,7 @@ def test_applying_a_restart_change_updates_the_status_at_once(qtbot: Any, lab: L
 
 def test_session_status_and_paused_restart_change(qtbot: Any, lab: LabView) -> None:
     lab.rb_fast.setChecked(True)
+    lab.restart_on.setChecked(True)  # 새 실행 기본은 끔, 켜면 권장값 20,000회
     lab.max_generations.setValue(50)
     assert lab.start_new()
     qtbot.waitUntil(lambda: len(lab.rows) >= 1, timeout=120000)
