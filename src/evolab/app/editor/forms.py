@@ -644,17 +644,6 @@ def plain_param(value: Any) -> str | None:
     return None
 
 
-def _all_strings(value: Any) -> Iterator[str]:
-    if isinstance(value, dict):
-        for v in value.values():
-            yield from _all_strings(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from _all_strings(v)
-    elif isinstance(value, str):
-        yield value
-
-
 def _formula_strings(value: Any, key: str | None = None) -> Iterator[str]:
     """수식인 글자들('='로 시작하는 칸, 조건·점수 수식). 고정값 칸(이름, 설명, 종류, 태그 ...)은 뺀다."""
     if isinstance(value, dict):

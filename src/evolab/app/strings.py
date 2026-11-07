@@ -1210,3 +1210,11 @@ RVE_BAD_ID: Final = "이름(id)은 영문자, 한글, _로 시작하고 영문�
 RVE_RANGE_VALUE: Final = "값"
 RVE_OUT_OF_RANGE: Final = "허용 범위를 벗어났습니다: {range}"
 RVE_SAVE_INVALID: Final = "구조 오류가 있어 저장하지 않았습니다. 이대로 저장하면 이 파일을 다시 열 수 없습니다.\n아래 오류를 고친 뒤(또는 되돌리기로 되돌린 뒤) 다시 저장하세요.\n\n{errors}"
+
+# 리뷰 수정 misc (직접 조종 기록 위치, 명령줄 인수 검사, 변경 지점 기록)
+RVM_CLI_BAD_ARGS: Final = "명령줄 인수가 잘못되었습니다: {detail}"
+RVM_CLI_NOT_INT: Final = "정수가 아닙니다: '{value}'"
+RVM_CLI_TOO_SMALL: Final = "{minimum} 이상이어야 합니다: {value}"
+RVM_CLI_NOT_NUMBER: Final = "숫자가 아닙니다: '{value}'"
+RVM_CLI_BAD_WORKER_LIST: Final = "워커 수 목록은 1 이상의 정수를 쉼표로 이어 써야 합니다(예: 1,2,4): '{value}'"
+RVM_CLI_OPTION_TOO_SMALL: Final = "{name} 값은 {minimum} 이상이어야 합니다: {value}"

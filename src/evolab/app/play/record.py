@@ -6,6 +6,7 @@ Qt를 쓰지 않는다(테스트와 명령줄에서 재생 확인용).
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,3 +126,35 @@ def verify_record(spec: EnvSpec, path: str | Path) -> tuple[bool, EpisodeResult,
     res = replay(spec, rec)
     same = res.score == rec.score and res.steps == rec.steps
     return same, res, rec
+
+
+RECORD_PATTERNS = ("*.evoplay", "*.json")
+"""기록 파일 이름. 화면은 .evoplay로 저장하고, 예전 기록이나 손으로 옮긴 기록은 .json일 수 있다."""
+
+
+def best_record_score(spec: EnvSpec, folders: list[Path]) -> float | None:
+    """여러 폴더의 기록 가운데 같은 환경(내용 해시)의 최고 점수. 읽을 수 없는 파일은 건너뛴다."""
+    want = env_hash(spec.file)
+    best: float | None = None
+    seen: set[Path] = set()
+    for folder in folders:
+        for pattern in RECORD_PATTERNS:
+            try:
+                files = sorted(folder.glob(pattern))
+            except OSError:
+                continue
+            for p in files:
+                if p in seen:
+                    continue
+                seen.add(p)
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(data, dict) or data.get("env_hash") != want:
+                    continue
+                result = data.get("result")
+                score = result.get("score") if isinstance(result, dict) else None
+                if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score):
+                    best = float(score) if best is None else max(best, float(score))
+    return best

@@ -404,7 +404,8 @@ def branch_run(run: Path, generation: int, runs_dir: Path) -> Path:
 
     새 폴더에는 그 세대까지의 환경 버전, 통계 줄, 사건(과 새 "branch" 사건), 세대 대표·챔피언 파일과 체크포인트
     generation 하나가 들어간다. run.json은 부모의 것을 복사해 parent, created, env_versions,
-    protected_checkpoints(분기 지점 = generation)를 고치고 메모는 비운다. 원래 실행은 바꾸지 않는다.
+    protected_checkpoints(분기 지점 = generation)를 고치고 메모는 비운다. 반복 실행 묶음 소속(group)도 빼서
+    분기가 부모의 묶음에 끼어 평균·띠를 바꾸지 않게 한다. 원래 실행은 바꾸지 않는다.
     RunStore.open(새 폴더).load_checkpoint()는 generation을 돌려주고, 거기서 Trainer.resume으로 이어 가면
     부모 실행을 그대로 다시 만든다(환경과 설정을 바꾸지 않았다면).
     """
@@ -422,7 +423,9 @@ def branch_run(run: Path, generation: int, runs_dir: Path) -> Path:
     events = [e for e in src.read_events() if (eg := _event_generation(e)) is not None and eg <= g]
 
     now = dt.datetime.now()
-    new_info = {k: v for k, v in info.items() if k != "memo"}
+    # 메모와 반복 실행 묶음 소속은 물려받지 않는다(분기는 같은 시드의 실행을 하나 더 만드는 것이라 묶음에 넣으면
+    # 그 시드가 두 번 세어진다)
+    new_info = {k: v for k, v in info.items() if k not in ("memo", "group")}
     new_info.update(
         created=now.isoformat(timespec="seconds"),
         parent={"run": src.root.name, "path": str(src.root.resolve()), "generation": g},

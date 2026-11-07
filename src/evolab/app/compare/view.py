@@ -337,11 +337,12 @@ class GroupCurve:
     hi: np.ndarray
     count: np.ndarray
     n: int
+    """이 지표에 값이 하나라도 있는 실행 수(값이 전혀 없는 실행은 '모든 실행에 값이 있다'를 막지 않게 뺀다)."""
 
     @property
     def full(self) -> np.ndarray:
-        """모든 실행에 값이 있는 격자 점."""
-        return self.count == self.n
+        """모든 실행에 값이 있는 격자 점(값이 있는 실행이 하나도 없으면 없다)."""
+        return (self.count == self.n) & (self.count > 0)
 
     @property
     def partial(self) -> np.ndarray:
@@ -361,6 +362,9 @@ def aggregate(members: Sequence[tuple[np.ndarray, np.ndarray]], step: bool, max_
         return GroupCurve(e, e, e, e, np.zeros(0, dtype=np.int64), n)
     values = np.vstack([sample(x, y, grid, step) for x, y in members])
     fin = np.isfinite(values)
+    # 값이 하나도 없는 실행(0세대로 끝난 실행, 첫 비교 평가 전에 멈춘 실행)은 세지 않는다: 세면 어느 격자 점도
+    # '모든 실행에 값이 있다'가 되지 못해 평균 선과 띠가 사라진다
+    n = int(fin.any(axis=1).sum())
     count = fin.sum(axis=0)
     have = count > 0
     mean = np.full(len(grid), _NAN)
@@ -1264,8 +1268,9 @@ class CompareView(QWidget):
                                           connect="finite")
                 dashed.setZValue(5)
                 p.addItem(dashed)
-            legend.append(self._legend_entry(s.color, GLYPH_LINE, S.CMP_LEGEND_GROUP.format(name=s.name, n=len(s.entries))))
-            if curve.n > 1:
+            legend.append(self._legend_entry(s.color, GLYPH_LINE, S.CMP_LEGEND_GROUP.format(
+                name=s.name, n=curve.n if curve.n else len(s.entries))))
+            if curve.n > 1 and full.any():  # 띠를 그렸을 때만
                 legend.append(self._legend_entry(_blend(s.color, t.surface, 0.35), GLYPH_FILL, S.CMP_LEGEND_BAND))
             if partial.any():
                 legend.append(self._legend_entry(_blend(s.color, t.surface, 0.85), GLYPH_DASH, S.CMP_LEGEND_PARTIAL))

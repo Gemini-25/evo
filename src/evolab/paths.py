@@ -110,6 +110,18 @@ def user_env_dir() -> Path:
     return data_dir() / "environments"
 
 
+def records_dir() -> Path:
+    """직접 조종 입력 기록 폴더: 데이터 폴더\\records (설정에서 데이터 폴더를 바꾸면 따라간다)."""
+    return data_dir() / "records"
+
+
+def default_records_dir() -> Path:
+    """데이터 폴더를 바꾸기 전 기본 위치의 기록 폴더(문서\\진화실험실\\records). 예전 기록을 계속 읽기 위해 둔다."""
+    from evolab.app import strings as S
+
+    return documents_dir() / S.DATA_DIR_NAME / "records"
+
+
 def install_examples(target: Path | None = None) -> list[Path]:
     """첫 실행 때 내장 예제를 사용자 환경 폴더로 복사한다. 이미 있는 파일은 건드리지 않는다(사용자가 고쳤을 수 있다).
 

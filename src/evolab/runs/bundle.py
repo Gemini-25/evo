@@ -18,32 +18,62 @@ from pathlib import Path
 from typing import Any
 
 from evolab.app import strings as S
+from evolab.runs import store as _st
 from evolab.runs.store import RunStore, RunStoreError
 
 BUNDLE_FORMAT = "evolab-repro"
 BUNDLE_VERSION = 1
 
 
+def _version_ids(info: dict[str, Any]) -> list[str]:
+    """run.json에 기록된 환경 버전 id(기록 순서). 기록이 망가졌으면(id가 없는 항목 등) RunStoreError(한국어)."""
+    versions = info.get("env_versions", [])
+    if not isinstance(versions, list):
+        raise RunStoreError(S.RUNS_ENV_VERSION_MISSING.format(version="?"))
+    out: list[str] = []
+    for v in versions:
+        vid = v.get("id") if isinstance(v, dict) else None
+        if not isinstance(vid, str):
+            raise RunStoreError(S.RUNS_ENV_VERSION_MISSING.format(version="?" if vid is None else vid))
+        out.append(vid)
+    return out
+
+
 def export_bundle(run_dir: Path, out: Path) -> Path:
-    """실행 폴더에서 재현 묶음(zip)을 만든다."""
+    """실행 폴더에서 재현 묶음(zip)을 만든다. 실패하면 임시 파일을 지우고 원래 out은 그대로 둔다.
+
+    환경 사본이 없거나 바뀌었거나 기록이 망가졌으면 RunStoreError(한국어), out을 다른 프로그램이 잡고 있어 바꿀 수
+    없으면 RunStoreError(RUNS_FILE_BUSY).
+    """
     store = RunStore.open(run_dir)
     info = store.read_run_info()
     stats = store.read_stats()
+    version_ids = _version_ids(info)
     manifest = {"format": BUNDLE_FORMAT, "version": BUNDLE_VERSION, "run": store.root.name,
                 "created": dt.datetime.now().isoformat(timespec="seconds"), "generations": len(stats)}
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        z.writestr("bundle.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        z.writestr("run.json", json.dumps(info, ensure_ascii=False, indent=2))
-        for v in info.get("env_versions", []):
-            name = f"envs/{v['id']}.evoenv"
-            if name not in z.namelist():
-                z.writestr(name, store.env_text(str(v["id"])))
-        z.writestr("events.jsonl", "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in store.read_events()))
-        z.writestr("stats.csv", _csv_text(stats))
-        z.writestr("README.txt", S.BUNDLE_README)
-    tmp.replace(out)
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("bundle.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            z.writestr("run.json", json.dumps(info, ensure_ascii=False, indent=2))
+            for vid in version_ids:
+                name = f"envs/{vid}.evoenv"
+                if name not in z.namelist():
+                    z.writestr(name, store.env_text(vid))
+            z.writestr("events.jsonl", "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in store.read_events()))
+            z.writestr("stats.csv", _csv_text(stats))
+            z.writestr("README.txt", S.BUNDLE_README)
+        try:
+            _st._replace(tmp, out)  # 윈도우에서 잠깐 잡혀 있으면 조금씩 다시 시도한다(저장소와 같은 규칙)
+        except PermissionError as exc:
+            raise RunStoreError(S.RUNS_FILE_BUSY.format(path=out)) from exc
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return out
 
 

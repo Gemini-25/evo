@@ -8,50 +8,94 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import NoReturn
 
 from evolab.app import strings as S
 
 
+class _Parser(argparse.ArgumentParser):
+    """인수 오류를 한국어 문장으로 알리고 종료 코드 2로 끝낸다(하위 명령 파서도 이 클래스를 쓴다)."""
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)  # stderr가 None(창 exe)이어도 argparse가 조용히 넘어간다
+        self.exit(2, S.RVM_CLI_BAD_ARGS.format(detail=message) + "\n")
+
+
+def _int_arg(minimum: int | None = None) -> Callable[[str], int]:
+    """정수 인수. 정수가 아니거나 minimum보다 작으면 한국어 오류(학습을 시작하기 전에 거른다)."""
+
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(S.RVM_CLI_NOT_INT.format(value=text)) from None
+        if minimum is not None and value < minimum:
+            raise argparse.ArgumentTypeError(S.RVM_CLI_TOO_SMALL.format(minimum=minimum, value=value))
+        return value
+
+    return parse
+
+
+def _float_arg(text: str) -> float:
+    """실수 인수(범위는 학습 설정 검사가 본다)."""
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(S.RVM_CLI_NOT_NUMBER.format(value=text)) from None
+
+
+def _worker_list(text: str) -> list[int]:
+    """'1,2,4' 같은 워커 수 목록. 1 이상의 정수가 하나 이상이 아니면 argparse.ArgumentTypeError(한국어)."""
+    try:
+        values = [int(x) for x in str(text).split(",")]
+    except ValueError:
+        values = []
+    if not values or min(values) < 1:
+        raise argparse.ArgumentTypeError(S.RVM_CLI_BAD_WORKER_LIST.format(value=text))
+    return values
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="evolab", description=S.CLI_DESCRIPTION)
+    parser = _Parser(prog="evolab", description=S.CLI_DESCRIPTION)
     sub = parser.add_subparsers(dest="command")
 
     train = sub.add_parser("train", help=S.CLI_HELP_TRAIN)
     train.add_argument("env", type=Path, nargs="?", default=None, help=S.CLI_HELP_ENV_FILE)
     train.add_argument("--method", default=None, choices=["cmaes", "ga", "sa"], help=S.CLI_HELP_METHOD)
-    train.add_argument("--seed", type=int, default=None, help=S.CLI_HELP_SEED)
+    train.add_argument("--seed", type=_int_arg(), default=None, help=S.CLI_HELP_SEED)
     train.add_argument("--resume", type=Path, default=None, help=S.CLI_HELP_RESUME)
     train.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)
-    train.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
-    train.add_argument("--popsize", type=int, default=None, help=S.CLI_HELP_POPSIZE)
-    train.add_argument("--sigma", type=float, default=None, help=S.CLI_HELP_SIGMA)
-    train.add_argument("--trials", type=int, default=None, help=S.CLI_HELP_TRIALS)
-    train.add_argument("--max-time", type=float, default=None, help=S.CLI_HELP_MAX_TIME)
-    train.add_argument("--max-generations", type=int, default=None, help=S.CLI_HELP_MAX_GENS)
-    train.add_argument("--max-evaluations", type=int, default=None, help=S.CLI_HELP_MAX_EVALS)
-    train.add_argument("--target", type=float, default=None, help=S.CLI_HELP_TARGET)
-    train.add_argument("--stagnation", type=int, default=None, help=S.CLI_HELP_STAGNATION)
-    train.add_argument("--validate-every", type=int, default=None, help=S.CLI_HELP_VALIDATE_EVERY)
-    train.add_argument("--diagonal-threshold", type=int, default=None, help=S.CLI_HELP_DIAGONAL)
+    # 범위는 학습 설정 검사(TrainConfig.validate)가 한국어로 알린다. 워커 수 0은 이 프로세스 안에서 평가.
+    train.add_argument("--workers", type=_int_arg(0), default=None, help=S.CLI_HELP_TRAIN_WORKERS)
+    train.add_argument("--popsize", type=_int_arg(), default=None, help=S.CLI_HELP_POPSIZE)
+    train.add_argument("--sigma", type=_float_arg, default=None, help=S.CLI_HELP_SIGMA)
+    train.add_argument("--trials", type=_int_arg(), default=None, help=S.CLI_HELP_TRIALS)
+    train.add_argument("--max-time", type=_float_arg, default=None, help=S.CLI_HELP_MAX_TIME)
+    train.add_argument("--max-generations", type=_int_arg(), default=None, help=S.CLI_HELP_MAX_GENS)
+    train.add_argument("--max-evaluations", type=_int_arg(), default=None, help=S.CLI_HELP_MAX_EVALS)
+    train.add_argument("--target", type=_float_arg, default=None, help=S.CLI_HELP_TARGET)
+    train.add_argument("--stagnation", type=_int_arg(), default=None, help=S.CLI_HELP_STAGNATION)
+    train.add_argument("--validate-every", type=_int_arg(), default=None, help=S.CLI_HELP_VALIDATE_EVERY)
+    train.add_argument("--diagonal-threshold", type=_int_arg(), default=None, help=S.CLI_HELP_DIAGONAL)
     train.add_argument("--ipop", action="store_true", default=None, help=S.CLI_HELP_IPOP)
 
     bench = sub.add_parser("bench", help=S.CLI_HELP_BENCH)
     bench.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
-    bench.add_argument("--workers", default=None, help=S.CLI_HELP_BENCH_WORKERS)
-    bench.add_argument("--generations", type=int, default=3, help=S.CLI_HELP_BENCH_GENS)
-    bench.add_argument("--popsize", type=int, default=32, help=S.CLI_HELP_POPSIZE)
+    bench.add_argument("--workers", type=_worker_list, default=None, help=S.CLI_HELP_BENCH_WORKERS)
+    bench.add_argument("--generations", type=_int_arg(1), default=3, help=S.CLI_HELP_BENCH_GENS)
+    bench.add_argument("--popsize", type=_int_arg(2), default=32, help=S.CLI_HELP_POPSIZE)
 
     judge = sub.add_parser("judge", help=S.CLI_HELP_JUDGE)
     judge.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
-    judge.add_argument("--seeds", type=int, default=100, help=S.CLI_HELP_JUDGE_SEEDS)
-    judge.add_argument("--generation", type=int, default=None, help=S.CLI_HELP_JUDGE_GEN)
-    judge.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
+    judge.add_argument("--seeds", type=_int_arg(1), default=100, help=S.CLI_HELP_JUDGE_SEEDS)
+    judge.add_argument("--generation", type=_int_arg(), default=None, help=S.CLI_HELP_JUDGE_GEN)
+    judge.add_argument("--workers", type=_int_arg(0), default=None, help=S.CLI_HELP_TRAIN_WORKERS)
 
     play = sub.add_parser("play", help=S.CLI_HELP_PLAY)
     play.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)
-    play.add_argument("--seed", type=int, default=None, help=S.CLI_HELP_PLAY_SEED)
+    play.add_argument("--seed", type=_int_arg(), default=None, help=S.CLI_HELP_PLAY_SEED)
     play.add_argument("--replay", type=Path, default=None, help=S.CLI_HELP_PLAY_REPLAY)
     play.add_argument("--verify", type=Path, default=None, help=S.CLI_HELP_PLAY_VERIFY)
 
@@ -62,7 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
     repro = sub.add_parser("reproduce", help=S.CLI_HELP_REPRODUCE)
     repro.add_argument("bundle", type=Path, help=S.CLI_HELP_BUNDLE_FILE)
     repro.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)
-    repro.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_TRAIN_WORKERS)
+    repro.add_argument("--workers", type=_int_arg(0), default=None, help=S.CLI_HELP_TRAIN_WORKERS)
 
     csvp = sub.add_parser("csv", help=S.CLI_HELP_CSV)
     csvp.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
@@ -70,7 +114,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     selftest = sub.add_parser("selftest", help=S.CLI_HELP_SELFTEST)
     selftest.add_argument("--log", type=Path, default=None, help=S.CLI_HELP_LOG)
-    selftest.add_argument("--workers", type=int, default=None, help=S.CLI_HELP_WORKERS)
+    # 워커 0개면 점검용 워커 풀이 비어 응답을 끝까지(180초) 기다리다 프로세스 구조 실패로 잘못 알린다.
+    selftest.add_argument("--workers", type=_int_arg(1), default=None, help=S.CLI_HELP_WORKERS)
     selftest.add_argument("--no-gui", action="store_true", help=S.CLI_HELP_NO_GUI)
     return parser
 

@@ -74,6 +74,8 @@ class Session:
         self.store: Any = None
         self.trainer: Any = None
         self.stop_logged = False
+        self.change_saved = False
+        """설정 변경·환경 교체 중에 바뀐 상태의 체크포인트를 이미 썼는지(실패하면 되돌려 써야 한다)."""
 
     # ------------------------------------------------------------------
     def main(self) -> None:
@@ -291,36 +293,72 @@ class Session:
             return
         t, gen = self.trainer, self.trainer.state.generation
         snap = t.changeable_state()
+        # 변경은 다 기록하고 적용하거나, 하나도 남기지 않는다. 순서: 트레이너에 적용 → 체크포인트(바뀐 상태) → 보호 표시
+        # → run.json 환경 버전 → events.jsonl 사건 줄(마지막). 중간에 실패하면 트레이너와 이미 쓴 것을 되돌린다:
+        # 기록과 학습이 어긋나면 이어하기·재생·재현 묶음이 실제로 학습한 것과 달라진다.
+        before = self._change_records()
+        self.change_saved = False
         try:
             if what == "config":
                 changes = t.apply_config(dict(msg.get("changes") or {}))
                 if changes:
-                    self.store.append_event("config_change", gen, changes=changes)
                     self._mark_change_point()
-                self._send({"type": "applied", "what": what, "ok": True, "generation": gen,
-                            "config": t.config.to_dict(), "changes": changes})
+                    self.store.append_event("config_change", gen, changes=changes)
+                reply = {"config": t.config.to_dict(), "changes": changes}
             else:
                 text = str(msg.get("text", ""))
                 old = t.env_text
                 t.replace_env(text)
                 if text != old:
+                    self._mark_change_point()
                     vid = self.store.add_env_version(text, gen)
                     self.store.append_event("env_change", gen, version=vid)
-                    self._mark_change_point()
-                self._send({"type": "applied", "what": what, "ok": True, "generation": gen,
-                            "env_text": t.env_text, "env_version": t.env_version})
+                reply = {"env_text": t.env_text, "env_version": t.env_version}
         except (TrainerChangeError, EnvFileError, ValueError, OSError) as exc:
-            # 기록(run.json, events.jsonl, 체크포인트)에 실패했으면 트레이너도 바꾸기 전으로 되돌린다:
-            # 기록되지 않은 환경·설정으로 학습하면 이어하기·재현이 어긋난다.
             t.restore_changeable(snap)
+            self._undo_change_records(before)
             self._send({"type": "applied", "what": what, "ok": False, "message": _reason(exc)})
+            return
+        self._send({"type": "applied", "what": what, "ok": True, "generation": gen, **reply})
 
     def _mark_change_point(self) -> None:
-        """바뀐 설정·환경이 담긴 체크포인트를 남기고 정리 대상에서 뺀다(0세대면 체크포인트가 없다)."""
+        """바뀐 설정·환경이 담긴 체크포인트를 남기고 정리 대상에서 뺀다(0세대면 체크포인트가 없다).
+
+        체크포인트를 쓰고 나면 change_saved = True(뒤에서 실패해 되돌릴 때 바꾸기 전 상태로 다시 써야 한다).
+        """
         gen = self.trainer.state.generation
         if gen:
             self.trainer.checkpoint()
+            self.change_saved = True
             self.store.protect(gen)
+
+    def _change_records(self) -> dict[str, Any] | None:
+        """변경을 되돌릴 때 쓰는 run.json 기록(환경 버전, 보호 목록). 읽을 수 없으면 None(되돌릴 것도 쓰지 못한다)."""
+        try:
+            info = self.store.read_run_info()
+        except (OSError, ValueError):
+            return None
+        return {"env_versions": list(info.get("env_versions", [])),
+                "protected_checkpoints": list(info.get("protected_checkpoints", []))}
+
+    def _undo_change_records(self, before: dict[str, Any] | None) -> None:
+        """실패한 변경이 이미 남긴 것을 될 수 있는 만큼 되돌린다(트레이너는 이미 되돌렸다).
+
+        - 바뀐 상태로 쓴 체크포인트는 되돌린 트레이너 상태로 다시 쓴다(같은 세대, 바꾸기 전 설정·환경 버전).
+        - run.json의 환경 버전과 보호 목록은 바꾸기 전으로(다른 키는 건드리지 않는다: 화면이 메모를 쓸 수 있다).
+        - events.jsonl 사건 줄은 맨 마지막에 쓰므로 실패했으면 남지 않는다(잘린 줄은 다음 덧붙이기 때 잘라 낸다).
+        되돌리기마저 실패하면(디스크 가득 참 등) 더 할 수 있는 것이 없어 그대로 둔다.
+        """
+        try:
+            if self.change_saved:
+                self.trainer.checkpoint()
+            if before is not None:
+                info = self.store.read_run_info()
+                restore = {k: v for k, v in before.items() if list(info.get(k, [])) != v}
+                if restore:
+                    self.store.update_run_info(**restore)
+        except (OSError, ValueError):
+            pass
 
     def _rewind(self) -> None:
         """마지막 정상 체크포인트로 되돌아간다. 체크포인트가 없으면 처음부터."""

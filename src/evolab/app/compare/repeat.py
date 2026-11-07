@@ -6,7 +6,9 @@
   순번을 {"group": {"id", "name", "index", "count"}}로 넣는다(SessionRequest.info). 관전하지 않고(spectate=False)
   바로 시작한다. 정지 조건에 닿으면(state finished) 학습 프로세스에 끝내라고 하고, 닫힌 뒤 다음 실행을 띄운다.
   취소하면 지금 실행을 깨끗이 멈추고(client.shutdown: 이번 세대를 마치고 체크포인트를 남긴다) 다음 실행은 띄우지
-  않는다. 실행이 오류로 끝나거나 평가 오류로 멈추면(되감기 뒤 멈춤) 묶음 전체를 멈추고 failed로 알린다.
+  않는다. 지금 실행이 막 뜨는 중이라 한 세대도 마치지 못했으면 그 빈 실행 폴더는 지운다(묶음에 값이 없는 실행이
+  남아 평균 선과 띠를 지우지 않게). 실행이 오류로 끝나거나 평가 오류로 멈추면(되감기 뒤 멈춤) 묶음 전체를 멈추고
+  failed로 알린다.
 - RepeatDialog: 환경 파일(내장 예제 + 파일 열기), 학습 방법, 개체 수(담금질은 이웃 수), 시험 횟수, 반복 횟수(기본 5),
   첫 시드, 정지 조건(최대 시험 횟수 기본 30,000 또는 최대 시간), 워커 수, 묶음 이름.
   학습 방법 목록에는 make_learner가 실제로 받는 방법만 보인다(available_methods). 아직 만들지 않은 방법은
@@ -49,6 +51,8 @@ from evolab.app import strings as S
 from evolab.app.lab.client import TrainingClient
 from evolab.engine.session import SessionRequest
 from evolab.engine.trainer import TrainConfig, make_learner
+from evolab.runs.catalog import delete_run
+from evolab.runs.store import RunStore, RunStoreError
 
 METHODS: tuple[str, ...] = ("cmaes", "ga", "sa")
 DEFAULT_COUNT = 5
@@ -231,16 +235,34 @@ class RepeatRunner(QObject):
         self._start_next()
 
     def cancel(self) -> None:
-        """지금 실행을 깨끗이 멈추고(이번 세대를 마치고 체크포인트를 남긴다) 다음 실행은 띄우지 않는다."""
+        """지금 실행을 깨끗이 멈추고(이번 세대를 마치고 체크포인트를 남긴다) 다음 실행은 띄우지 않는다.
+
+        지금 실행이 한 세대도 마치지 못하고 멈췄으면(다음 실행이 막 뜨는 중에 취소) 그 빈 폴더를 지운다.
+        """
         if self._state != RUNNING:
             return
         self._state = CANCELLED
         client = self._client
         self._client = None
         if client is not None:
-            client.shutdown()
+            client.shutdown()  # 끝날 때까지 기다린다: 그동안 온 'started'로 run_dirs에 지금 실행 폴더가 들어온다
             self._drop(client)
+            self._remove_empty_current()
         self.finished.emit(False)
+
+    def _remove_empty_current(self) -> None:
+        """취소로 한 세대도 남기지 못한 지금 실행의 폴더를 지우고 run_dirs에서 뺀다. 지우지 못하면 그대로 둔다."""
+        if not 0 <= self.index < len(self.run_dirs):
+            return
+        run = self.run_dirs[self.index]
+        try:
+            store = RunStore.open(run)
+            if store.read_stats() or store.checkpoints():
+                return
+            delete_run(run, self.runs_dir())
+        except (RunStoreError, OSError):
+            return
+        del self.run_dirs[self.index]
 
     def shutdown(self) -> None:
         """프로그램을 닫을 때."""

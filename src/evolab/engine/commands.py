@@ -109,11 +109,13 @@ def train_command(args: Any) -> int:
             from evolab.runs.store import RunStore
 
             store = RunStore.open(Path(args.resume))
-            pool = WorkerPool(workers)
             gen, ckpt = store.load_checkpoint(None)
             config = _config_from_args(args, TrainConfig.from_dict(ckpt["config"]))
             # 이어할 때는 정지 조건만 바꿀 수 있다(학습 방법·시드·개체 수를 바꾸면 다른 실험이 된다).
             overrides = {k: getattr(config, k) for k in RESUME_OVERRIDES}
+            # 잘못된 정지 조건(--max-generations 0 등)은 워커를 띄우고 체크포인트 뒤를 잘라 내기 전에 거른다.
+            TrainConfig.from_dict({**TrainConfig().to_dict(), **overrides}).validate()
+            pool = WorkerPool(workers)
             trainer = Trainer.resume(store, pool, None, **overrides)
             store.append_event("resume", gen, workers=workers)
             say(S.TRAIN_RESUMED.format(gen=gen, path=store.root))
@@ -166,6 +168,9 @@ def train_command(args: Any) -> int:
 def judge_command(args: Any) -> int:
     from evolab.runs.store import RunStore
 
+    if args.seeds < 1:  # 명령줄 파서가 먼저 거른다. 판정 시드가 없으면 성공률을 낼 수 없다.
+        warn(S.RVM_CLI_OPTION_TOO_SMALL.format(name="--seeds", minimum=1, value=args.seeds))
+        return 2
     try:
         store = RunStore.open(Path(args.run))
     except (OSError, ValueError, RunStoreError) as exc:
@@ -221,6 +226,13 @@ def judge_command(args: Any) -> int:
 
 
 def bench_command(args: Any) -> int:
+    # 명령줄 파서가 먼저 거른다(측정을 시작한 뒤 0으로 나누기·빈 중앙값으로 죽지 않게).
+    counts = list(args.workers or []) or sorted({1, default_workers()})
+    for name, value, minimum in (("--popsize", args.popsize, 2), ("--generations", args.generations, 1),
+                                 ("--workers", min(counts), 1)):
+        if value < minimum:
+            warn(S.RVM_CLI_OPTION_TOO_SMALL.format(name=name, minimum=minimum, value=value))
+            return 2
     try:
         spec = load_env(args.env)
     except EnvFileError as exc:
@@ -245,7 +257,6 @@ def bench_command(args: Any) -> int:
     nn_share = res.nn_seconds / max(res.nn_seconds + res.sim_seconds, 1e-12)
     say(S.BENCH_SINGLE.format(sps=steps / el, us=el / steps * 1e6, nn=100 * nn_share, steps=steps, sec=el))
 
-    counts = [int(x) for x in args.workers.split(",")] if args.workers else sorted({1, default_workers()})
     for w in counts:
         with WorkerPool(w) as pool:
             pool.evaluate(version, env_text, layout, genomes[:2], pairs[: 2 * trials_n])  # 워커 기동·컴파일 시간 빼기

@@ -5,7 +5,10 @@
 
 - 이어하기: 체크포인트가 여럿이면 고르게 한다(기본은 최신). 최신이 아닌 것을 고르면 새 실행 폴더로 분기한다는
   것을 알리고, 분기한 뒤 resume_requested(새 폴더, 세대)를 보낸다.
-- 학습 중인 실행은 set_busy_runs로 알려 준다: 그 실행은 지울 수 없고 최신 체크포인트에서 이어 갈 수 없다.
+- 학습 중인 실행은 set_busy_runs로 알려 준다: 그 실행은 지울 수 없고 이어 가거나(최신 체크포인트) 분기할 수 없다.
+- resume_blocked: 이어하기를 받는 쪽(주 창의 실험실)이 지금 받을 수 없으면 까닭(한국어)을 돌려주는 함수. 주 창이
+  넣는다. 체크포인트를 묻거나 분기하기 전에 물어서, 거절될 이어하기 때문에 분기 폴더가 생기지 않게 한다.
+- 메모를 고치는 중에는 목록을 다시 읽지 않고(편집기가 닫히며 메모가 저장된 뒤에) 미룬다.
 - 대화상자는 ask_checkpoint, confirm_branch, confirm_delete, show_error 메서드로만 띄운다. 테스트는 이 메서드를
   바꿔 끼우거나, 대화상자 없이 open_run / resume_run / clone_run / delete / save_memo를 바로 부른다.
 """
@@ -20,6 +23,7 @@ from typing import Any
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QShowEvent
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
@@ -91,6 +95,16 @@ class _Item(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class _Table(QTableWidget):
+    """칸 편집기가 닫힐 때(저장했든 Esc로 취소했든) editor_closed를 보내는 표."""
+
+    editor_closed = Signal()
+
+    def closeEditor(self, editor: QWidget, hint: QAbstractItemDelegate.EndEditHint) -> None:  # noqa: N802
+        super().closeEditor(editor, hint)
+        self.editor_closed.emit()
+
+
 class RecordsView(QWidget):
     """실행 목록 화면."""
 
@@ -110,6 +124,9 @@ class RecordsView(QWidget):
         self._by_path: dict[str, RunSummary] = {}
         self._busy: list[Path] = []
         self._filling = False
+        self._refresh_pending = False
+        self.resume_blocked: Callable[[], str | None] = lambda: None
+        """이어하기를 지금 시작할 수 없으면 까닭(한국어), 할 수 있으면 None. 주 창이 바꿔 넣는다(실험실이 학습 중 등)."""
 
         self.folder_label = QLabel()
         self.folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -117,7 +134,7 @@ class RecordsView(QWidget):
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
 
-        self.table = QTableWidget(0, len(COLUMN_TITLES))
+        self.table = _Table(0, len(COLUMN_TITLES))
         self.table.setHorizontalHeaderLabels(list(COLUMN_TITLES))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         # 여러 줄을 골라 '비교'할 수 있다. 열기·이어하기 같은 단일 동작은 한 줄만 골랐을 때 된다.
@@ -172,6 +189,7 @@ class RecordsView(QWidget):
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.cellDoubleClicked.connect(self._on_double_click)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.table.editor_closed.connect(self._after_edit)
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -185,7 +203,15 @@ class RecordsView(QWidget):
         return list(self._runs)
 
     def refresh(self) -> None:
-        """runs 폴더를 다시 읽는다. 고른 실행은 그대로 고른 채로 둔다."""
+        """runs 폴더를 다시 읽는다. 고른 실행은 그대로 고른 채로 둔다.
+
+        메모를 고치는 중이면 미룬다: 표를 다시 채우면 열린 편집기가 저장되지 않고 닫혀 쓰던 메모가 사라진다.
+        편집기가 닫히면(메모를 저장한 뒤) _after_edit가 다시 부른다.
+        """
+        if self.table.state() == QAbstractItemView.State.EditingState:
+            self._refresh_pending = True
+            return
+        self._refresh_pending = False
         selected = self.selected_run()
         keep = selected.path if selected is not None else None
         base = self.runs_dir()
@@ -197,6 +223,11 @@ class RecordsView(QWidget):
         if keep is not None:
             self.select_run(keep)
         self._update_buttons()
+
+    def _after_edit(self) -> None:
+        """메모 편집기가 닫혔다(저장한 뒤). 미뤄 둔 다시 읽기가 있으면 신호 처리가 끝난 뒤 한다."""
+        if self._refresh_pending:
+            QTimer.singleShot(0, self.refresh)
 
     def _fill(self) -> None:
         self._filling = True
@@ -331,7 +362,7 @@ class RecordsView(QWidget):
         return False
 
     def set_busy_runs(self, runs: Iterable[Path]) -> None:
-        """지금 학습 중인 실행 폴더들. 이 실행은 지울 수 없고 최신 체크포인트에서 이어 갈 수 없다."""
+        """지금 학습 중인 실행 폴더들. 이 실행은 지울 수 없고 이어 가거나 분기할 수 없다."""
         self._busy = [Path(p) for p in runs]
         self._update_buttons()
 
@@ -360,15 +391,15 @@ class RecordsView(QWidget):
         """체크포인트 generation(None이면 최신)에서 이어 가도록 resume_requested를 보낸다. 이어 갈 폴더를 돌려준다.
 
         최신이 아니면 새 실행 폴더로 분기하고(catalog.branch_run) 그 폴더를 보낸다. 실패하면 RunStoreError.
+        학습 중인 실행(set_busy_runs)이거나 이어하기를 지금 받을 수 없으면(resume_blocked) 분기하기 전에 거절한다.
         """
         path = Path(path)
+        self._check_can_resume(path)
         gens = RunStore.open(path).checkpoints()
         if not gens:
             raise RunStoreError(S.RUNS_NO_CHECKPOINT.format(path=path))
         g = gens[-1] if generation is None else int(generation)
         if g == gens[-1]:
-            if self.is_busy(path):
-                raise RunStoreError(S.REC_RESUME_BUSY)
             self.resume_requested.emit(path, g)
             return path
         new = branch_run(path, g, self.runs_dir())
@@ -376,6 +407,15 @@ class RecordsView(QWidget):
         self.select_run(new)
         self.resume_requested.emit(new, g)
         return new
+
+    def _check_can_resume(self, path: Path) -> None:
+        """이 실행에서 이어 가거나 분기할 수 없으면 RunStoreError(한국어 까닭)."""
+        if self.is_busy(path):
+            # 다른 세션이 쓰고 있는 폴더: 이어 가면 두 프로세스가 같은 폴더에 쓰고, 분기는 쓰는 중인 파일을 복사한다
+            raise RunStoreError(S.REC_RESUME_BUSY)
+        why = self.resume_blocked()
+        if why:
+            raise RunStoreError(why)
 
     def delete(self, path: Path) -> None:
         """실행 폴더를 지우고 목록을 다시 읽는다(되돌릴 수 없다). 실패하면 RunStoreError."""
@@ -473,6 +513,7 @@ class RecordsView(QWidget):
         if s is None:
             return
         try:
+            self._check_can_resume(s.path)  # 체크포인트를 묻고 분기를 확인받기 전에
             gens = RunStore.open(s.path).checkpoints()
         except (RunStoreError, OSError) as exc:
             self.show_error(S.REC_RESUME_FAILED.format(reason=exc))

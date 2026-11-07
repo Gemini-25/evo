@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QStandardPaths, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from evolab import paths
 from evolab.app import strings as S
 from evolab.app.play.record import PlayRecord, align_record, new_record
 from evolab.spec import model as m
@@ -634,11 +635,22 @@ class PlayWindow(QWidget):
 
 
 def records_dir() -> Path:
-    """입력 기록 기본 폴더: 문서\\진화실험실\\records (OneDrive로 옮겨진 문서 폴더도 따라간다)."""
-    docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-    path = (Path(docs) if docs else Path.home()) / S.DATA_DIR_NAME / "records"
+    """입력 기록 기본 폴더: 데이터 폴더\\records (기본은 문서\\진화실험실\\records, 설정에서 데이터 폴더를 바꾸면 따라간다)."""
+    path = paths.records_dir()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError:
         return Path.home()
     return path
+
+
+def record_dirs() -> list[Path]:
+    """기록을 찾을 폴더: 지금 데이터 폴더의 records, 그리고 데이터 폴더를 바꾸기 전 기본 위치(있을 때만, 만들지 않는다)."""
+    folders = [records_dir()]
+    try:
+        old = paths.default_records_dir()
+        if old.is_dir() and all(old.resolve() != f.resolve() for f in folders):
+            folders.append(old)
+    except OSError:
+        pass
+    return folders
