@@ -254,6 +254,23 @@ def test_decode_checks_the_layout_and_file_generation() -> None:
         decode(good, dim=3, n_body=4, n_out=1)
 
 
+def test_only_files_with_observation_keys_are_compressed(tmp_path: Path) -> None:
+    """관찰 기록이 든 세대 대표만 압축(크기 목표 M8), 챔피언과 관찰 없는 파일은 v1.1과 같은 무압축. 둘 다 그대로 읽힌다."""
+    store = RunStore.create(tmp_path, "run", {})
+    obs = make_obs()
+    store.save_champion(4, "representative", np.ones(DIM), score=1.0, env_version="x", **obs.to_arrays())
+    store.save_champion(4, "champion", np.ones(DIM), score=1.0, env_version="x")
+    store.save_champion(5, "representative", np.ones(DIM), score=2.0, env_version="x")
+    folder = store.root / "champions"
+    for name, method in (("gen_000004_representative.npz", zipfile.ZIP_DEFLATED),
+                         ("gen_000004_champion.npz", zipfile.ZIP_STORED),
+                         ("gen_000005_representative.npz", zipfile.ZIP_STORED)):
+        with zipfile.ZipFile(folder / name) as z:
+            assert {i.compress_type for i in z.infolist()} == {method}, name
+    assert np.array_equal(store.load_champion(4, "representative")["genome"], np.ones(DIM))
+    assert store.load_observation(4) is not None and store.load_observation(5) is None
+
+
 def test_read_representative_rejects_bad_files(tmp_path: Path) -> None:
     """T13(파일): 없음, 0바이트, 잘린 zip, 깨진 내용(CRC), 피클이 든 npz, npz가 아닌 npy는 None(예외 없음)."""
     store = RunStore.create(tmp_path, "run", {})
@@ -264,9 +281,14 @@ def test_read_representative_rejects_bad_files(tmp_path: Path) -> None:
     assert read_representative(good) is not None
     assert read_representative(tmp_path / "missing.npz") is None
     cases = {"empty.npz": b"", "half.npz": data[: len(data) // 2], "garbage.npz": b"not a zip file at all" * 10}
-    i = data.index(b"obs_scores.npy")  # 그 멤버 이름 뒤의 자료 바이트 하나를 바꾼다(CRC가 맞지 않음)
+    # obs_scores.npy 멤버의 자료 가운데 바이트 하나를 바꾼다(CRC가 맞지 않음). 관찰 기록이 든 파일은 압축이라
+    # 지역 머리 길이(30 + 이름 + 덧붙임)를 읽어 자료가 시작하는 곳을 찾는다
+    with zipfile.ZipFile(good) as z:
+        info = z.getinfo("obs_scores.npy")
+    head = data[info.header_offset: info.header_offset + 30]
+    start = info.header_offset + 30 + int.from_bytes(head[26:28], "little") + int.from_bytes(head[28:30], "little")
     flipped = bytearray(data)
-    flipped[i + 200] ^= 0xFF
+    flipped[start + info.compress_size // 2] ^= 0xFF
     cases["crc.npz"] = bytes(flipped)
     for name, content in cases.items():
         (tmp_path / name).write_bytes(content)
