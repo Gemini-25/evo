@@ -149,10 +149,11 @@ def train_command(args: Any) -> int:
         return 130
     s = trainer.state
     store.append_event("stop", s.generation, reason=reason)
+    champ = (S.TRAIN_CHAMPION.format(score=s.champion.score, gen=s.champion.generation)
+             if math.isfinite(s.champion.score) else S.TRAIN_NO_CHAMPION_YET)
     say(S.TRAIN_FINISHED.format(
         reason=S.TRAIN_STOP_REASONS.get(reason, reason), gen=s.generation, evals=s.evaluations,
-        champ=s.champion.score if math.isfinite(s.champion.score) else float("nan"),
-        champ_gen=s.champion.generation, elapsed=s.elapsed, path=store.root,
+        champ=champ, elapsed=s.elapsed, path=store.root,
     ))
     return 0
 

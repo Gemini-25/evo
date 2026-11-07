@@ -68,7 +68,7 @@ jobs:
           $cli = Join-Path $dest "evolab\evolab-cli.exe"
           $envfile = Join-Path $dest "evolab\_internal\environments\lander.evoenv"
           $runs = Join-Path $dest "실행 기록"
-          & $cli train $envfile --popsize 8 --trials 2 --max-generations 3 --workers 2 --out $runs
+          & $cli train $envfile --popsize 8 --trials 2 --max-generations 3 --validate-every 16 --workers 2 --out $runs
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $run = (Get-ChildItem $runs | Select-Object -First 1).FullName
           & $cli judge $run --seeds 4 --workers 2
