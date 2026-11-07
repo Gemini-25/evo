@@ -8,6 +8,14 @@
 - 숨긴 타일은 갱신하지 않고, 다시 켤 때 한 번에 그린다.
 - v1.1 학습 방법 열(learner, learner_best, qualifying, switch 등)이 있으면 학습 방법 교체 세로선(자동 재시작·예선),
   지금 학습 방법 최고점 선, 예선 띠를 더한다. 이 열이 없는 옛 실행은 NaN으로 읽혀 아무것도 더 그리지 않는다.
+- v1.2(설계 D14·D15): 대시보드 위에 쪽 탭 「학습 그래프 | 보는 재미」. 기존 여섯 타일(TILE_IDS)은 「학습 그래프」,
+  새 다섯 타일(FUN_TILE_IDS: 유전자 지도, 뇌 들여다보기, 궤적 밀도, 행동 분포, 몸 수치 추이)은 「보는 재미」 쪽이다.
+  지금 쪽이 아닌 타일은 숨긴 타일처럼 갱신하지 않는다(dirty).
+- 갱신 펌프(D15): 대시보드가 화면에 떠 있으면 자료가 바뀌어도 바로 그리지 않고 타일에 dirty만 표시한 뒤, 화면에 보이는
+  (스크롤 밖이 아닌) dirty 타일을 이벤트 루프 차례마다 하나씩 갱신하고 그린다(사이사이 입력을 처리하게). 스크롤 밖 타일은
+  보일 때 갱신한다. 떠 있지 않으면(테스트, 다른 화면) 지금처럼 바로 갱신한다. flush()는 지금 쪽의 dirty 타일을 바로 갱신한다.
+- 「보는 재미」 자료는 RunHistory(history.py)에 모은다: 실행을 열면 load_history가 배경 스레드로 세대 대표 파일의 관찰
+  기록을 읽고, 학습 중에는 add_generation이 세대 메시지의 관찰 기록을 넣는다. 보는 세대(focus)는 실험실 타임라인이 정한다.
 """
 
 from __future__ import annotations
@@ -15,12 +23,23 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QRectF, QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QPalette, QPen, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QRectF, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPaintEvent,
+    QPalette,
+    QPen,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -32,6 +51,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QStyle,
+    QStyleOptionTab,
+    QStylePainter,
+    QTabBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -40,7 +63,22 @@ from PySide6.QtWidgets import (
 from evolab import paths
 from evolab.app import strings as S
 
+if TYPE_CHECKING:
+    from evolab.app.lab.history import RunHistory
+    from evolab.app.lab.watch_types import BrainSource, WatchMeta
+    from evolab.runs.observe import Observation
+    from evolab.world.physics2d.episode import WorldGeometry
+
 TILE_IDS: tuple[str, ...] = ("trend", "heatmap", "diversity", "blocks", "ends", "perf")
+"""「학습 그래프」 쪽 타일(v1.1까지의 여섯, 이 순서가 기본 배치)."""
+FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "density", "actions", "body")
+"""「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py에 있다."""
+ALL_TILE_IDS: tuple[str, ...] = TILE_IDS + FUN_TILE_IDS
+PAGES: tuple[str, ...] = ("learning", "fun")
+TILE_PAGES: dict[str, tuple[str, ...]] = {"learning": TILE_IDS, "fun": FUN_TILE_IDS}
+"""쪽 → 그 쪽 타일(기본 순서)."""
+PAGE_OF: dict[str, str] = {tid: page for page, ids in TILE_PAGES.items() for tid in ids}
+"""타일 → 쪽."""
 AXES: tuple[str, ...] = ("generation", "evaluations", "elapsed")
 BLOCK_MODES: tuple[str, ...] = ("rep", "mean")
 DEFAULT_STAGNATION = 50
@@ -1174,15 +1212,95 @@ _TILE_CLASSES: dict[str, type[_Tile]] = {
     "ends": _EndsTile,
     "perf": _PerfTile,
 }
+BRAIN_MODULE = "evolab.app.lab.brain_view"
+
+
+def tile_class(tile_id: str) -> type[_Tile]:
+    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈은 여기서 늦게 불러온다(그 모듈들이 _Tile을 상속하려고 이 모듈을
+    불러오므로 위에서 불러오면 순환한다). 뇌 타일 모듈(brain_view)이 아직 없으면 빈 안내 타일을 쓴다."""
+    cls = _TILE_CLASSES.get(tile_id)
+    if cls is not None:
+        return cls
+    from evolab.app.lab import watch_tiles
+
+    if tile_id == "brain":
+        try:
+            from evolab.app.lab.brain_view import BrainTile
+        except ModuleNotFoundError as exc:  # 모듈이 없을 때만. 그 모듈 안의 잘못은 그대로 드러낸다
+            if exc.name != BRAIN_MODULE:
+                raise
+            return watch_tiles.BrainPlaceholderTile
+        return BrainTile
+    return watch_tiles.TILE_CLASSES[tile_id]
+
+
+class _PageTabs(QTabBar):
+    """쪽 탭. bold_index 탭(아직 한 번도 고르지 않은 「보는 재미」)의 글자를 굵게 그린다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bold_index = -1
+        self._bold = QFont(self.font())
+        self._bold.setBold(True)
+
+    def set_bold_index(self, index: int) -> None:
+        if index != self.bold_index:
+            self.bold_index = index
+            self.updateGeometry()
+            self.update()
+
+    def tabSizeHint(self, index: int) -> QSize:  # noqa: N802
+        size = super().tabSizeHint(index)
+        if index == self.bold_index:
+            text = self.tabText(index)
+            extra = QFontMetrics(self._bold).horizontalAdvance(text) - self.fontMetrics().horizontalAdvance(text)
+            size.setWidth(size.width() + max(0, extra))
+        return size
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        if not 0 <= self.bold_index < self.count():
+            super().paintEvent(event)
+            return
+        painter = QStylePainter(self)
+        order = [i for i in range(self.count()) if i != self.currentIndex()] + [self.currentIndex()]
+        for i in order:  # 고른 탭을 마지막에(기본 그리기와 같은 순서)
+            opt = QStyleOptionTab()
+            self.initStyleOption(opt, i)
+            painter.setFont(self._bold if i == self.bold_index else self.font())
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTab, opt)
+
+
 
 
 # ---------------------------------------------------------------------------
+GEOMETRY_CACHE = 8
+"""세계 그림(set_world_geometry)을 세계 열쇠로 기억해 두는 수."""
+
+
 class Dashboard(QWidget):
-    """통계 대시보드. set_rows로 실행 하나를 열고, 학습 중에는 add_row로 세대마다 한 줄씩 더한다."""
+    """통계 대시보드. set_rows로 실행 하나를 열고, 학습 중에는 add_row로 세대마다 한 줄씩 더한다.
+
+    v1.2 「보는 재미」 쪽(설계 7.3의 계약): set_watch_meta(실행의 이름표) → 실행을 열 때 load_history(배경으로 읽기),
+    학습 중에는 세대마다 add_generation. set_focus는 실험실 타임라인이 고른 보는 세대(None = 최신 따라가기).
+    궤적 밀도 타일은 geometry_needed로 세계 그림을 청하고 실험실이 set_world_geometry로 준다. 뇌 그림은
+    set_brain_source·show_time. exact_genome·rep_genome·champion_at은 지도 점 재생과 뇌 그림이 쓰는 유전자.
+    """
+
+    focus_requested = Signal(int)
+    """유전자 지도의 잔상 점(앞 세대)을 눌렀다: 그 세대를 보는 세대로(실험실이 타임라인을 옮긴다)."""
+    individual_requested = Signal(int, int)
+    """유전자 지도 점을 두 번 눌렀다: (세대, 개체 번호). 개체 번호 -1은 집단 기록이 없는 세대의 세대 대표 점이다."""
+    geometry_needed = Signal(int, str)
+    """궤적 밀도 타일이 세계 그림을 원한다: (세대, 세계 열쇠). 같은 열쇠는 한 번만 청한다."""
 
     def __init__(self, parent: QWidget | None = None, settings: QSettings | None = None) -> None:
         super().__init__(parent)
+        from collections import OrderedDict
+
+        from evolab.app.lab.history import RunHistory
+
         self.tile_ids: list[str] = list(TILE_IDS)
+        """「학습 그래프」 쪽 타일 id(v1.1과 같은 값). 모든 타일은 ALL_TILE_IDS."""
         if settings is None:
             settings = QSettings(str(paths.user_state_dir() / SETTINGS_FILE), QSettings.Format.IniFormat)
         self._settings = settings
@@ -1201,16 +1319,47 @@ class Dashboard(QWidget):
         self.end_meta: list[tuple[str, str]] = []
         self.block_meta: list[tuple[str, str]] = []
         self.stagnation_generations = DEFAULT_STAGNATION
-        self._order: list[str] = list(TILE_IDS)
+        self._orders: dict[str, list[str]] = {p: list(ids) for p, ids in TILE_PAGES.items()}
         self._hidden: set[str] = set()
         self._columns = DEFAULT_COLUMNS
-        self._loading = True
+        self._loading = True  # 설정을 읽는 중(저장하지 않음)
+
+        # v1.2 「보는 재미」
+        self.page = "learning"
+        """지금 쪽: "learning" | "fun"."""
+        self.fun_seen = False
+        """「보는 재미」 쪽을 한 번이라도 골랐는가(고를 때까지 탭 글자가 굵다)."""
+        self.watch_meta: WatchMeta | None = None
+        self.brain_source: BrainSource | None = None
+        self.focus: int | None = None
+        """보는 세대(None = 최신 따라가기)."""
+        self.play_time = 0.0
+        """show_time으로 받은 마지막 재생 시각(초)."""
+        self.flipping = False
+        """「세대 넘겨 보기」 중(유전자 지도 축을 다시 맞추지 않음)."""
+        self.history: RunHistory = RunHistory()
+        self.history_loading: tuple[int, int] | None = None
+        """배경으로 기록을 읽는 중이면 (읽은 세대 수, 전체 세대 수)."""
+        self.pump_steps = 0
+        """갱신 펌프가 갱신한 타일 수(측정·테스트용)."""
+        self._geometries: OrderedDict[str, WorldGeometry] = OrderedDict()
+        self._load_tag = 0
+        self._loader: Any = None
+        self._pending_load: tuple[Path, list[dict[str, Any]]] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
         bar = QHBoxLayout()
         bar.setContentsMargins(4, 0, 4, 0)
+        self.page_tabs = _PageTabs()
+        self.page_tabs.setDrawBase(False)
+        self.page_tabs.setExpanding(False)
+        for page in PAGES:
+            self.page_tabs.addTab(S.DASH_PAGES[page])
+        self.page_tabs.currentChanged.connect(self._page_tab_changed)
+        bar.addWidget(self.page_tabs)
+        bar.addSpacing(8)
         bar.addWidget(QLabel(S.DASH_AXIS_LABEL))
         self.axis_box = QComboBox()
         for a in AXES:
@@ -1231,16 +1380,30 @@ class Dashboard(QWidget):
         self._grid = QGridLayout(self._grid_host)
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setSpacing(6)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self._grid_host)
-        root.addWidget(scroll, 1)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidget(self._grid_host)
+        root.addWidget(self.scroll, 1)
+        # 스크롤·크기 바뀜·다시 그리기로 dirty 타일이 화면에 들어오면 펌프를 돌린다
+        self.scroll.verticalScrollBar().valueChanged.connect(self._schedule_pump)
+        self.scroll.horizontalScrollBar().valueChanged.connect(self._schedule_pump)
+        self._grid_host.installEventFilter(self)
 
-        self._tiles: dict[str, _Tile] = {tid: _TILE_CLASSES[tid](self, tid) for tid in TILE_IDS}
+        self._pump_timer = QTimer(self)
+        self._pump_timer.setSingleShot(True)
+        self._pump_timer.setInterval(0)
+        self._pump_timer.timeout.connect(self._pump_step)
+
+        self._tiles: dict[str, _Tile] = {tid: tile_class(tid)(self, tid) for tid in ALL_TILE_IDS}
+        for tid in FUN_TILE_IDS:
+            help_text = S.DASH_TILE_HELP.get(tid)
+            if help_text:
+                self._tiles[tid].title.setToolTip(help_text)
         self._grid_rows = 0
         self._load_settings()
         self._loading = False
+        self._sync_page_tabs()
         self._relayout()
         self._refresh_all()
 
@@ -1272,7 +1435,7 @@ class Dashboard(QWidget):
         self._refresh_all()
 
     def add_row(self, row: Mapping[str, Any]) -> None:
-        """학습 중 한 세대가 끝날 때마다: 줄 하나를 더하고 보이는 타일을 모두 갱신한다."""
+        """학습 중 한 세대가 끝날 때마다: 줄 하나를 더하고 보이는 타일을 갱신한다(떠 있으면 펌프로)."""
         self._append(row, bulk=False)
         self._refresh_all()
 
@@ -1306,11 +1469,15 @@ class Dashboard(QWidget):
         self.save_settings()
 
     def clear(self) -> None:
-        """자료와 세로선을 비운다(환경 정보, 내 최고 기록, 배치는 그대로)."""
+        """자료와 세로선을 비운다(환경 정보, 관찰 이름표, 내 최고 기록, 배치는 그대로). 「보는 재미」 기록,
+        보는 세대, 뇌 원천도 비운다(새 실행)."""
         self.table.clear()
         self.hist.clear()
         self.marks = []
         self._clear_learner()
+        self._clear_history()
+        self.focus = None
+        self.brain_source = None
         self._refresh_all()
 
     def _append(self, row: Mapping[str, Any], *, bulk: bool) -> None:
@@ -1421,6 +1588,14 @@ class Dashboard(QWidget):
         x = self.table.col(self.axis)[idx]
         return np.where(np.isfinite(out), x, _NAN)
 
+    def row_value(self, generation: int, column: str) -> float:
+        """그 세대 통계 줄의 열 값(줄이나 값이 없으면 NaN)."""
+        gens = self.table.col("generation")
+        i = int(np.searchsorted(gens, float(generation)))
+        if i < len(gens) and gens[i] == generation:
+            return float(self.table.col(column)[i])
+        return _NAN
+
     def mark_positions(self, follows_axis: bool) -> tuple[np.ndarray, list[str], list[str], list[str]]:
         """세로선 (가로축 값, 풍선 도움말, 이름, 종류). 사건 표시(set_marks) 뒤에 자동 표시(switch 열)를 잇는다.
         자료 범위 밖 세대는 NaN. 자동 표시는 그 세대 줄의 가로축 값(세대 끝의 누적 시험 횟수·경과 시간)에 긋는다."""
@@ -1445,14 +1620,211 @@ class Dashboard(QWidget):
         x = float(self.table.col(axis)[i])
         return S.DASH_HOVER_X[axis].format(gen=int(gens[i]), x=fmt_value(x))
 
+    # -- 「보는 재미」 자료(설계 7.3) ------------------------------------------
+    def set_watch_meta(self, meta: WatchMeta) -> None:
+        """실행의 이름표(유전자 구조, 몸 수치, 구동기, 신경망 입출력 이름). 유전자 구조가 바뀌면 기록을 비운다.
+        load_history가 이름표보다 먼저 왔으면 여기서 읽기를 시작한다."""
+        old = self.watch_meta
+        self.watch_meta = meta
+        if old is None or meta is None or old.layout.signature() != meta.layout.signature():
+            pending = self._pending_load
+            self._clear_history()
+            self._pending_load = pending
+        self.history.set_layout(meta.layout if meta is not None else None)
+        for tid in FUN_TILE_IDS:
+            hook = getattr(self._tiles[tid], "meta_changed", None)
+            if callable(hook):
+                hook()
+        if self._pending_load is not None and meta is not None:
+            run_dir, rows = self._pending_load
+            self._start_loader(run_dir, rows)
+        self._invalidate(FUN_TILE_IDS)
+
+    def load_history(self, run_dir: Path | None, rows: Sequence[Mapping[str, Any]]) -> None:
+        """실행을 열 때: 지금 기록을 버리고 run_dir의 세대 대표 파일(관찰 기록)을 배경 스레드로 읽기 시작한다.
+        rows는 그 실행의 통계 줄(관찰의 일관성 검사 D10과, 통계보다 뒤인 세대를 거르는 데 쓴다). None이면 비우기만."""
+        self._clear_history()
+        if run_dir is None:
+            self._invalidate(FUN_TILE_IDS)
+            return
+        rows_copy = [dict(r) for r in rows]
+        if self.watch_meta is None:
+            self._pending_load = (Path(run_dir), rows_copy)
+        else:
+            self._start_loader(Path(run_dir), rows_copy)
+        self._invalidate(FUN_TILE_IDS)
+
+    def _start_loader(self, run_dir: Path, rows: list[dict[str, Any]]) -> None:
+        from evolab.app.lab.history import HistoryLoader
+
+        assert self.watch_meta is not None
+        self._pending_load = None
+        self.history.run_dir = run_dir
+        loader = HistoryLoader(run_dir, rows, self.watch_meta.layout, self._load_tag)
+        loader.chunk.connect(self._on_history_chunk)
+        loader.champions.connect(self._on_history_champions)
+        loader.loaded.connect(self._on_history_loaded)
+        self._loader = loader
+        self.history_loading = (0, len(rows))
+        loader.start()
+
+    def _stop_loader(self) -> None:
+        if self._loader is not None:
+            self._loader.requestInterruption()
+            self._loader = None
+
+    def _clear_history(self) -> None:
+        self._load_tag += 1  # 아직 도는 앞 읽기의 결과는 버린다(되감기·다른 실행)
+        self._stop_loader()
+        self._pending_load = None
+        self.history_loading = None
+        self.history.clear()
+        for tid in FUN_TILE_IDS:
+            hook = getattr(self._tiles[tid], "history_reset", None) if hasattr(self, "_tiles") else None
+            if callable(hook):
+                hook()
+
+    def _on_history_chunk(self, tag: int, entries: list[Any], done: int, total: int) -> None:
+        if tag != self._load_tag:
+            return
+        self.history.add_many(entries)
+        self.history_loading = (done, total)
+        self._invalidate(FUN_TILE_IDS)
+
+    def _on_history_champions(self, tag: int, champions: list[tuple[int, np.ndarray, float]]) -> None:
+        if tag != self._load_tag:
+            return
+        for gen, genome, score in champions:
+            self.history.add_champion(gen, genome, score)
+        self._invalidate(FUN_TILE_IDS)
+
+    def _on_history_loaded(self, tag: int, summary: dict[str, int]) -> None:
+        if tag != self._load_tag:
+            return
+        self.history.load_summary = dict(summary)
+        self.history_loading = None
+        self._loader = None
+        self._invalidate(FUN_TILE_IDS)
+
+    def wait_history(self, timeout_ms: int = 10000) -> bool:
+        """테스트·측정: 배경 읽기가 끝날 때까지 이벤트를 처리하며 기다린다. 끝났으면 True."""
+        from PySide6.QtCore import QCoreApplication, QElapsedTimer
+
+        clock = QElapsedTimer()
+        clock.start()
+        while self.history_loading is not None or self._pending_load is not None:
+            if clock.elapsed() > timeout_ms:
+                return False
+            QCoreApplication.processEvents()
+            if self._loader is not None:
+                self._loader.wait(5)
+        return True
+
+    def add_generation(
+        self,
+        gen: int,
+        observation: dict[str, np.ndarray] | None,
+        population: np.ndarray | None,
+        representative: int,
+        champion: tuple[int, np.ndarray] | None,
+    ) -> None:
+        """학습 중 세대 하나: 세대 메시지의 관찰 기록(obs_ 키 사전, 없으면 None), 집단 유전자(float64, 최근 64세대만
+        화면 메모리에 둔다), 세대 대표 번호, 지금 챔피언 (세대, 유전자). 이름표(set_watch_meta)가 없으면 무시한다."""
+        from evolab.app.lab.history import live_entry
+
+        meta = self.watch_meta
+        if meta is None:
+            return
+        g = int(gen)
+        entry, exact = live_entry(g, observation, population, int(representative), meta.layout,
+                                  learner=self.row_value(g, "learner"), rep_score=self.row_value(g, "score_best"))
+        if entry is not None:
+            self.history.add(entry, exact=exact)
+        if champion is not None:
+            cg, genome = champion
+            self.history.add_champion(int(cg), genome, self.row_value(int(cg), "champion_score"))
+        self._invalidate(FUN_TILE_IDS)
+
+    def set_focus(self, gen: int | None) -> None:
+        """보는 세대(실험실 타임라인). None이면 최신 세대를 따라간다."""
+        g = None if gen is None else int(gen)
+        if g == self.focus:
+            return
+        self.focus = g
+        self._invalidate(FUN_TILE_IDS)
+
+    def view_generation(self) -> int | None:
+        """타일이 보여 줄 세대: 보는 세대, 따라가는 중이면 기록의 마지막 세대(없으면 None)."""
+        return self.focus if self.focus is not None else self.history.latest
+
+    def set_flipping(self, on: bool) -> None:
+        """「세대 넘겨 보기」 중이면 True(그동안 유전자 지도 축을 다시 맞추지 않는다)."""
+        on = bool(on)
+        if on != self.flipping:
+            self.flipping = on
+            if not on:
+                self._invalidate(("genemap",))
+
+    def set_world_geometry(self, world_key: str, geometry: WorldGeometry) -> None:
+        """geometry_needed에 답한 세계 그림(세계 열쇠로 최근 GEOMETRY_CACHE개 기억)."""
+        self._geometries[str(world_key)] = geometry
+        self._geometries.move_to_end(str(world_key))
+        while len(self._geometries) > GEOMETRY_CACHE:
+            self._geometries.popitem(last=False)
+        self._invalidate(("density",))
+
+    def world_geometry(self, world_key: str) -> WorldGeometry | None:
+        return self._geometries.get(world_key)
+
+    def set_brain_source(self, src: BrainSource | None) -> None:
+        """뇌 들여다보기 타일이 그릴 개체(설계 D24). None이면 타일이 보는 세대까지의 챔피언을 멈춘 그림으로."""
+        self.brain_source = src
+        self._invalidate(("brain",))
+
+    def show_time(self, t: float) -> None:
+        """재생 시각(초): 뇌 타일이 지금 쪽에 있으면 그 타일의 show_time(t)을 부른다(뉴런 색만 바꿈)."""
+        self.play_time = float(t)
+        if self._active("brain"):
+            fn = getattr(self._tiles["brain"], "show_time", None)
+            if callable(fn):
+                fn(self.play_time)
+
+    def brain_visible(self) -> bool:
+        """뇌 그림을 볼 수 있는가: 대시보드가 화면에 떠 있고 「보는 재미」 쪽이며 뇌 타일을 숨기지 않았다."""
+        return self.isVisible() and self.page == "fun" and "brain" not in self._hidden
+
+    def exact_genome(self, gen: int, index: int) -> np.ndarray | None:
+        """그 세대 index번 개체의 정확한 유전자(float64 복사본). 학습 중 받은 최근 64세대만, 아니면 None."""
+        return self.history.exact_genome(gen, index)
+
+    def rep_genome(self, gen: int) -> np.ndarray | None:
+        """그 세대 대표의 정확한 유전자(float64): 화면 메모리, 없으면 세대 대표 파일. 없으면 None."""
+        return self.history.rep_genome(gen)
+
+    def rep_index(self, gen: int) -> int | None:
+        """그 세대 대표의 개체 번호(관찰 기록이 있는 세대만)."""
+        entry = self.history.entry(gen)
+        return entry.obs.representative if entry is not None and entry.obs is not None else None
+
+    def champion_at(self, gen: int) -> tuple[int, np.ndarray] | None:
+        """gen 이하에서 마지막으로 뽑힌 챔피언 (세대, 유전자 float64)."""
+        return self.history.champion_at(gen)
+
+    def observation(self, gen: int) -> Observation | None:
+        """그 세대의 관찰 기록(없으면 None). 궤적 밀도의 세계 그림(시험 0번 시드·트랙)을 만들 때 쓴다."""
+        entry = self.history.entry(gen)
+        return entry.obs if entry is not None else None
+
     # -- 타일 배치 -----------------------------------------------------------
     def tile(self, tile_id: str) -> _Tile:
         return self._tiles[tile_id]
 
-    def tile_order(self) -> list[str]:
-        return list(self._order)
+    def tile_order(self, page: str | None = None) -> list[str]:
+        """그 쪽(None이면 지금 쪽)의 배치 순서(숨긴 타일 포함)."""
+        return list(self._orders[page or self.page])
 
     def is_tile_visible(self, tile_id: str) -> bool:
+        """사용자가 숨기지 않았는가(쪽과 상관없음)."""
         self._check_tile(tile_id)
         return tile_id not in self._hidden
 
@@ -1465,6 +1837,42 @@ class Dashboard(QWidget):
         self._relayout()
         self.save_settings()
 
+    def set_page(self, page: str) -> None:
+        """쪽을 바꾼다: "learning"(학습 그래프) | "fun"(보는 재미). 안 보이는 쪽 타일은 갱신하지 않는다."""
+        if page not in PAGES:
+            raise ValueError(f"unknown page {page!r}")
+        if self.page_tabs.currentIndex() != PAGES.index(page):
+            self.page_tabs.blockSignals(True)
+            self.page_tabs.setCurrentIndex(PAGES.index(page))
+            self.page_tabs.blockSignals(False)
+        if page == self.page:
+            return
+        self.page = page
+        if page == "fun":
+            self.fun_seen = True
+        self._sync_page_tabs()
+        self._relayout()
+        self._refresh_dirty()
+        self.save_settings()
+
+    def _page_tab_changed(self, index: int) -> None:
+        if 0 <= index < len(PAGES):
+            self.set_page(PAGES[index])
+
+    def _sync_page_tabs(self) -> None:
+        tabs = self.page_tabs
+        if tabs.currentIndex() != PAGES.index(self.page):
+            tabs.blockSignals(True)
+            tabs.setCurrentIndex(PAGES.index(self.page))
+            tabs.blockSignals(False)
+        fun = PAGES.index("fun")
+        tabs.set_bold_index(-1 if self.fun_seen else fun)
+        for i, page in enumerate(PAGES):
+            tip = S.DASH_PAGES_TIP[page]
+            if page == "fun" and not self.fun_seen:
+                tip = f"{tip}\n{S.DASH_FUN_NEW_TIP}"
+            tabs.setTabToolTip(i, tip)
+
     def set_tile_visible(self, tile_id: str, visible: bool) -> None:
         self._check_tile(tile_id)
         if visible:
@@ -1472,41 +1880,47 @@ class Dashboard(QWidget):
         else:
             self._hidden.add(tile_id)
         self._relayout()
-        tile = self._tiles[tile_id]
-        if visible and tile.dirty:
-            tile.refresh()
+        if visible and self._tiles[tile_id].dirty:
+            self._invalidate((tile_id,))
         self.save_settings()
 
     def move_tile(self, tile_id: str, new_index: int) -> None:
-        """배치 순서(숨긴 타일 포함)에서 new_index 자리로 옮긴다."""
+        """그 타일 쪽의 배치 순서(숨긴 타일 포함)에서 new_index 자리로 옮긴다."""
         self._check_tile(tile_id)
-        self._order.remove(tile_id)
-        self._order.insert(min(max(0, int(new_index)), len(self._order)), tile_id)
+        order = self._orders[PAGE_OF[tile_id]]
+        order.remove(tile_id)
+        order.insert(min(max(0, int(new_index)), len(order)), tile_id)
         self._relayout()
         self.save_settings()
 
     def move_tile_by(self, tile_id: str, step: int) -> None:
-        """보이는 타일 사이에서 앞(-1)이나 뒤(+1)로 한 칸."""
-        visible = [t for t in self._order if t not in self._hidden]
+        """같은 쪽의 보이는 타일 사이에서 앞(-1)이나 뒤(+1)로 한 칸."""
+        if tile_id not in PAGE_OF:
+            return
+        order = self._orders[PAGE_OF[tile_id]]
+        visible = [t for t in order if t not in self._hidden]
         if tile_id not in visible:
             return
         k = visible.index(tile_id) + step
         if 0 <= k < len(visible):
-            self.move_tile(tile_id, self._order.index(visible[k]))
+            self.move_tile(tile_id, order.index(visible[k]))
 
     def reset_layout(self) -> None:
-        self._order = list(TILE_IDS)
+        """두 쪽 모두 기본 배치로(순서, 숨김, 한 줄 그래프 수)."""
+        self._orders = {p: list(ids) for p, ids in TILE_PAGES.items()}
         self._hidden = set()
         self._columns = DEFAULT_COLUMNS
         self._relayout()
-        for tile in self._tiles.values():
-            if tile.dirty:
-                tile.refresh()
+        self._refresh_dirty()
         self.save_settings()
 
     def _check_tile(self, tile_id: str) -> None:
         if tile_id not in self._tiles:
             raise KeyError(tile_id)
+
+    def _active(self, tile_id: str) -> bool:
+        """지금 쪽에 있고 숨기지 않은 타일(갱신 대상)."""
+        return PAGE_OF.get(tile_id) == self.page and tile_id not in self._hidden
 
     def _relayout(self) -> None:
         for tile in self._tiles.values():
@@ -1515,29 +1929,99 @@ class Dashboard(QWidget):
             self._grid.setRowStretch(r, 0)
         for c in range(MAX_COLUMNS):
             self._grid.setColumnStretch(c, 1 if c < self._columns else 0)
-        visible = [t for t in self._order if t not in self._hidden]
+        visible = [t for t in self._orders[self.page] if t not in self._hidden]
         for k, tid in enumerate(visible):
             self._grid.addWidget(self._tiles[tid], k // self._columns, k % self._columns)
             self._tiles[tid].setVisible(True)
-        for tid in self._hidden:
-            self._tiles[tid].setVisible(False)
+        shown = set(visible)
+        for tid, tile in self._tiles.items():
+            if tid not in shown:
+                tile.setVisible(False)
         self._grid_rows = (len(visible) + self._columns - 1) // self._columns
         for r in range(self._grid_rows):
             self._grid.setRowStretch(r, 1)
+        self._schedule_pump()
 
+    # -- 갱신(펌프, 설계 D15) -------------------------------------------------
     def _refresh_all(self, *, marks_only: bool = False) -> None:
-        for tid, tile in self._tiles.items():
-            if tid in self._hidden:
+        self._invalidate(ALL_TILE_IDS, marks_only=marks_only)
+
+    def _invalidate(self, tile_ids: Iterable[str], *, marks_only: bool = False) -> None:
+        """타일 자료가 바뀌었다. 지금 쪽이 아니거나 숨긴 타일은 dirty만. 대시보드가 화면에 떠 있으면 dirty로 두고
+        펌프가 보이는 것부터 하나씩 갱신하고, 떠 있지 않으면 바로 갱신한다. marks_only(세로선만 바뀜)면 이미 그린
+        타일은 세로선만 고친다."""
+        shown = self.isVisible()
+        queued = False
+        for tid in tile_ids:
+            tile = self._tiles.get(tid)
+            if tile is None:
+                continue
+            if not self._active(tid):
                 tile.dirty = True
             elif marks_only and not tile.dirty:
                 tile.sync_marks()
+            elif shown:
+                tile.dirty = True
+                queued = True
             else:
                 tile.refresh()
+        if queued:
+            self._schedule_pump()
+
+    def _refresh_dirty(self) -> None:
+        """지금 쪽의 dirty 타일을 갱신한다(떠 있으면 펌프로)."""
+        self._invalidate([t for t in self._orders[self.page] if self._tiles[t].dirty])
+
+    def _has_dirty(self) -> bool:
+        return any(self._tiles[t].dirty for t in self._orders[self.page] if t not in self._hidden)
+
+    def _schedule_pump(self, *_args: Any) -> None:
+        if not self._pump_timer.isActive():
+            self._pump_timer.start()
+
+    @staticmethod
+    def _in_view(tile: QWidget) -> bool:
+        """타일이 화면에 보이는가(스크롤 영역 밖이거나 가려지면 visibleRegion이 비어 있다)."""
+        return tile.isVisible() and not tile.visibleRegion().isEmpty()
+
+    def _pump_step(self) -> None:
+        """이벤트 루프 차례 하나에 dirty 타일 하나: 지금 쪽 순서에서 화면에 보이는 첫 dirty 타일을 갱신하고 바로 그린다.
+        남은 것이 있으면 다음 차례로 미룬다(사이에 입력을 처리). 스크롤 밖 타일은 보일 때까지 dirty로 둔다."""
+        if not self.isVisible():
+            return
+        for tid in self._orders[self.page]:
+            tile = self._tiles[tid]
+            if tile.dirty and tid not in self._hidden and self._in_view(tile):
+                tile.refresh()
+                tile.repaint()
+                self.pump_steps += 1
+                self._schedule_pump()
+                return
+
+    def flush(self) -> None:
+        """지금 쪽의 dirty 타일을 모두 바로 갱신한다(스크롤 밖 포함, 테스트·화면 저장용)."""
+        for tid in self._orders[self.page]:
+            tile = self._tiles[tid]
+            if tile.dirty and tid not in self._hidden:
+                tile.refresh()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        # 스크롤·크기 바뀜·다시 그리기로 타일이 화면에 들어오면 dirty 타일을 펌프로 갱신한다
+        if watched is getattr(self, "_grid_host", None) and event.type() in (
+            QEvent.Type.Paint, QEvent.Type.Resize, QEvent.Type.Show
+        ) and self._has_dirty():
+            self._schedule_pump()
+        return super().eventFilter(watched, event)
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._has_dirty():
+            self._schedule_pump()
 
     def _fill_tiles_menu(self) -> None:
         menu = self.tiles_menu
         menu.clear()
-        for tid in self._order:
+        for tid in self._orders[self.page]:
             act = QAction(S.DASH_TILE_TITLES[tid], menu)
             act.setCheckable(True)
             act.setChecked(tid not in self._hidden)
@@ -1567,14 +2051,22 @@ class Dashboard(QWidget):
             columns = s.value("columns")
             axis = s.value("axis")
             blocks_mode = s.value("blocks_mode")
+            page = s.value("page")
+            fun_seen = s.value("fun_seen")
+            tile_values: dict[str, Any] = {}
+            for tid in FUN_TILE_IDS:
+                for key in getattr(self._tiles[tid], "SETTING_KEYS", ()):
+                    tile_values[key] = s.value(key)
         finally:
             s.endGroup()
-        seen: list[str] = []
-        for tid in order:
-            if tid in TILE_IDS and tid not in seen:
-                seen.append(tid)
-        self._order = seen + [t for t in TILE_IDS if t not in seen]
-        self._hidden = {t for t in hidden if t in TILE_IDS}
+        # 쪽마다: 저장된 순서에서 그 쪽 타일만, 빠진 타일(새 버전에서 생긴 타일)은 기본 순서로 뒤에 붙인다
+        for p, ids in TILE_PAGES.items():
+            seen: list[str] = []
+            for tid in order:
+                if tid in ids and tid not in seen:
+                    seen.append(tid)
+            self._orders[p] = seen + [t for t in ids if t not in seen]
+        self._hidden = {t for t in hidden if t in ALL_TILE_IDS}
         try:
             self._columns = min(MAX_COLUMNS, max(1, int(str(columns)))) if columns is not None else DEFAULT_COLUMNS
         except ValueError:
@@ -1584,6 +2076,15 @@ class Dashboard(QWidget):
         blocks = self._tiles["blocks"]
         if isinstance(blocks, _BlocksTile) and isinstance(blocks_mode, str) and blocks_mode in BLOCK_MODES:
             blocks.set_mode(blocks_mode)
+        self.fun_seen = str(fun_seen).strip().lower() in ("true", "1")
+        if isinstance(page, str) and page in PAGES:
+            self.page = page
+            if page == "fun":
+                self.fun_seen = True
+        for tid in FUN_TILE_IDS:
+            load = getattr(self._tiles[tid], "load_settings_values", None)
+            if callable(load):
+                load(tile_values)
 
     def save_settings(self) -> None:
         if self._loading:
@@ -1591,11 +2092,19 @@ class Dashboard(QWidget):
         blocks = self._tiles["blocks"]
         s = self._settings
         s.beginGroup(SETTINGS_GROUP)
-        s.setValue("order", ",".join(self._order))
-        s.setValue("hidden", ",".join(t for t in self._order if t in self._hidden))
+        order = [t for p in PAGES for t in self._orders[p]]
+        s.setValue("order", ",".join(order))
+        s.setValue("hidden", ",".join(t for t in order if t in self._hidden))
         s.setValue("columns", self._columns)
         s.setValue("axis", self.axis)
         if isinstance(blocks, _BlocksTile):
             s.setValue("blocks_mode", blocks.mode)
+        s.setValue("page", self.page)
+        s.setValue("fun_seen", "true" if self.fun_seen else "false")
+        for tid in FUN_TILE_IDS:
+            values = getattr(self._tiles[tid], "settings_values", None)
+            if callable(values):
+                for key, value in values().items():
+                    s.setValue(key, value)
         s.endGroup()
         s.sync()

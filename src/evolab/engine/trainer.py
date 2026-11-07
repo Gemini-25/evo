@@ -11,6 +11,13 @@
 6. 통계, 세대 대표, 챔피언, 체크포인트를 남긴다(체크포인트에는 바꾼 뒤 상태가 담긴다).
 
 결과는 워커 수와 무관하고, 체크포인트에서 이어가면 끊지 않은 실행과 같다(경과 시간 열만 다르다).
+
+관찰 기록(v1.2 「보는 재미」, 설계 D1·D3~D13): 관찰을 켜면(저장소가 있으면 기본) 세대마다 집단 유전자(float16),
+개체별 점수·시험 결과·몸 수치, 행동 분포, 시험 0번 궤적 밀도를 세대 대표 파일에 obs_ 키로 함께 쓴다
+(engine/observe.summarize, 형식은 runs/observe.py). 학습 경로는 이 기록을 읽지 않고(이어하기는 체크포인트만,
+재현 묶음에는 챔피언 파일이 없다), 워커 관찰기는 상태를 읽기만 하며, 요약은 이미 계산된 값으로만 만든다. 그래서 통계,
+챔피언, 체크포인트, 학습 방법 상태는 관찰을 켜도 끄도 비트 단위로 같다. 요약이 실패해도(코드 결함) 학습은 이어지고
+그 세대 대표는 관찰 키 없이 써진다(observe_problem에 한 번 남김).
 """
 
 from __future__ import annotations
@@ -24,8 +31,9 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from evolab.engine import observe as observing
 from evolab.engine import seeds
-from evolab.engine.evaluate import EvalResult
+from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, EvalResult
 from evolab.learners.base import Learner
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec.compiled import EnvSpec
@@ -57,6 +65,13 @@ LEARNER_COLUMNS = ("learner", "learner_trials", "learner_best", "learner_stall",
 
 
 class Evaluator(Protocol):
+    """평가기(WorkerPool, 테스트의 가짜 평가기). 학습기는 record=만 넘길 수 있다.
+
+    관찰 기록(v1.2): 클래스 속성 `observes`가 참인 평가기만 학습 평가에서 observe=(쌍마다 코드 0·1·2)와
+    frame=(격자 틀 (x0, y0, 칸 크기, nx, ny) 또는 None)을 받고 EvalResult.observations를 채운다. 표시가 없는 평가기는
+    키워드를 받지 않는다(그래도 유전자·점수·결과·몸 수치는 기록된다).
+    """
+
     def evaluate(
         self, env_version: str, env_text: str, layout: GenomeLayout, genomes: np.ndarray, pairs: list[tuple[int, Trial]],
         record: list[bool] | None = None,
@@ -92,6 +107,8 @@ class Generation:
     """관전 모드면 개체별 시험 0번 궤적(Trajectory), 아니면 None."""
     env_version: str
     champion_changed: bool
+    observation: dict[str, np.ndarray] | None = None
+    """이 세대의 관찰 기록(세대 대표 파일의 obs_ 키 사전, v1.2). 관찰을 끈 학습기·요약 실패면 None."""
 
 
 @dataclass
@@ -413,8 +430,13 @@ class Trainer:
         store: Any | None = None,
         clock: Callable[[], float] = time.perf_counter,
         stats_columns: list[str] | None = None,
+        observe: bool | None = None,
     ) -> None:
-        """stats_columns: 저장소에 아직 통계가 없을 때 쓸 열 머리(재현 묶음이 원래 열 그대로 다시 쓰게)."""
+        """stats_columns: 저장소에 아직 통계가 없을 때 쓸 열 머리(재현 묶음이 원래 열 그대로 다시 쓰게).
+
+        observe: 세대마다 관찰 기록을 만들지(None이면 저장소가 있을 때만). 설정(TrainConfig)·run.json에 넣지 않는다:
+        켜든 끄든 학습 결과는 같다. 명령줄 train --no-observe만 끈다(D11).
+        """
         self.env_text = env_text
         self.spec: EnvSpec = compile_env(env_text)
         self.env_version = env_hash(self.spec.file)[:16]
@@ -433,6 +455,11 @@ class Trainer:
         self.last_generation: Generation | None = None
         self.stop_reason: str | None = None
         self.weighted_blocks = self.spec.file.scoring.formula is None
+        self.observe = (store is not None) if observe is None else bool(observe)
+        self.last_observation: dict[str, np.ndarray] | None = None
+        """마지막 세대의 관찰 기록(obs_ 키 사전). 세션이 세대 메시지 "observation"으로 화면에 보낸다."""
+        self.observe_problem: str | None = None
+        """관찰 기록을 처음 만들지 못한 이유(한국어, 한 번만 남김). 학습은 그대로 이어진다(D9)."""
         self._header: list[str] | None = None
         if store is not None:
             self._header = store.stats_columns() if hasattr(store, "stats_columns") else None
@@ -497,12 +524,21 @@ class Trainer:
         X = self.learner.ask()
         trials = training_trials(self.spec, c.run_seed, gen, self.trials)
         pairs = [(i, t) for i in range(X.shape[0]) for t in trials]
-        t_eval = self.clock()
+        kw: dict[str, Any] = {}
+        frame = world_key = None
+        if self.observe and getattr(self.evaluator, "observes", False):
+            # 평가기 능력 표시가 있을 때만 넘긴다(D8): 테스트의 가짜 평가기는 이 키워드를 받지 않는다
+            try:
+                frame, world_key = observing.world_frame(self.spec, self.env_version, trials[0])
+            except Exception as exc:  # 파생 자료의 결함이 학습을 멈추지 않게(D9): 틀 없이 행동만 센다
+                self._observe_failed(exc)
+            kw["observe"] = [OBSERVE_POSITIONS if k == 0 else OBSERVE_ACTIONS
+                             for _ in range(X.shape[0]) for k in range(len(trials))]
+            kw["frame"] = None if frame is None else tuple(frame)
         if record:
-            flags = [k == 0 for _ in range(X.shape[0]) for k in range(len(trials))]
-            res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, X, pairs, record=flags)
-        else:
-            res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, X, pairs)
+            kw["record"] = [k == 0 for _ in range(X.shape[0]) for k in range(len(trials))]
+        t_eval = self.clock()
+        res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, X, pairs, **kw)
         eval_wall = self.clock() - t_eval
         busy = float(getattr(self.evaluator, "last_busy", 0.0) or 0.0)  # 검증 평가가 덮어쓰기 전에 읽는다
         pop, T = X.shape[0], len(trials)
@@ -539,17 +575,34 @@ class Trainer:
         traj = None
         if record and res.trajectories is not None:
             traj = [res.trajectories[i * T] for i in range(pop)]
+        obs: dict[str, np.ndarray] | None = None
+        if self.observe:
+            # 이미 계산된 X, agg, res와 교체 전 학습 방법 번호·예선 상태만 읽는다(통계 줄과 같은 시점)
+            try:
+                obs = observing.summarize(generation=label, X=X, agg=agg, res=res, trials_per=T, representative=rep,
+                                          learner=cur.index, qualifying=s.qualifying, layout=self.layout,
+                                          end_ids=self.end_ids, trial0=trials[0], frame=frame, world_key=world_key)
+            except Exception as exc:  # 파생 자료의 결함이 학습을 멈추지 않게(D9): 이 세대 대표는 관찰 없이 쓴다
+                self._observe_failed(exc)
+        self.last_observation = obs
         self.last_generation = Generation(label, X, agg, rep, trials[0], traj, self.env_version,
-                                          s.champion.generation != champion_before)
+                                          s.champion.generation != champion_before, obs)
         if self.store is not None:
             self.store.append_stats(row)
             self.store.save_champion(label, "representative", X[rep], score=float(agg[rep]),
-                                     env_version=self.env_version)
+                                     env_version=self.env_version, **(obs or {}))
         self._apply_switch(switch)
         self.in_step = False
         if self.store is not None and c.checkpoint_every and s.generation % c.checkpoint_every == 0:
             self.checkpoint()  # 바꾼 뒤 상태(새 학습 방법)가 담긴다
         return row
+
+    def _observe_failed(self, exc: BaseException) -> None:
+        """관찰 기록을 만들지 못했다: 처음 한 번만 이유를 남긴다(세션이 화면에 한 번 알린다)."""
+        if self.observe_problem is None:
+            from evolab.app import strings as S
+
+            self.observe_problem = S.TRAIN_OBSERVE_FAILED.format(reason=str(exc).strip() or type(exc).__name__)
 
     def _validate(self, X: np.ndarray, agg: np.ndarray) -> float:
         """후보를 검증 세트로 평가해 챔피언을 고른다. 이번 검증의 최고 점수를 돌려준다."""
@@ -888,9 +941,12 @@ class Trainer:
     @classmethod
     def resume(
         cls, store: Any, evaluator: Evaluator, generation: int | None = None, clock: Callable[[], float] = time.perf_counter,
-        **overrides: Any,
+        *, observe: bool | None = None, **overrides: Any,
     ) -> Trainer:
-        """저장소의 체크포인트에서 이어간다. overrides로 정지 조건 같은 설정을 바꿀 수 있다."""
+        """저장소의 체크포인트에서 이어간다. overrides로 정지 조건 같은 설정을 바꿀 수 있다.
+
+        observe는 Trainer와 같다(None이면 켬). 체크포인트에는 관찰 상태가 없다(관찰은 세대마다의 순수 함수):
+        끈 실행을 켜서 이어 가면 그 세대부터 기록한다."""
         gen, d = store.load_checkpoint(generation)
         info = store.read_run_info()
         config = TrainConfig.from_dict({**d["config"], **overrides})
@@ -901,7 +957,7 @@ class Trainer:
         text = store.env_text(version)
         if versions[-1]["id"] != version:
             store.add_env_version(text, gen)  # 마지막 기록이 지금 쓰는 환경이 되게
-        trainer = cls(text, config, evaluator, store, clock)
+        trainer = cls(text, config, evaluator, store, clock, observe=observe)
         trainer.load_state_dict(d)
         store.truncate_after(gen)
         return trainer

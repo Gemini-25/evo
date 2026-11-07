@@ -4,6 +4,11 @@
 결과는 쌍마다 독립적이다: 묶음 구성이 달라도(워커 수, 분배) 각 쌍의 결과는 비트 단위로 같다.
 - Episode 결과는 (환경, 몸 수치, Trial)만의 함수
 - BatchBrain.forward는 행마다 독립(묶음 크기, 다른 행과 무관)
+
+관찰 기록(v1.2, 설계 D3~D5): observe[i]가 1·2인 쌍은 스텝마다 실제 구동기 출력을 20칸 히스토그램으로 세고(1·2),
+2이면 4스텝마다 기준 물체 위치를 격자 틀의 칸으로 센다. 관찰기는 Episode의 읽기 전용 접근자(applied_outputs,
+output_channel_index, anchor_body)와 pymunk Body.position만 읽고 난수를 쓰지 않는다. 그래서 점수·궤적은 관찰을
+켜도 같고, 쌍별 관찰은 (환경, 유전자, 시험, 틀)만의 함수다.
 """
 
 from __future__ import annotations
@@ -11,13 +16,20 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
 from evolab.policy.brain import BatchBrain, unpack
 from evolab.policy.genome import GenomeLayout
+from evolab.runs.observe import ACTION_BINS
 from evolab.spec.compiled import EnvSpec
 from evolab.world.physics2d.episode import Episode, Trial
+
+POSITION_EVERY = 4
+"""관찰 코드 2인 쌍의 위치 표본 간격(스텝). 표본 수 = 스텝 // 4."""
+OBSERVE_NONE, OBSERVE_ACTIONS, OBSERVE_POSITIONS = 0, 1, 2
+"""쌍마다 관찰 코드: 0 안 봄, 1 행동, 2 행동 + 위치(격자 틀과 기준 물체가 있을 때)."""
 
 
 @dataclass
@@ -79,6 +91,134 @@ class _Recorder:
 
 
 @dataclass
+class PairObservation:
+    """쌍 하나의 관찰(v1.2). 정수 횟수는 순서와 무관하고, out_sum은 스텝 순서로 더한 값이다."""
+
+    hist: np.ndarray
+    """(U * ACTION_BINS,) uint32 실제 출력 횟수. 신경망 출력 순서(spec.outputs), 출력마다 20칸."""
+    out_sum: np.ndarray
+    """(U,) float64 실제 출력(부호 있음)의 합."""
+    steps: int
+    """센 스텝 수(= 에피소드 스텝 수). 출력마다 hist 합과 같다."""
+    cells: np.ndarray
+    """(K,) int32 지나간 격자 칸 번호(iy·nx + ix), 엄격한 오름차순. 코드 2가 아니면 빈 배열."""
+    counts: np.ndarray
+    """(K,) uint32 칸별 표본 수."""
+    outside: int
+    """격자 틀 밖이었던 위치 표본 수. 코드 2 쌍은 counts.sum() + outside == steps // POSITION_EVERY."""
+
+
+class _Observer:
+    """쌍 하나의 행동 관찰(코드 1). ep.step 뒤에 부른다. 상태를 읽기만 한다(applied_outputs).
+
+    스텝마다 하는 일은 그 스텝의 실제 출력 리스트를 붙이는 것뿐이다(Episode는 스텝마다 새 리스트로 바꾸고 옛 리스트를
+    고치지 않는다). FLUSH 스텝마다와 끝에 numpy로 센다: 칸 = int((x - low) · 20 / (high - low))를 0..19로 자름(파이썬
+    int()와 같은 버림), 합은 cumsum이라 스텝 순서로 더한 값과 비트 단위로 같다. 파이썬 루프로 스텝마다 세는 것보다 싸다
+    (착륙선 0.53 → 0.28µs/스텝, 부하 걸린 기계에서 잼, 보고서 M2).
+    """
+
+    __slots__ = ("idx", "lo", "k", "offs", "buf", "hist", "total", "done")
+    FLUSH = 128
+    """버퍼 크기(스텝). 쌍마다 출력 리스트 이만큼만 붙잡는다(약 20KB)."""
+
+    def __init__(self, ep: Episode, ranges: Sequence[tuple[float, float]]) -> None:
+        self.idx = np.asarray(ep.output_channel_index, dtype=np.intp)
+        self.lo = np.array([float(lo) for lo, _ in ranges], dtype=np.float64)
+        self.k = np.array([ACTION_BINS / (float(hi) - float(lo)) for lo, hi in ranges], dtype=np.float64)
+        self.offs = np.arange(len(ranges), dtype=np.int64) * ACTION_BINS
+        self.buf: list[list[float]] = []
+        self.hist = np.zeros(len(ranges) * ACTION_BINS, dtype=np.int64)
+        self.total = np.zeros((1, len(ranges)), dtype=np.float64)
+        self.done = 0
+
+    def after_step(self, ep: Episode) -> None:
+        buf = self.buf
+        buf.append(ep.applied_outputs)
+        if len(buf) >= self.FLUSH:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self.buf:
+            return
+        a = np.array(self.buf, dtype=np.float64).reshape(len(self.buf), -1)[:, self.idx]  # (스텝, 출력) 신경망 순서
+        self.done += len(self.buf)
+        self.buf = []
+        b = ((a - self.lo) * self.k).astype(np.int64)  # x == high면 20 → 19칸, low보다 작으면 0칸
+        np.clip(b, 0, ACTION_BINS - 1, out=b)
+        b += self.offs
+        self.hist += np.bincount(b.ravel(), minlength=self.hist.size)
+        self.total = np.cumsum(np.concatenate((self.total, a)), axis=0)[-1:]  # 스텝 순서로 더함
+
+    def _positions(self) -> tuple[np.ndarray, np.ndarray, int]:
+        return np.zeros(0, np.int32), np.zeros(0, np.uint32), 0
+
+    def build(self) -> PairObservation:
+        self._flush()
+        cells, counts, outside = self._positions()
+        return PairObservation(self.hist.astype(np.uint32), self.total[0].copy(), self.done, cells, counts, outside)
+
+
+class _PositionObserver(_Observer):
+    """행동 + 위치 관찰(코드 2): POSITION_EVERY 스텝마다 기준 물체 위치(pymunk Body.position)를 붙여 두었다가 격자
+    칸으로 센다. 칸 = int(fy)·nx + int(fx), fx = (x - x0) / 칸 크기. 틀 밖(0 ≤ fx < nx, 0 ≤ fy < ny가 아님, NaN 포함)은
+    outside로 센다(비교를 먼저 해서 int() 버림 함정을 피함, GridFrame.cell_at과 같은 규칙)."""
+
+    __slots__ = ("body", "frame", "pos", "wait", "outside", "cells")
+
+    def __init__(self, ep: Episode, ranges: Sequence[tuple[float, float]], frame: Sequence[float], body: str) -> None:
+        super().__init__(ep, ranges)
+        x0, y0, cell, nx, ny = frame
+        self.frame = (float(x0), float(y0), float(cell), int(nx), int(ny))
+        self.body = ep.bodies[body]
+        self.pos: list[Any] = []
+        self.wait = POSITION_EVERY
+        self.outside = 0
+        self.cells: list[np.ndarray] = []
+
+    def after_step(self, ep: Episode) -> None:
+        buf = self.buf
+        buf.append(ep.applied_outputs)
+        w = self.wait - 1
+        if w:
+            self.wait = w
+        else:
+            self.wait = POSITION_EVERY
+            self.pos.append(self.body.position)
+        if len(buf) >= self.FLUSH:
+            self._flush()
+
+    def _flush(self) -> None:
+        super()._flush()
+        if not self.pos:
+            return
+        x0, y0, cell, nx, ny = self.frame
+        p = np.array(self.pos, dtype=np.float64).reshape(len(self.pos), 2)
+        self.pos = []
+        fx = (p[:, 0] - x0) / cell
+        fy = (p[:, 1] - y0) / cell
+        inside = (fx >= 0.0) & (fx < nx) & (fy >= 0.0) & (fy < ny)
+        self.outside += int(len(p) - np.count_nonzero(inside))
+        self.cells.append(fy[inside].astype(np.int64) * nx + fx[inside].astype(np.int64))
+
+    def _positions(self) -> tuple[np.ndarray, np.ndarray, int]:
+        if not self.cells:
+            return super()._positions()
+        cells, counts = np.unique(np.concatenate(self.cells), return_counts=True)
+        return cells.astype(np.int32), counts.astype(np.uint32), self.outside
+
+
+def _make_observer(ep: Episode, ranges: Sequence[tuple[float, float]], code: int,
+                   frame: Sequence[float] | None) -> _Observer | None:
+    """관찰 코드 → 관찰기. 코드 2라도 틀이나 기준 물체가 없으면 행동만 센다."""
+    if code == OBSERVE_NONE:
+        return None
+    anchor = ep.anchor_body if code == OBSERVE_POSITIONS and frame is not None else None
+    if anchor is not None and frame is not None:
+        return _PositionObserver(ep, ranges, frame, anchor)
+    return _Observer(ep, ranges)
+
+
+@dataclass
 class EvalResult:
     """쌍마다 한 줄. 순서는 요청한 쌍 순서."""
 
@@ -100,6 +240,8 @@ class EvalResult:
     """요청한 쌍만 궤적, 나머지는 None. 하나도 요청하지 않았으면 None."""
     nn_seconds: float = 0.0
     sim_seconds: float = 0.0
+    observations: list[PairObservation | None] | None = None
+    """관찰을 요청한(코드 1·2) 쌍만 관찰, 나머지는 None. 하나도 요청하지 않았으면 None(v1.2)."""
 
     @classmethod
     def concat(cls, parts: Sequence[EvalResult], order: Sequence[tuple[int, int]]) -> EvalResult:
@@ -119,6 +261,8 @@ class EvalResult:
                           if any(x.trajectories for x in parts) else None),
             nn_seconds=sum(x.nn_seconds for x in parts),
             sim_seconds=sum(x.sim_seconds for x in parts),
+            observations=(pick(lambda x: x.observations or [None] * len(x.scores))
+                          if any(x.observations for x in parts) else None),
         )
 
 
@@ -134,11 +278,14 @@ class _Active:
 
 def evaluate(
     spec: EnvSpec, layout: GenomeLayout, genomes: np.ndarray, pairs: Sequence[tuple[int, Trial]],
-    record: Sequence[bool] | None = None, every: int = 2,
+    record: Sequence[bool] | None = None, every: int = 2, observe: Sequence[int] | None = None,
+    frame: Sequence[float] | None = None,
 ) -> EvalResult:
     """genomes: (G, dim). pairs: (genomes의 행 번호, Trial) 목록.
 
     record[i]가 참인 쌍은 every 스텝마다 궤적을 남긴다. 궤적 기록은 상태를 읽기만 하므로 점수는 같다.
+    observe[i]는 쌍마다 관찰 코드(OBSERVE_*). 코드 2이고 frame(x0, y0, 칸 크기, nx, ny)과 기준 물체가 있을 때만
+    위치를 센다. 행동 칸은 layout.output_ranges를 나눈다. 관찰도 상태를 읽기만 하므로 점수는 같다.
     """
     genomes = np.ascontiguousarray(genomes, dtype=np.float64)
     n = len(pairs)
@@ -153,6 +300,10 @@ def evaluate(
             if on:
                 recorders[i] = _Recorder(max(1, int(every)), episodes[i].dt)
                 recorders[i].add(episodes[i])
+    observers: list[_Observer | None] | None = None
+    if observe is not None and any(observe):
+        ranges = layout.output_ranges
+        observers = [_make_observer(episodes[i], ranges, int(code), frame) for i, code in enumerate(observe)]
 
     nn_t = 0.0
     active = _Active(np.arange(n), all_brains.select(rows)) if n else None
@@ -172,6 +323,10 @@ def evaluate(
             rec = recorders.get(i)
             if rec is not None:
                 rec.after_step(ep)
+            if observers is not None:
+                ob = observers[i]
+                if ob is not None:
+                    ob.after_step(ep)
             if not ep.done:
                 still.append(j)
         if len(still) == len(idx):
@@ -201,4 +356,5 @@ def evaluate(
         trajectories=[recorders[i].build() if i in recorders else None for i in range(n)] if recorders else None,
         nn_seconds=nn_t,
         sim_seconds=time.perf_counter() - t_start - nn_t,
+        observations=None if observers is None else [None if ob is None else ob.build() for ob in observers],
     )

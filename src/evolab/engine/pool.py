@@ -7,7 +7,8 @@
 - 환경 오류(조립 실패 등)는 결정적인 오류이므로 PoolError로 올린다.
 - 워커마다 파이프 하나(공유 Queue 없음, WorkerPool 설명 참고). 부모가 죽으면 워커도 스스로 끝난다. 워커는 Ctrl+C를 무시한다(부모가 정리한다).
 
-결과는 작업을 어떻게 나눴는지와 무관하다: 쌍마다 독립이고, 요청한 순서로 다시 맞춘다.
+결과는 작업을 어떻게 나눴는지와 무관하다: 쌍마다 독립이고, 요청한 순서로 다시 맞춘다. 관찰 기록(v1.2)도 쌍마다
+독립이라 같다(WorkerPool.observes: 학습기는 이 표시가 있는 평가기에만 observe=·frame=을 넘긴다).
 """
 
 from __future__ import annotations
@@ -88,6 +89,10 @@ class Task:
     record: list[bool] | None = None
     """쌍마다 궤적 기록 여부(None이면 기록 안 함)."""
     every: int = 2
+    observe: list[int] | None = None
+    """쌍마다 관찰 코드 0·1·2(evaluate.OBSERVE_*). None이면 관찰 안 함(v1.2)."""
+    frame: tuple[float, float, float, int, int] | None = None
+    """관찰 코드 2의 격자 틀(x0, y0, 칸 크기, nx, ny)."""
 
 
 def _lower_priority() -> None:
@@ -135,7 +140,7 @@ def _worker_main(worker_id: int, tasks: Any, results: Any) -> None:
                 layout = GenomeLayout.from_dict(task.layout)
                 layouts[key] = layout
             pairs = [(g, Trial(seed, track)) for g, seed, track in task.pairs]
-            res = evaluate(spec, layout, task.genomes, pairs, task.record, task.every)
+            res = evaluate(spec, layout, task.genomes, pairs, task.record, task.every, task.observe, task.frame)
             msg: tuple[int, str, Any] = (task.id, "ok", res)
         except Exception as exc:
             msg = (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
@@ -192,6 +197,9 @@ class WorkerPool:
     쓸 때까지 프로세스 종료를 붙잡아, 죽은 워커에 보낸 작업이 부모의 종료를 영원히 막았다. 죽은 워커의 파이프는
     버리므로 반쯤 쓰인 메시지나 늦은 결과가 다른 워커 결과에 섞이지 않는다.
     """
+
+    observes = True
+    """evaluate가 observe=·frame=을 받고 EvalResult.observations를 채운다(학습기가 getattr로 확인, 설계 D8)."""
 
     def __init__(self, workers: int | None = None, chunks_per_worker: int = 4) -> None:
         self.workers = default_workers() if workers is None else max(0, workers)
@@ -270,15 +278,23 @@ class WorkerPool:
         pairs: Sequence[tuple[int, Trial]],
         record: Sequence[bool] | None = None,
         every: int = 2,
+        observe: Sequence[int] | None = None,
+        frame: Sequence[float] | None = None,
     ) -> EvalResult:
-        """(유전자 행, Trial) 쌍들을 평가해 요청한 순서로 돌려준다. record[i]가 참인 쌍은 궤적도 돌려준다."""
+        """(유전자 행, Trial) 쌍들을 평가해 요청한 순서로 돌려준다. record[i]가 참인 쌍은 궤적도 돌려준다.
+
+        observe[i]가 1·2인 쌍은 관찰(EvalResult.observations)도 돌려준다. frame은 코드 2의 격자 틀(x0, y0, 칸, nx, ny).
+        """
         genomes = np.ascontiguousarray(genomes, dtype=np.float64)
         self.last_busy = 0.0
+        frame_t = None if frame is None else (float(frame[0]), float(frame[1]), float(frame[2]), int(frame[3]),
+                                              int(frame[4]))
         if not self.workers:
             from evolab.spec.io import compile_env
 
             t0 = time.perf_counter()
-            res = evaluate(compile_env(env_text), layout, genomes, list(pairs), record, every)
+            obs = None if observe is None else [int(c) for c in observe]
+            res = evaluate(compile_env(env_text), layout, genomes, list(pairs), record, every, obs, frame_t)
             self.last_busy = time.perf_counter() - t0
             return res
         layout_d = layout.to_dict()
@@ -295,8 +311,10 @@ class WorkerPool:
                 order[i] = (c, r)
             self._next_task += 1
             rec = [bool(record[i]) for i in idx] if record is not None else None
+            obs = [int(observe[i]) for i in idx] if observe is not None else None
             tasks.append(Task(self._next_task, env_version, env_text, layout_d, genomes[used], task_pairs,
-                              rec if rec and any(rec) else None, every))
+                              rec if rec and any(rec) else None, every, obs if obs and any(obs) else None,
+                              frame_t if obs and any(obs) else None))
         parts = self._run(tasks)
         self.last_busy = sum(p.nn_seconds + p.sim_seconds for p in parts)
         return EvalResult.concat(parts, order)

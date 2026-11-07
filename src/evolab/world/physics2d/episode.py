@@ -490,6 +490,23 @@ class Episode:
     def actuator_channels(self) -> list[str]:
         return list(self._u_names)
 
+    @property
+    def applied_outputs(self) -> list[float]:
+        """구동기 채널별 마지막 스텝의 실제 출력(연료가 떨어지면 0). 관찰 기록이 읽기만 한다(고치지 말 것).
+
+        _apply_actuators가 스텝마다 새 리스트로 바꾸므로, 받은 리스트는 그 스텝의 값으로 남는다."""
+        return self._u_applied
+
+    @property
+    def output_channel_index(self) -> list[int]:
+        """신경망 출력 k번 → 채널 번호(applied_outputs의 색인)."""
+        return list(self._out_index)
+
+    @property
+    def anchor_body(self) -> str | None:
+        """궤적 밀도의 기준 물체: 움직이는 에이전트 물체 중 첫째(캔버스 꼬리와 같은 moving_bodies[0] 규칙). 없으면 None."""
+        return next((g.id for g in self._geoms if g.moving and g.owner == "agent"), None)
+
     # ------------------------------------------------------------------
     # 만들기
     # ------------------------------------------------------------------

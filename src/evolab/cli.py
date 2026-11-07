@@ -163,6 +163,8 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--restart-from", choices=list(RESTART_FROM), default=None, help=S.CLI_HELP_RESTART_FROM)
     train.add_argument("--qualify", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY)
     train.add_argument("--qualify-trials", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY_TRIALS)
+    # 그래프용 관찰 기록(v1.2)만 끈다. 학습 설정이 아니라 run.json·재현 묶음에 남지 않는다(학습 결과는 같다).
+    train.add_argument("--no-observe", action="store_true", default=False, help=S.CLI_HELP_NO_OBSERVE)
 
     bench = sub.add_parser("bench", help=S.CLI_HELP_BENCH)
     bench.add_argument("env", type=Path, help=S.CLI_HELP_ENV_FILE)

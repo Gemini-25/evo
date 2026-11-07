@@ -10,6 +10,8 @@
 - 관전 모드: 화면이 세대 N을 재생하는 동안 N+1을 계산하고, 재생이 끝났다는 알림(played) 없이 그보다 앞서지 않는다.
   고속 모드는 기다리지 않는다. 어느 모드든 학습 결과는 같다(궤적 기록은 읽기만 한다).
 - 평가 오류(PoolError)로 세대가 중간에 끊기면 마지막 체크포인트로 되돌아가 멈춘다(rewind).
+- 세대 메시지에는 그 세대의 관찰 기록(v1.2 "observation": 세대 대표 파일의 obs_ 키 사전 또는 None)이 함께 간다.
+  관찰 기록을 만들지 못하면(학습은 그대로) 비치명 오류를 세션에서 한 번만 알린다.
 - 화면이 사라지면(파이프가 끊김) 이번 세대를 마치고 체크포인트를 남긴 뒤 끝난다. 워커는 이 프로세스가 끝나면
   스스로 끝난다.
 """
@@ -76,6 +78,8 @@ class Session:
         self.stop_logged = False
         self.change_saved = False
         """설정 변경·환경 교체 중에 바뀐 상태의 체크포인트를 쓰기 시작했는지(실패하면 되돌려 써야 한다)."""
+        self.observe_warned = False
+        """관찰 기록 실패(trainer.observe_problem)를 화면에 이미 알렸는지(세션에서 한 번만)."""
 
     # ------------------------------------------------------------------
     def main(self) -> None:
@@ -398,7 +402,12 @@ class Session:
             "trajectories": g.trajectories,
             "champion": champion,
             "env_version": g.env_version,
+            "observation": self.trainer.last_observation,
         })
+        problem = getattr(self.trainer, "observe_problem", None)
+        if problem and not self.observe_warned:
+            self.observe_warned = True
+            self._send({"type": "error", "fatal": False, "message": problem})
 
 
 def _reason(exc: BaseException) -> str:

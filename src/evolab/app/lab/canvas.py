@@ -7,6 +7,8 @@
   물체별 변환(이동·회전)만 바꿔 그린다. 정적인 세계(지형, 영역, 패드)는 카메라가 그대로인 동안 그려 둔
   그림을 다시 쓴다. 맞춤 카메라는 필요한 범위가 화면 밖으로 나가거나 많이 줄었을 때만 목표를 옮겨서
   대부분의 프레임에서 카메라가 멈춰 있다.
+- v1.2: 정적 그림 끝에 궤적 밀도 층(set_density, 대시보드 궤적 밀도 타일)을 그릴 수 있다. 정적 그림에 들어가므로
+  프레임마다 드는 비용이 없다. 대시보드 안의 작은 캔버스는 Ctrl+휠일 때만 확대한다(set_wheel_needs_ctrl).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetricsF,
+    QImage,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -272,6 +275,11 @@ class SpectatorCanvas(QWidget):
         """정적 그림을 그릴 때의 세계 원점 화면 위치(ox, oy)."""
         self._static_margin = (0, 0)
         self._last_key: tuple | None = None
+        self._density: tuple[QImage, QRectF] | None = None
+        """정적 그림 끝에 그리는 밀도 층(그림, 세계 좌표 사각형)."""
+        self._density_fit = False
+        """맞춤 카메라가 밀도 층 사각형을 보이게 하는가(개체가 없는 밀도 타일)."""
+        self._wheel_needs_ctrl = False
 
         self._population: list[_Agent] = []
         self._overlay: list[_Agent] = []
@@ -337,6 +345,8 @@ class SpectatorCanvas(QWidget):
         self._shape_cache.clear()
         pts = [pt for r in world.regions if r.kind in ("pad", "goal") for pt in r.points]
         self._targets = np.array(pts, dtype=np.float64).reshape(-1, 2)
+        self._density = None  # 다른 세계의 밀도 층은 버린다
+        self._density_fit = False
         self._prepare_static(world)
         self._population = []
         self._overlay = []
@@ -452,6 +462,33 @@ class SpectatorCanvas(QWidget):
                 p.setBrush(color)
                 r = 0.25
                 p.drawEllipse(QPointF(float(ex), float(ey)), r, r)
+
+    def set_density(
+        self, image: QImage | None, rect: tuple[float, float, float, float] | None = None, *, fit: bool = False,
+    ) -> None:
+        """정적 그림 끝에 밀도 층을 그린다. rect = 세계 좌표 (x0, y0, 너비, 높이), 그림 0행이 y0(아래) 쪽.
+        칸은 부드럽게 늘이지 않는다(칸 모양 그대로). fit이면 맞춤 카메라가 개체 대신 이 사각형을 보인다.
+        image가 None이면 층을 지운다. 정적 그림을 한 번 다시 그릴 뿐 프레임마다 드는 비용은 없다."""
+        if image is None or rect is None or image.isNull():
+            self._density = None
+            self._density_fit = False
+        else:
+            x0, y0, w, h = (float(v) for v in rect)
+            self._density = (image, QRectF(x0, y0, w, h))
+            self._density_fit = bool(fit)
+        self._static_key = None
+        if self.world is not None:
+            self._fit_rect = None
+            self._update_camera(snap=True)
+        self.update()
+
+    def density_layer(self) -> tuple[QImage, QRectF] | None:
+        """지금 밀도 층(그림, 세계 좌표 사각형) 또는 None."""
+        return self._density
+
+    def set_wheel_needs_ctrl(self, on: bool) -> None:
+        """True면 Ctrl+휠일 때만 확대·축소하고 그냥 휠은 부모(대시보드 스크롤)에 넘긴다(대시보드 그래프와 같은 규칙)."""
+        self._wheel_needs_ctrl = bool(on)
 
     def set_follow(self, mode: str) -> None:
         """fit: 모든 개체와 패드·목표가 보이게(기본). champion: 챔피언(없으면 첫 겹쳐 보기)과 목표를 따라간다."""
@@ -671,6 +708,9 @@ class SpectatorCanvas(QWidget):
         """모든 개체(지금 자세)와 패드·목표가 들어오는 범위. 범위를 벗어나거나 많이 줄 때만 옮긴다."""
         g = self.world
         assert g is not None
+        if self._density_fit and self._density is not None:
+            r = self._density[1]
+            return (r.left(), r.top(), r.right(), r.bottom())  # 세계 좌표라 top이 y0(작은 쪽)
         mx, my = FIT_MARGIN
         bx0, by0, bx1, by1 = g.bounds
         pts = [self._targets]
@@ -817,6 +857,12 @@ class SpectatorCanvas(QWidget):
         p.setPen(_pen(COLOR_PAD, 4.0))
         for a, b in self._pads:
             p.drawLine(a, b)
+        if self._density is not None:
+            image, rect = self._density
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            p.drawImage(rect, image)
+            p.restore()
 
     def _body_transforms(self, s: float, ox: float, oy: float) -> tuple[list[list[float]], list[bool]]:
         """물체마다 물체 좌표 -> 화면 변환 (m11, m12, m21, m22, dx, dy)과 화면에 걸치는지."""
@@ -1015,6 +1061,9 @@ class SpectatorCanvas(QWidget):
         super().mousePressEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if self._wheel_needs_ctrl and not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            event.ignore()  # 대시보드 스크롤이 받게
+            return
         dy = event.angleDelta().y()
         if not dy:
             return

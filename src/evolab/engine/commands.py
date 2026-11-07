@@ -1,6 +1,8 @@
 """명령줄 학습 명령: evolab train / bench / judge.
 
 화면 없이 학습하고(train), 성능을 재고(bench), 완료 기준을 판정한다(judge). 출력은 모두 한국어이고 strings.py에 있다.
+train --no-observe는 그래프용 관찰 기록(v1.2)만 끈다(Trainer 인자, 설정·run.json에는 남지 않음). bench는 단일 코어
+측정 뒤 관찰을 켠 같은 평가를 한 번 더 돌려 차이를 알린다(D32).
 """
 
 from __future__ import annotations
@@ -17,7 +19,9 @@ import numpy as np
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.engine import observe as observing
 from evolab.engine import seeds
+from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS
 from evolab.engine.pool import PoolError, WorkerPool, default_workers
 from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import (
@@ -188,6 +192,7 @@ def _progress(trainer: Trainer, state: dict[str, float]) -> Any:
 
 def train_command(args: Any) -> int:
     workers = args.workers if args.workers is not None else default_workers()
+    observe = False if getattr(args, "no_observe", False) else None  # None: 저장소가 있으니 켬
     pool: WorkerPool | None = None
     try:
         if args.resume is not None:
@@ -207,7 +212,7 @@ def train_command(args: Any) -> int:
             # 전에 거른다.
             TrainConfig.from_dict({**ckpt["config"], **overrides, **live}).validate()
             pool = WorkerPool(workers)
-            trainer = Trainer.resume(store, pool, None, **overrides)
+            trainer = Trainer.resume(store, pool, None, observe=observe, **overrides)
             store.append_event("resume", gen, workers=workers)
             say(S.TRAIN_RESUMED.format(gen=gen, path=store.root))
             if live:
@@ -243,7 +248,7 @@ def train_command(args: Any) -> int:
             layout = layout_for(spec)
             store = create_run(base_dir, env_text, spec, config, workers)
             pool = WorkerPool(workers)
-            trainer = Trainer(env_text, config, pool, store)
+            trainer = Trainer(env_text, config, pool, store, observe=observe)
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
             say(_stability_text(config))
@@ -373,6 +378,20 @@ def bench_command(args: Any) -> int:
     steps = int(res.steps.sum())
     nn_share = res.nn_seconds / max(res.nn_seconds + res.sim_seconds, 1e-12)
     say(S.BENCH_SINGLE.format(sps=steps / el, us=el / steps * 1e6, nn=100 * nn_share, steps=steps, sec=el))
+    # 같은 평가를 관찰 기록을 켜고 한 번 더(학습기가 세대마다 더하는 것: 틀 계산, 쌍별 관찰, 세대 끝 요약).
+    # 쓰기(세대 대표 파일 하나에 더하는 바이트)는 빼고 잰다. 결과는 같아야 한다(점수 비교).
+    t0 = time.perf_counter()
+    frame, world_key = observing.world_frame(spec, version, trials[0])
+    codes = [OBSERVE_POSITIONS if k == 0 else OBSERVE_ACTIONS for _ in range(pop) for k in range(trials_n)]
+    res_obs = single.evaluate(version, env_text, layout, genomes, pairs, observe=codes, frame=frame)
+    agg = res_obs.scores.reshape(pop, trials_n).mean(axis=1)
+    observing.summarize(generation=1, X=genomes, agg=agg, res=res_obs, trials_per=trials_n,
+                        representative=int(np.argmax(agg)), learner=0, qualifying=False, layout=layout,
+                        end_ids=[t.event for t in spec.terminations], trial0=trials[0], frame=frame,
+                        world_key=world_key)
+    el_obs = time.perf_counter() - t0
+    sps_obs = int(res_obs.steps.sum()) / el_obs
+    say(S.BENCH_OBSERVE.format(sps=sps_obs, pct=100.0 * (sps_obs / (steps / el) - 1.0)))
 
     for w in counts:
         with WorkerPool(w) as pool:

@@ -10,6 +10,7 @@
   events.jsonl      멈춤, 이어하기, 환경 수정 같은 사건 (한 줄에 JSON 객체 하나)
   checkpoints\\     gen_000010.pkl … 학습 상태 (피클 프로토콜 5)
   champions\\       gen_000010_representative.npz, gen_000010_champion.npz …
+                    (세대 대표에는 v1.2부터 그래프용 관찰 기록 obs_* 키도 함께: 형식은 runs/observe.py)
   exports\\         내보낸 영상, CSV
 ```
 
@@ -57,6 +58,7 @@ from typing import IO, Any, Final, Literal
 import numpy as np
 
 from evolab.app import strings as S
+from evolab.runs.observe import OBS_PREFIX, read_representative
 
 STORE_FORMAT: Final = 1
 """run.json의 store_format. 이보다 큰 값은 새 버전 프로그램이 만든 실행 기록이다."""
@@ -831,6 +833,8 @@ class RunStore:
         _atomic_write(self._champion_path(g, kind), lambda f: np.savez(f, allow_pickle=False, **arrays))
 
     def load_champion(self, generation: int, kind: str) -> dict[str, np.ndarray]:
+        """챔피언·세대 대표 파일의 값(genome, score, env_version …). 관찰 기록 키(obs_*)는 빼고 돌려준다(v1.1과 같은
+        키): 학습·재생·판정은 관찰 기록을 읽지 않는다. 관찰 기록은 load_observation."""
         g = _check_generation(generation)
         _check_kind(kind)
         path = self._champion_path(g, kind)
@@ -839,11 +843,19 @@ class RunStore:
             raise RunStoreError(S.RUNS_CHAMPION_MISSING.format(generation=g, kind=label))
         try:
             with np.load(path, allow_pickle=False) as z:  # with: 윈도우에서 파일을 잡고 있지 않게 바로 닫는다
-                return {k: z[k] for k in z.files}
+                return {k: z[k] for k in z.files if not k.startswith(OBS_PREFIX)}
         except OSError:
             raise
         except Exception as exc:
             raise RunStoreError(S.RUNS_CHAMPION_BROKEN.format(path=path, detail=exc)) from exc
+
+    def load_observation(self, generation: int) -> dict[str, np.ndarray] | None:
+        """세대 대표 파일의 관찰 기록 키(obs_*)만. 파일이 없거나, 관찰 키가 없거나(v1.2 전 세대, --no-observe),
+        읽을 수 없으면 None(예외를 내지 않는다). 검사는 runs.observe.decode가 한다."""
+        got = read_representative(self._champion_path(_check_generation(generation), "representative"))
+        if got is None or not got[1]:
+            return None
+        return got[1]
 
     def champion_generations(self, kind: str) -> list[int]:
         _check_kind(kind)

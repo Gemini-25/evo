@@ -1506,3 +1506,6 @@ RACE_SKIPPED: Final = "{name}: 재생할 유전자를 읽지 못해 뺐습니다
 RACE_FAILED: Final = "경주를 준비하지 못했습니다: {reason}"
 RACE_HUD: Final = "코스 {n} · {t:.1f}초 · {speed:g}배"
 VIDEO_RACE_TITLE: Final = "나란히 경주 · 코스 {n}"
+
+# ---- v1.2 그룹 B(대시보드 「보는 재미」 타일)에서 더한 문구 ----
+GMAP_POINT_TIP_OLD: Final = "{gen}세대 대표 · 점수 {score} (이 세대는 집단 기록이 없어 대표만 보입니다)"
