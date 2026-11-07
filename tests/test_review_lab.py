@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 from pathlib import Path
@@ -394,6 +395,22 @@ def test_clone_keeps_settings_without_form_fields(qtbot: Any, lab: LabView, tmp_
     c = lab.config_from_form()
     assert (c.validate_every, c.diagonal_threshold) == (1000, 1000)
     assert c.max_evaluations == lab.max_evaluations.value() == 36
+
+
+def test_clone_keeps_rounded_values_but_not_values_the_form_cannot_show(qtbot: Any, lab: LabView) -> None:
+    """칸이 반올림해 보이는 값은 원래 값대로, 칸이 아예 보여 줄 수 없는 값(범위 밖, '없음'으로 보이는 값)은 칸 값대로."""
+    text = LANDER.read_text(encoding="utf-8")
+    rounded = small_config(3, sigma0=0.1234, max_time=100.0, target_score=123.456).to_dict()
+    assert lab.use_env_text(text, "착륙선", rounded)
+    c = lab.config_from_form()
+    assert (c.sigma0, c.max_time, c.target_score) == (0.1234, 100.0, 123.456)
+    hidden = dataclasses.replace(small_config(3, max_time=2.0, target_score=lab.target.minimum() - 1.0),
+                                 popsize=lab.popsize.maximum() + 904).to_dict()
+    assert lab.use_env_text(text, "착륙선", hidden)
+    assert lab.max_minutes.text() == lab.max_minutes.specialValueText()  # 2초는 분 칸에 '없음'으로 보인다
+    c = lab.config_from_form()
+    assert c.popsize == lab.popsize.maximum()
+    assert c.max_time is None and c.target_score is None  # 칸에 보이는 대로(없음)
 
 
 # ---------------------------------------------------------------------------

@@ -681,7 +681,7 @@ class LabView(QWidget):
                 widget.setValue(empty)
             else:
                 widget.setValue(value if scale == 1.0 else float(value) / scale)
-            if key in c:
+            if key in c and (value is None or _shows(widget, float(value) / scale)):
                 self._form_exact[key] = (widget.value(), value)
 
         idx = self.method.findData(c.get("method", "cmaes"))
@@ -1409,6 +1409,18 @@ def _same(v: Any) -> Any:
 def _or_none(v: Any) -> Any:
     """0(칸의 '없음'·'환경 파일대로')이면 None."""
     return v or None
+
+
+def _shows(widget: QSpinBox | QDoubleSpinBox, value: float) -> bool:
+    """칸이 이 값을 (자릿수 반올림만 하고) 보여 줄 수 있는가.
+
+    범위 밖이면 칸은 끝값으로 잘라 보이고, 아주 작은 값이 반올림되어 최솟값이 되면 '없음' 같은 특수 글자로 보인다.
+    그런 값은 칸에 보이는 것과 학습이 쓰는 것이 달라지므로 원래 값을 붙잡지 않는다(칸 값대로 학습한다).
+    """
+    lo, hi = widget.minimum(), widget.maximum()
+    if not lo <= value <= hi:
+        return False
+    return not (widget.specialValueText() and widget.value() == lo and value != lo)
 
 
 def _dspin(lo: float, hi: float, value: float, decimals: int) -> QDoubleSpinBox:
