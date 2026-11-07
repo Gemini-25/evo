@@ -814,3 +814,138 @@ ABOUT_NO_NOTICES: Final = "(개발 환경에서 실행 중이라 라이선스 �
 ABOUT_OPEN_LICENSES: Final = "라이선스 폴더 열기"
 SELFTEST_CHECK_BUNDLE: Final = "내장 예제와 배포 파일"
 SELFTEST_ERR_MISSING: Final = "없습니다: {what}"
+
+# M6 compare (비교 화면, 반복 실행: app/compare/)
+CMP_RUN_NAME: Final = "{env} · {method} · 시드 {seed}"
+CMP_RUN_NAME_NO_SEED: Final = "{env} · {method}"
+CMP_GROUP_NAME: Final = "{env} · {method} · 시드 {first}–{last}"
+CMP_GROUP_NAME_ONE: Final = "{env} · {method} · 시드 {seed} (반복 1회)"
+CMP_GROUP_NAME_PLAIN: Final = "{env} · {method} 반복 실행"
+CMP_GROUP_TIP: Final = "반복 실행 묶음: {name}\n묶음 id: {id}\n묶음 체크박스로 묶음 전체를 고릅니다."
+CMP_GROUP_MEMBERS: Final = "실행 {n}/{count}"
+CMP_GROUP_INDEX: Final = "{i}/{count}"
+CMP_FOLDER: Final = "실행 {count}개 · {path}"
+CMP_LIST_COLUMNS: Final = ("환경", "방법", "시드", "세대", "묶음")
+CMP_LIST_EMPTY: Final = "아직 실행 기록이 없습니다. 실험실에서 학습하거나 '반복 실행'으로 시드만 바꿔 여러 번 돌리면 여기에 나타납니다."
+CMP_UNREADABLE: Final = "읽을 수 없음"
+CMP_NONE: Final = "-"
+CMP_TIP_FOLDER: Final = "폴더: {path}"
+CMP_TIP_STARTED: Final = "시작: {started}"
+CMP_TIP_MORE: Final = "… 외 {n}개"
+CMP_REPEAT_BUTTON: Final = "반복 실행…"
+CMP_REPEAT_BUTTON_TIP: Final = "같은 설정을 시드만 바꿔 여러 번 차례로 학습합니다. 묶음은 평균 선과 최소~최대 띠로 그립니다."
+CMP_REFRESH: Final = "새로 고침"
+CMP_CLEAR_SELECTION: Final = "모두 풀기"
+CMP_REPEAT_CANCEL: Final = "취소"
+CMP_Y_LABEL: Final = "세로축"
+CMP_X_LABEL: Final = "가로축"
+CMP_Y_NAMES: Final = {
+    "compare_score": "비교 점수",
+    "compare_success": "성공률(%)",
+    "champion_score": "검증 점수",
+    "score_best": "세대 최고 학습 점수",
+}
+CMP_Y_AXIS_NAMES: Final = {
+    "compare_score": "비교 점수(챔피언)",
+    "compare_success": "성공률(%)",
+    "champion_score": "검증 점수(챔피언)",
+    "score_best": "학습 점수(세대 최고)",
+}
+CMP_Y_TIP: Final = (
+    "비교 점수: 챔피언을 선정에 쓰지 않은 비교 평가 세트(시드 32개)로 잰 점수(기본값, 공정한 비교).\n"
+    "성공률: 같은 비교 평가에서 성공한 비율.\n"
+    "검증 점수: 챔피언 선정에 쓴 검증 세트 점수(선정 편향이 남습니다).\n"
+    "세대 최고 학습 점수: 잡음 섞인 학습 점수의 세대 최고점(개체가 많은 방법이 운으로 높게 나옵니다)."
+)
+CMP_X_NAMES: Final = {"evaluations": "누적 시험 횟수", "elapsed": "경과 시간(초)", "generation": "세대"}
+CMP_X_TIP: Final = "방법마다 한 세대의 크기가 다르므로 기본 가로축은 누적 학습 시험 횟수입니다(검증·비교 평가 시험은 넣지 않습니다)."
+CMP_GROUP_MEAN: Final = "묶음은 평균과 범위로"
+CMP_GROUP_MEAN_TIP: Final = (
+    "켜면 반복 실행 묶음을 평균 선과 최소~최대 띠로, 끄면 묶음 실행을 하나씩 그립니다.\n"
+    "모든 실행에 값이 있는 구간만 실선과 띠로 그리고, 일부 실행에만 값이 있는 구간(먼저 끝났거나 아직 도는 실행이 있을 때)은 "
+    "그 실행들만의 평균을 점선으로 잇습니다."
+)
+CMP_TARGET_LABEL: Final = "목표 점수"
+CMP_TARGET_TIP: Final = "표의 '목표 점수 도달까지 시험 횟수'를 정하는 비교 점수입니다. 정하기 전에는 환경 파일의 목표 점수를 씁니다."
+CMP_TARGET_LINE: Final = "목표 {v}"
+CMP_SAVE_PNG: Final = "그래프 이미지 저장"
+CMP_SAVE_CSV: Final = "표 CSV 저장"
+CMP_PNG_NAME: Final = "비교.png"
+CMP_CSV_NAME: Final = "비교.csv"
+CMP_PNG_FILTER: Final = "PNG 이미지 (*.png)"
+CMP_CSV_FILTER: Final = "CSV 파일 (*.csv)"
+CMP_SAVE_FAILED: Final = "저장하지 못했습니다: {path} {reason}"
+CMP_ERROR_TITLE: Final = "비교"
+CMP_PICK_RUNS: Final = "왼쪽 목록에서 비교할 실행이나 반복 실행 묶음을 고르세요."
+CMP_NO_VALUES: Final = (
+    "고른 실행에 아직 '{y}' 값이 없습니다. 비교 평가는 학습 시험 1,000회마다 하는 검증에서 챔피언이 바뀔 때 합니다."
+)
+CMP_TITLE: Final = "{y} · 가로축 {x}"
+CMP_LEGEND_GROUP: Final = "{name} 평균 ({n}개)"
+CMP_LEGEND_BAND: Final = "최소~최대"
+CMP_LEGEND_PARTIAL: Final = "일부 실행만"
+CMP_TABLE_COLUMNS: Final = ("이름", "방법", "시드", "최종 점수", "목표 점수 도달까지 시험 횟수", "소요 시간", "성공률")
+CMP_TABLE_TIPS: Final = (
+    "실행(환경 · 방법 · 시드) 또는 반복 실행 묶음. 색은 그래프 선과 같습니다.",
+    "학습 방법",
+    "실행 시드. 묶음은 시드 범위와 실행 수",
+    "챔피언을 비교 평가 세트(시드 32개)로 잰 마지막 점수. 묶음은 평균 ± 표본 표준편차",
+    "비교 점수가 처음 목표 점수 이상이 된 때의 누적 학습 시험 횟수. 못 닿으면 '-'. 묶음은 닿은 실행들의 평균과 닿은 수",
+    "학습에 걸린 시간(마지막 경과 시간). 묶음은 평균",
+    "마지막 비교 평가에서 성공한 비율. 묶음은 평균 ± 표본 표준편차",
+)
+CMP_MEAN_STD: Final = "{mean} ± {std}"
+CMP_REACHED_SOME: Final = "{value} ({k}/{n}개 도달)"
+CMP_SECONDS: Final = "{s:.1f}초"
+CMP_MINUTES: Final = "{m}분 {s:02d}초"
+CMP_HOURS: Final = "{h}시간 {m:02d}분"
+CMP_PERCENT: Final = "{v:.0f}%"
+CMP_SEED_COUNT: Final = "{n}개"
+CMP_SEED_RANGE: Final = "{first}–{last} ({n}개)"
+CMP_CSV_HEADERS: Final = (
+    "이름", "방법", "시드", "실행 수", "최종 점수(평균)", "최종 점수 표준편차", "목표 점수",
+    "목표 점수 도달까지 시험 횟수(평균)", "목표 점수에 닿은 실행 수", "소요 시간(초, 평균)", "성공률(%, 평균)",
+    "성공률 표준편차",
+)
+CMP_REPEAT_PROGRESS: Final = "반복 실행 '{name}' {i}/{n} · 시드 {seed} · {gen}세대 · 시험 {evals}회 · {time}"
+CMP_REPEAT_DONE: Final = "반복 실행 '{name}'을(를) 마쳤습니다({n}개)."
+CMP_REPEAT_CANCELLED: Final = "반복 실행 '{name}'을(를) 취소했습니다({n}개 중 {done}개 끝냄)."
+CMP_REPEAT_FAILED: Final = "반복 실행이 멈췄습니다: {reason}"
+CMP_REPEAT_LOST: Final = "학습 프로세스가 정지 조건에 닿기 전에 끝났습니다."
+CMP_REPEAT_PAUSED: Final = "평가 오류로 학습이 멈췄습니다."
+CMP_REPEAT_START_FAILED: Final = "학습 프로세스를 시작하지 못했습니다: {reason}"
+CMP_REPEAT_TITLE: Final = "반복 실행"
+CMP_REPEAT_NOTE: Final = (
+    "같은 설정을 시드만 바꿔 N번 차례로 학습합니다(한 번에 하나씩, 관전 없이). 실행들은 한 묶음으로 기록되어 "
+    "비교 화면에 평균 선과 최소~최대 띠로 나옵니다."
+)
+CMP_REPEAT_ENV: Final = "환경"
+CMP_REPEAT_ENV_BUILTIN: Final = "{name} (내장 예제)"
+CMP_REPEAT_ENV_FILE: Final = "{name} ({file})"
+CMP_REPEAT_ENV_OPEN: Final = "파일 열기…"
+CMP_REPEAT_ENV_FAILED: Final = "환경 파일을 읽을 수 없습니다: {path}\n{reason}"
+CMP_REPEAT_NO_ENV: Final = "환경 파일을 고르세요."
+CMP_REPEAT_METHOD: Final = "학습 방법"
+CMP_REPEAT_METHODS_MISSING: Final = "아직 쓸 수 없는 방법: {names}"
+CMP_REPEAT_POPSIZE: Final = "개체 수"
+CMP_REPEAT_NEIGHBORS: Final = "이웃 수"
+CMP_REPEAT_TRIALS: Final = "시험 횟수"
+CMP_REPEAT_TRIALS_ENV: Final = "환경 파일 값"
+CMP_REPEAT_COUNT: Final = "반복 횟수"
+CMP_REPEAT_BASE_SEED: Final = "첫 시드"
+CMP_REPEAT_SEEDS: Final = "실행 시드: {seeds}"
+CMP_REPEAT_STOP: Final = "정지 조건"
+CMP_REPEAT_STOP_EVALS: Final = "최대 시험 횟수"
+CMP_REPEAT_STOP_TIME: Final = "최대 시간(분)"
+CMP_REPEAT_WORKERS: Final = "워커 수"
+CMP_REPEAT_NAME: Final = "묶음 이름"
+CMP_REPEAT_NAME_TIP: Final = "비우면 '환경 · 방법 · 시드 범위'로 짓습니다."
+CMP_REPEAT_START: Final = "시작"
+CMP_REPEAT_CANCEL_DIALOG: Final = "닫기"
+CMP_RECORDS_BUTTON: Final = "비교"
+CMP_RECORDS_BUTTON_TIP: Final = "고른 실행들을 비교 화면에서 한 그래프에 겹쳐 그립니다."
+
+# 실험실 ↔ 에디터 (lead)
+LAB_ENV_EDIT: Final = "에디터에서 고치기"
+LAB_ENV_EDIT_TIP: Final = "이 환경을 에디터에서 엽니다. 멈춘 학습이면 고친 뒤 '실험실에 보내기'로 이어서 학습합니다."
+LAB_ENV_FROM_EDITOR: Final = "에디터에서 보낸 환경"

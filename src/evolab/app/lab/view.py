@@ -167,6 +167,8 @@ def _bar(v: float, width: int = 10) -> str:
 
 class LabView(QWidget):
     run_started = Signal(Path)
+    edit_env_requested = Signal(str, str)
+    """(환경 내용, 이름) — 에디터에서 고치기. 멈춘 실험이면 고친 뒤 send_env_text로 이어서 학습한다."""
 
     def __init__(self, parent: QWidget | None = None, settings: QSettings | None = None) -> None:
         super().__init__(parent)
@@ -294,10 +296,14 @@ class LabView(QWidget):
         self.btn_reload = QPushButton(S.LAB_ENV_RELOAD)
         self.btn_reload.setToolTip(S.LAB_ENV_RELOAD_TIP)
         self.btn_reload.clicked.connect(self.reload_env)
+        self.btn_edit = QPushButton(S.LAB_ENV_EDIT)
+        self.btn_edit.setToolTip(S.LAB_ENV_EDIT_TIP)
+        self.btn_edit.clicked.connect(self._edit_env)
         el.addWidget(self.env_label)
         el.addWidget(self.env_combo)
         el.addWidget(btn_open)
         el.addWidget(self.btn_reload)
+        el.addWidget(self.btn_edit)
         lay.addWidget(env)
 
         st = QGroupBox(S.LAB_SETTINGS_GROUP)
@@ -645,6 +651,25 @@ class LabView(QWidget):
             return
         self.client.send({"type": "env", "text": text})
 
+    def _edit_env(self) -> None:
+        if self.env_text is not None and self.spec is not None:
+            self.edit_env_requested.emit(self.env_text, self.spec.file.name)
+
+    def can_take_env(self) -> bool:
+        """멈춘 학습이 있어 고친 환경을 받아 이어서 학습할 수 있는가."""
+        return self.client.active and self.state in ("paused", "finished")
+
+    def send_env_text(self, text: str) -> bool:
+        """에디터에서 고친 환경을 멈춘 학습에 넣는다(세대 경계에서 적용, 결과는 applied 알림으로 온다).
+
+        학습 중이 아니면 새 실행에 쓸 환경으로 받는다.
+        """
+        if self.can_take_env():
+            return self.client.send({"type": "env", "text": text})
+        if not self.client.active:
+            return self.use_env_text(text, S.LAB_ENV_FROM_EDITOR, None)
+        return False
+
     def set_spectate(self, on: bool) -> None:
         self.client.send({"type": "mode", "spectate": bool(on)})
         self.queue.clear()
@@ -809,6 +834,7 @@ class LabView(QWidget):
         self.btn_end.setEnabled(active)
         self.btn_apply.setEnabled(paused)
         self.btn_reload.setEnabled(paused and self.env_path is not None)
+        self.btn_edit.setEnabled(self.env_text is not None and (paused or not active))
         for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo, self.ipop,
                   self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
                   self.sa_neighbors, self.sa_step, self.sa_temp, self.sa_cooling):
