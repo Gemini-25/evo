@@ -9,6 +9,8 @@
   관찰 키는 runs.observe.decode로 검사하고 같은 세대 통계 줄과 consistent(D10)일 때만 쓴다. 관찰 키가 없거나 검사에서
   떨어진 세대는 그 파일의 세대 대표 유전자로 대신한다. 통계 줄이 없는 세대(통계보다 뒤인 파일)는 읽지 않는다.
   LOAD_CHUNK(64)세대씩 묶어 보내고, 화면은 꼬리표(tag)가 바뀌었으면(되감기, 다른 실행) 앞 결과를 버린다.
+- GuiPriority(GUI_PRIORITY): 화면 스레드가 무거운 일(펌프 한 단계, 기록 묶음 넣기, 실행 열기)을 하는 동안 화면 프로세스의
+  배경 작업(이 읽기, 유전자 지도 PCA, 뇌 연결선, 다시 시뮬레이션·세계 만들기)이 쉬게 한다. 둘은 GIL 하나를 나눠 쓴다.
 - 지도 점은 float16 유전자(디스크와 세대 메시지의 obs_genomes는 같은 값)로 그린다: 학습 중 그림 = 다시 연 그림.
 
 이 모듈의 계산(GenEntry, RunHistory, GenePCA, 순수 함수)은 Qt가 없어 배경 스레드에서 불러도 된다. 무작위 PCA의 난수는
@@ -20,13 +22,16 @@ from __future__ import annotations
 import bisect
 import math
 import os
+import time
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
+import numpy.ma  # noqa: F401  np.percentile(score_range)이 처음 불릴 때 불러온다: 화면 스레드의 첫 지도 갱신에서 7~13ms
 from PySide6.QtCore import QThread, Signal
 
 from evolab.policy.genome import GenomeLayout
@@ -40,6 +45,15 @@ EXACT_BUDGET: Final = 64 * 1024 * 1024
 적은 세대만 둔다(내장 환경 기본값은 64세대가 3~8MB). 한 세대만으로 넘으면 두지 않는다(지도 점 재생은 세대 대표로 대신)."""
 LOAD_CHUNK: Final = 64
 """배경 읽기가 한 번에 보내는 세대 수."""
+LOAD_YIELD_S: Final = 0.0005
+"""배경 읽기가 파일 하나를 읽기 전에 자는 시간(초). 파일 읽기는 GIL을 자주 놓았다가 곧바로 다시 잡는데, 기다리는 화면
+스레드는 그 사이에 깨어나지 못해 GIL을 얻지 못한다(이벤트 루프가 깨어날 때마다, Qt 호출마다 수 ms씩 굶음). 자면 GIL을
+확실히 넘긴다. 750세대에 약 0.4초가 더 걸린다."""
+GUI_QUIET_S: Final = 0.03
+"""화면 스레드가 무거운 일(펌프 한 단계, 기록 묶음 넣기, 실행 열기)을 마친 뒤에도 배경 읽기가 더 쉬는 시간(초).
+pyqtgraph는 setData 뒤 그림을 다음 이벤트 루프 차례에 그리므로 그 그림까지 GIL을 다투지 않게 한다."""
+GUI_WAIT_MAX_S: Final = 0.25
+"""배경 읽기가 화면을 기다리는 최대 시간(초). 화면이 계속 바빠도 이만큼마다 파일 하나는 읽는다(굶지 않게)."""
 PCA_SMALL_DIM: Final = 256
 """이 차원 이하는 누적 공분산(ΣX, ΣXᵀX) + eigh, 넘으면 표본의 무작위 PCA(D18)."""
 PCA_SAMPLE_ROWS: Final = 4096
@@ -767,6 +781,51 @@ class RunHistory:
 
 # ---------------------------------------------------------------------------
 # 배경 읽기
+class GuiPriority:
+    """화면 스레드가 무거운 일을 하는 동안 배경 읽기를 쉬게 한다(GIL 다툼 줄이기).
+
+    배경 읽기(파이썬 코드가 많은 npz 해석)와 화면 스레드는 GIL 하나를 나눠 쓴다. 화면 스레드는 Qt를 부를 때와 이벤트를
+    기다릴 때 GIL을 놓는데, 그때마다 배경 읽기가 GIL을 잡으면 화면은 수 ms씩 기다린다: 혼자면 몇 ms인 pyqtgraph 그림이
+    50~100ms가 된다. 화면 스레드는 무거운 일을 busy()로 감싸고, 배경 읽기는 파일마다 wait()로 그동안(과 끝난 뒤
+    GUI_QUIET_S) 잔다. 자는 동안은 GIL을 놓는다. 화면 스레드에서만 busy()를 부르고, 배경 스레드는 값만 읽는다.
+
+    quiet는 늘 시간으로만 끝난다. 이벤트 루프가 잠들려 할 때(aboutToBlock) 끝내지 않는 까닭: 그 신호가 리눅스(glib)에서는
+    이벤트 루프가 한 바퀴 돌 때마다, 윈도우에서는 정말 한가할 때만 와서, 운영체제마다 다르게 쉬게 된다. 시간으로만 끝내면
+    어디서나 같고, 테스트(T39)가 재는 것이 그대로 앱의 동작이다.
+    """
+
+    def __init__(self) -> None:
+        self._busy = 0
+        self._quiet_until = 0.0
+
+    @contextmanager
+    def busy(self, quiet: float = GUI_QUIET_S) -> Iterator[None]:
+        """화면 스레드: 이 안에서는 배경 읽기가 쉰다(끝난 뒤 quiet초 더). 겹쳐 불러도 된다."""
+        self._busy += 1
+        try:
+            yield
+        finally:
+            self._busy -= 1
+            self._quiet_until = max(self._quiet_until, time.monotonic() + quiet)
+
+    @property
+    def is_busy(self) -> bool:
+        return self._busy > 0 or time.monotonic() < self._quiet_until
+
+    def wait(self, stop: Callable[[], bool] | None = None, limit: float = GUI_WAIT_MAX_S) -> None:
+        """배경 스레드: 화면이 바쁘면 한가해질 때까지(최대 limit초, stop()이 참이면 바로) 잔다."""
+        end = time.monotonic() + limit
+        while self.is_busy and (stop is None or not stop()):
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.002, left))
+
+
+GUI_PRIORITY = GuiPriority()
+"""화면 스레드 하나에 하나(실험실 대시보드가 busy로 감싸고 HistoryLoader가 기다린다)."""
+
+
 def _row_generation(row: Mapping[str, Any]) -> int | None:
     return _finite_int(row.get("generation"))
 
@@ -849,9 +908,11 @@ class HistoryLoader(QThread):
         reps = _listing(folder, "representative")
         last = gens[-1] if gens else -1
         champs: list[tuple[int, np.ndarray, float]] = []
+        stop = self.isInterruptionRequested
         for g in sorted(_listing(folder, "champion")):
             if g > last or self.isInterruptionRequested():
                 continue
+            self._yield(stop)
             got = ob.read_representative(folder / f"gen_{g:06d}_champion.npz")
             genome = None if got is None else _genome64(got[0].get("genome"), self.layout.dim)
             if genome is not None and got is not None:
@@ -869,6 +930,7 @@ class HistoryLoader(QThread):
             if g not in reps:
                 summary["missing"] += 1
             else:
+                self._yield(stop)
                 entry, kind = load_generation(folder / f"gen_{g:06d}_representative.npz", g, by_gen[g], self.layout)
                 summary[kind] += 1
                 if entry is not None:
@@ -880,6 +942,12 @@ class HistoryLoader(QThread):
             self.chunk.emit(self.tag, batch, done, total)
         self.summary = summary
         self.loaded.emit(self.tag, summary)
+
+    @staticmethod
+    def _yield(stop: Callable[[], bool]) -> None:
+        """파일 하나 앞에서: 잠깐 자서 GIL을 화면 스레드에 넘기고, 화면이 바쁘면(GUI_PRIORITY) 더 기다린다."""
+        time.sleep(LOAD_YIELD_S)
+        GUI_PRIORITY.wait(stop)
 
 
 _LIVE_LOADERS: set[HistoryLoader] = set()

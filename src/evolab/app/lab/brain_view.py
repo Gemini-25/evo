@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from evolab.app import strings as S
 from evolab.app.lab.dashboard import Dashboard, Theme, _blend, _escape
+from evolab.app.lab.history import GUI_PRIORITY
 from evolab.app.lab.watch_tiles import _WatchTile
 from evolab.policy.brain import BrainLayout, unpack
 from evolab.world.physics2d.episode import OBS_CLIP
@@ -135,6 +136,7 @@ class _EdgeJob(QThread):
 
     def run(self) -> None:  # 배경 스레드
         size, dpr, groups, theme = self.args
+        GUI_PRIORITY.wait(self.isInterruptionRequested)  # 펌프가 그리는 중이면 끝난 뒤에(GIL을 다투지 않게)
         img = _blank(size, dpr)
         paint_edges(img, groups, theme, antialias=False)
         self.done.emit((self.tag, img))

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QRectF, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QRectF, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -62,6 +63,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app.lab.history import GUI_PRIORITY
 
 if TYPE_CHECKING:
     from evolab.app.lab.history import RunHistory
@@ -95,6 +97,11 @@ SETTINGS_FILE = "settings.ini"
 SWITCH_KINDS: dict[int, str] = {1: "restart", 2: "restart", 3: "qualify_next", 4: "qualify_pick"}
 SWITCH_RESTART_FROM: dict[int, str] = {1: "fresh", 2: "champion"}  # 새로 시작한 곳
 QUALIFY_MARK_KINDS: tuple[str, ...] = ("qualify_next", "qualify_pick")
+_clock = time.monotonic  # 펌프 간격 시계(테스트가 바꾼다)
+LOADING_REFRESH_S = 0.3
+"""배경으로 기록을 읽는 동안 「보는 재미」 타일 하나를 펌프가 다시 그리는 최소 간격(초). 읽은 묶음(64세대)마다 다섯
+타일을 다 다시 그리면 그림이 배경 읽기와 GIL을 다투며 이벤트 루프를 50~100ms씩 막는다. 다 읽으면(loaded) 바로 마지막
+자료로 그린다. flush()와 화면에 떠 있지 않은 대시보드는 이 간격을 따르지 않는다."""
 
 _NAN = math.nan
 
@@ -210,6 +217,15 @@ def to_float(value: Any) -> float:
         return _NAN
 
 
+def _float_column(values: Sequence[Any]) -> np.ndarray:
+    """값마다 to_float를 부른 것과 같은 float64 열. 빠른 길은 float()(앞뒤 공백을 똑같이 무시)와 빈 글자 NaN이고, 그것으로
+    못 읽는 값(공백뿐인 글자, None, 읽을 수 없는 글자)이 하나라도 있으면 그 열은 to_float로 다시 읽는다."""
+    try:
+        return np.array([_NAN if v == "" else float(v) for v in values], dtype=np.float64)
+    except (TypeError, ValueError):
+        return np.array([to_float(v) for v in values], dtype=np.float64)
+
+
 _EMPTY = np.empty(0, dtype=np.float64)
 
 
@@ -295,6 +311,23 @@ class StatsTable:
                 self.columns_version += 1
             arr[i] = v
         self.n = i + 1
+
+    def load(self, n: int, cols: Mapping[str, np.ndarray]) -> None:
+        """빈 표에 n줄을 한 번에 넣는다: 같은 값으로 append를 n번 부른 것과 같은 표(열 순서, 용량, columns_version).
+        cols는 열 이름(처음 나온 순서) → 길이 n인 float64 값."""
+        assert self.n == 0 and not self._cols
+        if n <= 0:
+            return
+        cap = 256
+        while cap < n:
+            cap *= 2
+        for name, values in cols.items():
+            arr = np.full(cap, _NAN)
+            arr[:n] = values
+            self._cols[name] = arr
+            self.columns_version += 1
+        self._cap = cap
+        self.n = n
 
     def col(self, name: str) -> np.ndarray:
         """앞의 n칸(보기). 없는 열은 NaN."""
@@ -399,6 +432,29 @@ class ScoreHistogram:
             self._rebuild()
         elif k:
             self._frac[i] = np.bincount(self._bin(scores), minlength=self.bins) / k
+
+    def extend(self, arrays: Sequence[np.ndarray]) -> None:
+        """여러 세대를 한 번에: append(a, update=False)를 차례로 부른 것과 같은 자료(범위 넓히기도 세대 순서대로).
+        finish()에서 한 번에 센다."""
+        m = len(arrays)
+        if not m:
+            return
+        i0 = self.n
+        self._ensure_rows(i0 + m)
+        counts = np.fromiter((len(a) for a in arrays), dtype=np.int64, count=m)
+        total = int(counts.sum())
+        self._ensure_flat(self._flat_n + total)
+        if total:
+            self._flat[self._flat_n : self._flat_n + total] = np.concatenate(arrays)
+            self._row_of[self._flat_n : self._flat_n + total] = np.repeat(np.arange(i0, i0 + m), counts)
+        self._flat_n += total
+        self._count[i0 : i0 + m] = counts
+        self._frac[i0 : i0 + m] = 0.0
+        self.n = i0 + m
+        for a in arrays:
+            if len(a):
+                self._widen(float(a.min()), float(a.max()))
+        self._stale = True
 
     def finish(self) -> None:
         if self._stale:
@@ -636,6 +692,15 @@ class _Tile(QFrame):
 
     def update_data(self) -> None:
         raise NotImplementedError
+
+    def prepare_paint(self) -> None:
+        """펌프가 repaint 바로 앞에 부른다: pyqtgraph가 다음 이벤트 루프 차례로 미뤄 두는 일(ViewBox 자동 범위·변환,
+        장면의 dirty 항목 처리)을 지금 해서 repaint가 마지막 그림을 한 번에 그리게 한다. 미뤄 두면 repaint 뒤에
+        같은 그래프를 한 번 더 그린다(펌프 한 단계에 그림이 두 번)."""
+        scene = self.view.scene()
+        scene.prepareForPaint()
+        QCoreApplication.sendPostedEvents(scene, QEvent.Type.MetaCall)
+        QCoreApplication.sendPostedEvents(self.view, QEvent.Type.MetaCall)
 
     def entries(self) -> list[_Entry]:
         return []
@@ -1339,6 +1404,8 @@ class Dashboard(QWidget):
         self.pump_steps = 0
         """갱신 펌프가 갱신한 타일 수(측정·테스트용)."""
         self._geometries: OrderedDict[str, WorldGeometry] = OrderedDict()
+        self._load_refreshed: dict[str, float] = {}
+        """배경 읽기 동안 펌프가 그 타일을 마지막으로 갱신한 시각(time.monotonic, LOADING_REFRESH_S)."""
         self._load_tag = 0
         self._loader: Any = None
         self._pending_load: tuple[Path, list[dict[str, Any]]] | None = None
@@ -1419,12 +1486,18 @@ class Dashboard(QWidget):
         self._refresh_all()
 
     def set_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
-        """실행을 열 때: 지금 자료를 버리고 통계 줄 전체로 다시 그린다."""
+        """실행을 열 때: 지금 자료를 버리고 통계 줄 전체로 다시 그린다. 모든 줄의 열 이름이 같으면(stats.csv) 열마다
+        한 번에 읽는다(줄마다 _append를 부른 것과 같은 자료: 750세대 × 54열에서 20~30ms → 몇 ms)."""
+        rows = list(rows)
         self.table.clear()
         self.hist.clear()
         self._clear_learner()
-        for row in rows:
-            self._append(row, bulk=True)
+        first = rows[0].keys() if rows else None
+        if first is not None and all(r.keys() == first for r in rows):
+            self._append_columns(rows)
+        else:
+            for row in rows:
+                self._append(row, bulk=True)
         self.hist.finish()
         for tile in self._tiles.values():
             tile.reset_view()
@@ -1476,6 +1549,28 @@ class Dashboard(QWidget):
         self.follow = None
         self.brain_source = None
         self._refresh_all()
+
+    def _append_columns(self, rows: list[Mapping[str, Any]]) -> None:
+        """빈 표에 열 이름이 모두 같은 줄들을 넣는다: 줄마다 _append(row, bulk=True)를 부른 것과 같은 자료(열 순서, 세대
+        빈칸 채우기, 점수 분포, 학습 방법 교체 세로선·예선 구간)."""
+        n = len(rows)
+        names = [k for k in rows[0] if k != "scores"]
+        cols = {k: _float_column([r[k] for r in rows]) for k in names}
+        order = np.arange(1, n + 1, dtype=np.float64)  # 세대 칸이 비었거나 없으면 줄 번호 + 1(_append와 같음)
+        gen = cols.get("generation")
+        if gen is None:
+            cols["generation"] = order
+        else:
+            bad = ~np.isfinite(gen)
+            gen[bad] = order[bad]
+        self.table.load(n, cols)
+        self.hist.extend([parse_scores(r.get("scores")) for r in rows])
+        if any(k in cols for k in ("learner", "qualifying", "switch")):
+            keys = [k for k in ("generation", "learner", "qualifying", "switch", "learner_stall", "learner_best")
+                    if k in cols]
+            picked = [cols[k].tolist() for k in keys]
+            for i in range(n):
+                self._note_learner(i, {k: v[i] for k, v in zip(keys, picked, strict=True)})
 
     def _append(self, row: Mapping[str, Any], *, bulk: bool) -> None:
         values = {k: to_float(v) for k, v in row.items() if k != "scores"}
@@ -1686,6 +1781,7 @@ class Dashboard(QWidget):
 
     def _clear_history(self) -> None:
         self._load_tag += 1  # 아직 도는 앞 읽기의 결과는 버린다(되감기·다른 실행)
+        self._load_refreshed.clear()
         self._stop_loader()
         self._pending_load = None
         self.history_loading = None
@@ -1698,9 +1794,10 @@ class Dashboard(QWidget):
     def _on_history_chunk(self, tag: int, entries: list[Any], done: int, total: int) -> None:
         if tag != self._load_tag:
             return
-        self.history.add_many(entries)
-        self.history_loading = (done, total)
-        self._invalidate(FUN_TILE_IDS)
+        with GUI_PRIORITY.busy():
+            self.history.add_many(entries)
+            self.history_loading = (done, total)
+            self._invalidate(FUN_TILE_IDS)
 
     def _on_history_champions(self, tag: int, champions: list[tuple[int, np.ndarray, float]]) -> None:
         if tag != self._load_tag:
@@ -1715,6 +1812,7 @@ class Dashboard(QWidget):
         self.history.load_summary = dict(summary)
         self.history_loading = None
         self._loader = None
+        self._load_refreshed.clear()
         for tid in FUN_TILE_IDS:
             hook = getattr(self._tiles[tid], "history_loaded", None)
             if callable(hook):  # 유전자 지도: 읽은 모든 세대로 축을 맞춘다(읽는 동안 보던 쪽과 상관없이 같은 축)
@@ -2007,9 +2105,12 @@ class Dashboard(QWidget):
     def _has_dirty(self) -> bool:
         return any(self._tiles[t].dirty for t in self._orders[self.page] if t not in self._hidden)
 
-    def _schedule_pump(self, *_args: Any) -> None:
-        if not self._pump_timer.isActive():
-            self._pump_timer.start()
+    def _schedule_pump(self, *_args: Any, delay_ms: int = 0) -> None:
+        """펌프를 다음 이벤트 루프 차례에(delay_ms면 그만큼 뒤에) 돌린다. 이미 더 일찍 돌 예정이면 그대로 둔다."""
+        timer = self._pump_timer
+        if timer.isActive() and timer.remainingTime() <= delay_ms:
+            return
+        timer.start(max(0, int(delay_ms)))
 
     @staticmethod
     def _in_view(tile: QWidget) -> bool:
@@ -2018,17 +2119,33 @@ class Dashboard(QWidget):
 
     def _pump_step(self) -> None:
         """이벤트 루프 차례 하나에 dirty 타일 하나: 지금 쪽 순서에서 화면에 보이는 첫 dirty 타일을 갱신하고 바로 그린다.
-        남은 것이 있으면 다음 차례로 미룬다(사이에 입력을 처리). 스크롤 밖 타일은 보일 때까지 dirty로 둔다."""
+        남은 것이 있으면 다음 차례로 미룬다(사이에 입력을 처리). 스크롤 밖 타일은 보일 때까지 dirty로 둔다.
+        배경으로 기록을 읽는 동안 「보는 재미」 타일은 LOADING_REFRESH_S에 한 번만 갱신하고(남은 dirty는 그때까지 미룸),
+        갱신하는 동안은 배경 읽기를 쉬게 한다(GUI_PRIORITY)."""
         if not self.isVisible():
             return
+        loading = self.history_loading is not None
+        now = _clock()
+        wait_s: float | None = None
         for tid in self._orders[self.page]:
             tile = self._tiles[tid]
             if tile.dirty and tid not in self._hidden and self._in_view(tile):
-                tile.refresh()
-                tile.repaint()
+                if loading and tid in FUN_TILE_IDS:
+                    last = self._load_refreshed.get(tid)
+                    if last is not None and now - last < LOADING_REFRESH_S:
+                        left = last + LOADING_REFRESH_S - now
+                        wait_s = left if wait_s is None else min(wait_s, left)
+                        continue
+                    self._load_refreshed[tid] = now
+                with GUI_PRIORITY.busy():
+                    tile.refresh()
+                    tile.prepare_paint()
+                    tile.repaint()
                 self.pump_steps += 1
                 self._schedule_pump()
                 return
+        if wait_s is not None:
+            self._schedule_pump(delay_ms=math.ceil(wait_s * 1000))
 
     def flush(self) -> None:
         """지금 쪽의 dirty 타일을 모두 바로 갱신한다(스크롤 밖 포함, 테스트·화면 저장용)."""

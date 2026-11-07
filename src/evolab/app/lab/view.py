@@ -58,6 +58,7 @@ from evolab.app import strings as S
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.lab.client import TrainingClient
 from evolab.app.lab.dashboard import Dashboard
+from evolab.app.lab.history import GUI_PRIORITY
 from evolab.app.lab.watch_types import BrainSource, WatchMeta
 from evolab.engine import seeds
 from evolab.engine.pool import default_workers
@@ -112,6 +113,15 @@ def settings_store() -> QSettings:
 # ---------------------------------------------------------------------------
 
 
+def gui_first(stop: Callable[[], bool]) -> bool:
+    """화면 프로세스의 배경 작업(다시 시뮬레이션, 장면·세계 만들기)이 일 하나를 시작하기 전에 부른다: 화면 스레드가 무거운
+    일을 하는 중이면(GUI_PRIORITY: 펌프 한 단계, 실행 열기) 끝날 때까지 기다린다. pymunk는 C 함수마다 GIL을 놓았다 곧바로
+    다시 잡아, 같이 돌면 화면 스레드가 GIL을 얻지 못하고 굶는다(궤적 밀도 세계 만들기와 겹친 타일 그림이 8ms → 25ms).
+    stop()(멈추라는 요청)을 돌려준다."""
+    GUI_PRIORITY.wait(stop)
+    return stop()
+
+
 class _ReplayThread(QThread):
     finished_job = Signal(object, object)
     """(꼬리표, Replay 목록 또는 예외)"""
@@ -123,7 +133,10 @@ class _ReplayThread(QThread):
 
     def run(self) -> None:
         try:
-            out = [replay(spec, layout, genome, trial, trace=trace) for spec, layout, genome, trial, trace in self.jobs]
+            out = []
+            for spec, layout, genome, trial, trace in self.jobs:
+                gui_first(self.isInterruptionRequested)
+                out.append(replay(spec, layout, genome, trial, trace=trace))
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
             self.finished_job.emit(self.tag, exc)
             return
@@ -180,8 +193,10 @@ class _SceneThread(QThread):
         self.args = (spec, layout, population, trial)
 
     def run(self) -> None:
+        stop = self.isInterruptionRequested
         try:
-            out = build_scene(*self.args, cancel=self.isInterruptionRequested)
+            gui_first(stop)
+            out = build_scene(*self.args, cancel=lambda: gui_first(stop))
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다(멈춘 것도: 꼬리표가 달라 버려진다)
             self.finished_job.emit(self.tag, exc)
             return
@@ -201,6 +216,7 @@ class _WorldThread(QThread):
 
     def run(self) -> None:
         spec, trial = self.args
+        gui_first(self.isInterruptionRequested)
         try:
             out = Episode(spec, None, trial).geometry()
         except Exception as exc:  # 결과를 화면 스레드로 넘긴다(못 만들면 밀도 타일은 계속 준비 중 글)
@@ -336,6 +352,8 @@ class LabView(QWidget):
         self.loop_overlay = False
         self._threads: list[QThread] = []
         self._replay_tag = 0
+        self._still_seq = 0
+        """_show_still_scene_soon의 꼬리표(새로 미룰 때마다 늘어남: 늦은 앞 요청은 그리지 않음)."""
         self._replay_label = ""
         self._fast_last = 0
         self.last_fast_candidate: dict[str, Any] | None = None
@@ -400,6 +418,8 @@ class LabView(QWidget):
         self._restore_settings()
         self._method_changed(set_defaults=False)
         self._update_buttons()
+        platform_now()  # 실행을 열 때마다 비교하는 지금 플랫폼 정보(처음 한 번 수십 ms: uname·WMI)를 시작할 때 미리
+        freeze_long_lived()
 
     # ------------------------------------------------------------------
     # 화면 만들기
@@ -776,6 +796,20 @@ class LabView(QWidget):
         self._update_buttons()
         return True
 
+    def _show_still_scene_soon(self) -> None:
+        """실행을 열 때(_adopt_run): 전시 시드의 세계를 다음 이벤트 루프 차례에 그린다. 만들기(Episode·정적 그림
+        10~20ms)를 open_run 밖으로 빼서 여는 동안 이벤트 루프를 짧게 막는다. 그사이 다시 열었거나(다른 실행·되감기·
+        환경 바꿈) 다른 장면(관전 세대, 끝난 재생)이 캔버스를 차지했으면 그리지 않는다."""
+        self._still_seq += 1
+        seq, spec, layout, world = self._still_seq, self.spec, self.layout, self.canvas.world
+        QTimer.singleShot(0, self, lambda: self._still_scene_due(seq, spec, layout, world))
+
+    def _still_scene_due(self, seq: int, spec: EnvSpec | None, layout: GenomeLayout | None, world: Any) -> None:
+        if (seq == self._still_seq and spec is self.spec and layout is self.layout and world is self.canvas.world
+                and self.playing is None):
+            with GUI_PRIORITY.busy():
+                self._show_still_scene()
+
     def _show_still_scene(self) -> None:
         """전시 시드의 세계만 그린다(시뮬레이션하지 않는다: 화면 스레드를 막지 않게)."""
         if self.spec is None or self.layout is None:
@@ -1061,6 +1095,11 @@ class LabView(QWidget):
         self._close_inspect()
 
     def _adopt_run(self, msg: dict[str, Any]) -> None:
+        # 이 안에서 시작하는 보는 재미 배경 읽기는 화면을 다 바꿀 때까지 기다린다(GIL을 다투지 않게)
+        with GUI_PRIORITY.busy():
+            self._adopt_run_now(msg)
+
+    def _adopt_run_now(self, msg: dict[str, Any]) -> None:
         self.run_dir = Path(msg["run_dir"])
         self.run_info = dict(msg.get("run_info") or {})
         if msg.get("config"):
@@ -1091,17 +1130,16 @@ class LabView(QWidget):
         self.timeline.setValue(max(1, self.generation))
         self._update_timeline_label()
         self._apply_focus()
-        self._show_still_scene()
+        self._show_still_scene_soon()
 
     def _warn_other_platform(self) -> None:
         """다른 PC·다른 빌드에서 만든 실행이면 비트 재현이 보장되지 않는다고 알린다(명세: 재현 범위)."""
         from evolab import __version__
-        from evolab.engine.runsetup import platform_info
 
         then = dict(self.run_info.get("platform") or {})
         if not then:
             return
-        now = platform_info(0)
+        now = platform_now()
         keys = ("python", "numpy", "pymunk", "cma", "os", "cpu")
         diff = [k for k in keys if k in then and str(then[k]) != str(now.get(k))]
         if str(self.run_info.get("version", __version__)) != __version__:
@@ -2105,6 +2143,31 @@ class LabView(QWidget):
             shutdown_race(self._race_dialog)
         finally:
             self._closing = False
+            gc.unfreeze()  # freeze_long_lived를 되돌린다(테스트처럼 화면을 여러 번 만들어도 얼린 객체가 쌓이지 않게)
+
+
+_PLATFORM_NOW: dict[str, Any] | None = None
+
+
+def platform_now() -> dict[str, Any]:
+    """이 프로세스의 runsetup.platform_info(0)(처음 한 번만 계산: 리눅스는 uname을 새 프로세스로 띄우고 윈도우는 WMI를
+    물어 수십 ms가 걸린다). 프로그램이 도는 동안 바뀌지 않는다."""
+    global _PLATFORM_NOW
+    if _PLATFORM_NOW is None:
+        from evolab.engine.runsetup import platform_info
+
+        _PLATFORM_NOW = platform_info(0)
+    return _PLATFORM_NOW
+
+
+def freeze_long_lived() -> None:
+    """지금 살아 있는 객체(불러온 모듈·클래스·함수, 화면 위젯, pyqtgraph 항목: 실험실을 띄운 뒤 9만 개 남짓)를 순환 GC가
+    훑지 않게 옮긴다(gc.freeze). 순환 GC의 전체 수집은 추적하는 객체를 모두 훑느라 한 번에 45~70ms 동안 GIL을 쥔다(한가한
+    4코어 리눅스, v1.2 측정). 실행을 열 때나 관전 중 배경 스레드에서 그것이 일어나면 이벤트 루프가 그만큼 멈춘다. 옮긴 뒤에는
+    그 뒤에 만든 객체만 훑는다(전체 수집 0.1ms 아래). 먼저 한 번 수집해 쓰레기를 얼리지 않는다. 얼린 객체도 참조 수가 0이
+    되면 그대로 풀린다(순환 참조만 수집하지 않음). LabView.shutdown이 gc.unfreeze로 되돌린다."""
+    gc.collect()
+    gc.freeze()
 
 
 def _checkpoint_settings(store: Any, keys: Sequence[str]) -> dict[str, Any]:

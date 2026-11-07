@@ -786,3 +786,212 @@ def test_render_fun_page_screenshot(qtbot: QtBot, tmp_path: Path) -> None:
     assert image.width() > 0 and image.height() > 0
     out = os.environ.get("EVOLAB_DASHBOARD_V12_PNG")
     assert image.save(str(Path(out) if out else tmp_path / "dashboard_v12.png"))
+
+
+# ---------------------------------------------------------------------------
+# 열기·관전 지연 고침 (T39·M4b): 열마다 읽는 set_rows, 기록을 읽는 동안의 펌프 간격, 한 번에 그리는 펌프 단계
+def _row_by_row(dash: D.Dashboard, rows: list[dict[str, Any]]) -> None:
+    """고치기 전 set_rows(줄마다 _append)."""
+    dash.table.clear()
+    dash.hist.clear()
+    dash._clear_learner()
+    for row in rows:
+        dash._append(row, bulk=True)
+    dash.hist.finish()
+
+
+def _table_state(dash: D.Dashboard) -> dict[str, Any]:
+    t, h = dash.table, dash.hist
+    return {
+        "names": t.names(), "n": t.n, "cap": t._cap, "version": t.columns_version,
+        "cols": {k: t.col(k).copy() for k in t.names()},
+        "hist": (h.n, repr(h.lo), repr(h.hi), h.rebuilds, h.matrix().copy()),
+        "learner": repr((dash.auto_marks, dash._auto_rows, dash._auto_tips, dash.learner_max, dash.qualify_rows)),
+    }
+
+
+def _assert_same_state(a: dict[str, Any], b: dict[str, Any]) -> None:
+    assert a["names"] == b["names"] and (a["n"], a["cap"], a["version"]) == (b["n"], b["cap"], b["version"])
+    for k in a["names"]:
+        assert np.array_equal(a["cols"][k], b["cols"][k], equal_nan=True), k
+    assert a["hist"][:4] == b["hist"][:4] and np.array_equal(a["hist"][4], b["hist"][4])
+    assert a["learner"] == b["learner"]
+
+
+def test_set_rows_by_columns_matches_row_by_row_append(qtbot: QtBot, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """set_rows는 열 이름이 모두 같은 줄(stats.csv)을 열마다 한 번에 읽는다: 줄마다 _append한 것과 같은 표·점수 분포·
+    학습 방법 교체 세로선이어야 한다(빈 칸, 공백, 읽을 수 없는 글자, 세대 빈칸·세대 열 없음, 숫자 줄 포함)."""
+    from test_dashboard_v11 import stability_rows, switch_rows
+
+    messy = synthetic_rows(60, strings=True)
+    messy[2]["generation"] = ""
+    messy[9]["score_best"] = "  "
+    messy[10]["evaluations"] = "abc"
+    messy[11]["scores"] = ""
+    messy[12]["scores"] = "1.5 x 3"
+    messy[19]["sigma"] = " 0.5 "
+    messy[30]["diversity"] = None
+    messy[31]["score_mean"] = "inf"
+    no_gen = [{k: v for k, v in r.items() if k != "generation"} for r in synthetic_rows(20, strings=True)]
+    ragged = synthetic_rows(20, strings=True)
+    ragged[5]["extra_column"] = "1.0"
+    cases = {
+        "v11 strings": stability_rows(200, strings=True), "v11 numbers": stability_rows(200),
+        "switch rows": switch_rows(), "messy strings": messy, "no generation column": no_gen,
+        "ragged keys": ragged, "one row": synthetic_rows(1, strings=True), "empty": [],
+    }
+    dash = make_dashboard(qtbot, tmp_path)
+    calls: list[int] = []
+    real_append = dash._append
+    monkeypatch.setattr(dash, "_append", lambda row, *, bulk: (calls.append(1), real_append(row, bulk=bulk))[1])
+    for name, rows in cases.items():
+        _row_by_row(dash, rows)
+        expected = _table_state(dash)
+        calls.clear()
+        dash.set_rows(iter(rows))  # 한 번만 도는 반복자도 받는다
+        assert len(calls) == (len(rows) if name == "ragged keys" else 0), name  # 열마다 읽는 길을 탔다
+        _assert_same_state(_table_state(dash), expected)
+    # 열마다 읽은 뒤 학습 중 줄을 더해도 줄마다 넣은 것과 같다(용량·열 순서가 같다)
+    rows = stability_rows(300, strings=True)
+    dash.set_rows(rows[:256])
+    for r in rows[256:]:
+        dash.add_row(r)
+    got = _table_state(dash)
+    _row_by_row(dash, rows)
+    _assert_same_state(got, _table_state(dash))
+
+
+def _fun_tiles_dirty(dash: D.Dashboard) -> None:
+    for tid in D.FUN_TILE_IDS:
+        dash.tile(tid).dirty = True
+
+
+def test_pump_refreshes_fun_tiles_at_most_every_interval_while_history_loads(
+        qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """기록을 배경으로 읽는 동안 펌프는 「보는 재미」 타일 하나를 LOADING_REFRESH_S에 한 번만 갱신한다(남은 dirty는 그때
+    펌프 타이머로). 다 읽으면 바로 갱신하고, flush와 「학습 그래프」 쪽은 간격을 따르지 않는다."""
+    clock = [100.0]
+    monkeypatch.setattr(D, "_clock", lambda: clock[0])
+    dash = make_dashboard(qtbot, tmp_path, "coalesce.ini")
+    dash.set_watch_meta(meta_for("lander"))
+    dash.resize(1200, 900)
+    dash.show()
+    qtbot.waitExposed(dash)
+    dash.set_page("fun")
+    dash._pump_timer.stop()
+    in_view = [t for t in dash.tile_order() if dash._in_view(dash.tile(t))]
+    assert "genemap" in in_view and len(in_view) >= 2
+    dash.history_loading = (64, 750)  # 읽는 중(배경 읽기 없이 상태만)
+    _fun_tiles_dirty(dash)
+    refreshed: list[str] = []
+    for tid in D.FUN_TILE_IDS:
+        tile = dash.tile(tid)
+        real = tile.refresh
+        monkeypatch.setattr(tile, "refresh", lambda t=tid, r=real: (refreshed.append(t), r())[1])
+    for _ in in_view:  # 처음에는 하나씩 바로
+        dash._pump_step()
+    assert refreshed == in_view
+    _fun_tiles_dirty(dash)
+    clock[0] += 0.1
+    dash._pump_timer.stop()  # 앞 단계가 걸어 둔 다음 차례 펌프(이 시험은 펌프를 손으로 돌린다)
+    dash._pump_step()  # 모두 간격 안: 아무것도 갱신하지 않고 남은 시간 뒤로 펌프를 미룬다
+    assert refreshed == in_view and all(dash.tile(t).dirty for t in in_view)
+    assert dash._pump_timer.isActive() and 150 <= dash._pump_timer.remainingTime() <= D.LOADING_REFRESH_S * 1000
+    clock[0] += D.LOADING_REFRESH_S
+    dash._pump_step()
+    assert refreshed[-1] == in_view[0]
+    # flush는 간격과 상관없이 지금 쪽 dirty 타일을 모두
+    dash.flush()
+    assert not any(dash.tile(t).dirty for t in D.FUN_TILE_IDS if dash.is_tile_visible(t))
+    # 다 읽으면(loaded) 간격 없이 바로
+    tag = dash._load_tag
+    dash._on_history_loaded(tag, {"observed": 0})
+    assert dash.history_loading is None and dash._load_refreshed == {}
+    refreshed.clear()
+    dash._pump_timer.stop()
+    for _ in in_view:
+        dash._pump_step()
+    assert refreshed == in_view
+
+
+def test_coalesced_loading_ends_with_the_final_data_drawn(qtbot: QtBot, tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """화면에 띄운 「보는 재미」 쪽에서 실제 배경 읽기(작은 묶음 15개): 읽는 동안 지도 갱신은 묶음 수보다 적고
+    LOADING_REFRESH_S보다 촘촘하지 않으며, flush 없이도 마지막 세대 자료로 끝난다."""
+    import time
+
+    from evolab.app.lab import history as hs
+
+    lay = meta_for("lander").layout
+    root = tmp_path / "run"
+    rows = write_run(root, [fake_generation(g, lay, pop=3) for g in range(1, 121)])
+
+    class SmallChunks(hs.HistoryLoader):
+        def __init__(self, *a: Any, **k: Any) -> None:
+            super().__init__(*a, chunk_size=8, **k)
+
+    real_load = hs.load_generation
+
+    def slow_load(*a: Any, **k: Any) -> Any:
+        time.sleep(0.004)
+        return real_load(*a, **k)
+
+    monkeypatch.setattr(hs, "HistoryLoader", SmallChunks)
+    monkeypatch.setattr(hs, "load_generation", slow_load)
+    dash = make_dashboard(qtbot, tmp_path, "final.ini")
+    dash.set_watch_meta(meta_for("lander"))
+    dash.resize(1200, 900)
+    dash.show()
+    qtbot.waitExposed(dash)
+    dash.set_page("fun")
+    tile = dash.tile("genemap")
+    seen: list[tuple[float, bool, int]] = []
+    real = tile.refresh
+    monkeypatch.setattr(tile, "refresh", lambda: (seen.append((time.monotonic(), dash.history_loading is not None,
+                                                               len(dash.history))), real())[1])
+    chunks: list[int] = []
+    dash.load_history(root, rows)
+    assert dash._loader is not None
+    dash._loader.chunk.connect(lambda *a: chunks.append(1))
+    assert dash.wait_history(60000)
+    qtbot.waitUntil(lambda: not any(dash.tile(t).dirty for t in dash.tile_order() if dash._in_view(dash.tile(t))))
+    during = [t for t, loading, n in seen if loading and n > 0]
+    assert len(chunks) == 15 and len(during) < len(chunks)
+    assert all(b - a >= D.LOADING_REFRESH_S - 0.02 for a, b in zip(during, during[1:], strict=False))
+    assert not seen[-1][1] and seen[-1][2] == 120
+    assert tile.shown_generation == 120
+
+
+def test_pump_step_paints_a_graph_tile_once(qtbot: QtBot, tmp_path: Path) -> None:
+    """펌프 한 단계는 그래프를 한 번만 그린다: pyqtgraph가 다음 차례로 미뤄 두는 자동 범위·장면 갱신을 repaint 앞에서
+    처리한다(prepare_paint). 미루면 같은 그래프를 다음 차례에 한 번 더 그렸다."""
+    from PySide6.QtCore import QEvent, QObject
+
+    dash = make_dashboard(qtbot, tmp_path)
+    dash.resize(1200, 900)
+    dash.show()
+    qtbot.waitExposed(dash)
+    rows = synthetic_rows(41)
+    dash.set_rows(rows[:40])
+    qtbot.waitUntil(lambda: not any(dash.tile(t).dirty for t in dash.tile_order() if dash._in_view(dash.tile(t))))
+    qtbot.wait(100)
+
+    class Count(QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.n = 0
+
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.Paint:
+                self.n += 1
+            return False
+
+    counter = Count()
+    viewport = dash.tile("diversity").view.viewport()
+    viewport.installEventFilter(counter)
+    dash.add_row(rows[40])
+    qtbot.waitUntil(lambda: not dash.tile("diversity").dirty)
+    qtbot.wait(150)
+    viewport.removeEventFilter(counter)
+    assert counter.n == 1

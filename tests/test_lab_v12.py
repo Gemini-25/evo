@@ -605,6 +605,44 @@ def test_opening_another_run_clears_the_canvas_hud(qtbot: Any, lab: LabView, tmp
     assert lab.canvas.hud == ""
 
 
+def test_opened_run_draws_the_still_scene_on_a_later_turn_only_for_the_current_run(
+        qtbot: Any, lab: LabView, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T39 고침: open_run은 전시 시드 세계(Episode·정적 그림)를 다음 이벤트 루프 차례에 그린다. 그사이 다시 열거나
+    (다른 실행·되감기) 다른 장면이 캔버스를 차지하면 앞 요청은 그리지 않는다."""
+    from evolab.world.physics2d.episode import Episode
+
+    store = train_run(tmp_path / "runs", 2)
+    drawn: list[Any] = []
+    real = lab._show_still_scene
+    monkeypatch.setattr(lab, "_show_still_scene", lambda: (drawn.append(lab.run_dir), real())[1])
+    lab.canvas.world = None
+    assert lab.open_run(store.root)
+    assert drawn == [] and lab.canvas.world is None  # open_run 안에서는 그리지 않는다
+    assert lab.open_run(store.root)  # 다시 열기: 앞 요청은 버린다
+    qtbot.waitUntil(lambda: bool(drawn))
+    qtbot.wait(30)
+    assert drawn == [store.root] and lab.canvas.world is not None
+    assert lab.open_run(store.root)
+    other = Episode(lab.spec, None, lab_view.seeds.display_trial()).geometry()
+    lab.canvas.set_scene(other)  # 다음 차례 전에 다른 장면(끝난 재생 결과 등)이 캔버스를 차지했다
+    qtbot.wait(50)
+    assert drawn == [store.root] and lab.canvas.world is other
+    assert lab.open_run(store.root)  # 다시 열면 그 실행의 전시 세계로
+    qtbot.waitUntil(lambda: len(drawn) == 2)
+    assert lab.canvas.world is not other
+
+
+def test_lab_freezes_long_lived_objects_until_shutdown(qtbot: Any, lab: LabView) -> None:
+    """T39·M4b 고침: 실험실을 만들면 그때 살아 있는 객체를 순환 GC 밖으로 옮기고(전체 수집이 짧게), 닫을 때 되돌린다.
+    지금 플랫폼 정보는 처음 한 번만 계산한다(실행을 열 때마다 uname·WMI를 부르지 않게)."""
+    import gc
+
+    assert gc.get_freeze_count() > 0
+    assert lab_view.platform_now() is lab_view.platform_now()
+    lab.shutdown()
+    assert gc.get_freeze_count() == 0
+
+
 def test_observation_summary_failure_is_a_status_notice_not_a_box(
         qtbot: Any, lab: LabView, tmp_path: Path, message_boxes: list[tuple[str, str]]) -> None:
     """D9: 관찰 기록 요약 실패(notice가 붙은 error)는 학습을 멈추지 않으므로 막는 상자 대신 상태 글 끝줄로, 세대가 와서

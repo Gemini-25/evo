@@ -219,6 +219,7 @@ class _PCAJob(QThread):
         """다시 연 실행을 다 읽은 뒤 모든 세대로 맞추는 축(앞 축의 부호를 따르지 않고 알림도 없음)."""
 
     def run(self) -> None:
+        hs.GUI_PRIORITY.wait(self.isInterruptionRequested)  # 펌프가 그리는 중이면 끝난 뒤에(GIL을 다투지 않게)
         sample = hs.sample_rows(self.blocks, self.max_rows)
         result = hs.randomized_axes(sample) if len(sample) else None
         self.done.emit((self, self.epoch, self.generations, result))

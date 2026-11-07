@@ -466,3 +466,66 @@ def test_loader_stops_when_interrupted(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.wait(20)
     assert got["summary"] is None
     assert [len(c[1]) for c in got["chunks"]] == [8]
+
+
+# ---------------------------------------------------------------------------
+# 화면 스레드 우선(T39 고침): 화면이 무거운 일을 하는 동안 배경 읽기가 쉰다
+def test_gui_priority_busy_quiet_and_limit() -> None:
+    import time
+
+    gp = hs.GuiPriority()
+    assert not gp.is_busy
+    t0 = time.monotonic()
+    gp.wait()
+    assert time.monotonic() - t0 < 0.05  # 한가하면 바로
+    with gp.busy(quiet=10.0):
+        with gp.busy(quiet=0.0):  # 겹쳐 불러도 바깥이 끝날 때까지 바쁨
+            assert gp.is_busy
+        assert gp.is_busy
+        t0 = time.monotonic()
+        gp.wait(limit=0.05)  # 계속 바빠도 limit초 뒤에는 돌아온다(배경 읽기가 굶지 않게)
+        assert 0.04 <= time.monotonic() - t0 < 2.0
+        t0 = time.monotonic()
+        gp.wait(stop=lambda: True, limit=5.0)  # 멈추라고 하면 바로
+        assert time.monotonic() - t0 < 0.5
+    assert gp.is_busy  # 끝난 뒤 quiet초 동안(미뤄 둔 그림)
+    assert not hasattr(gp, "watch_idle")  # quiet는 시간으로만 끝난다(운영체제마다 같게)
+    gp = hs.GuiPriority()
+    with gp.busy(quiet=0.05):
+        pass
+    assert gp.is_busy
+    time.sleep(0.06)
+    assert not gp.is_busy
+    with gp.busy(quiet=0.0):
+        pass
+    assert not gp.is_busy
+
+
+def test_loader_waits_while_the_gui_is_busy(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HistoryLoader는 파일마다 잠깐 자고(LOAD_YIELD_S), 화면이 바쁘면(GUI_PRIORITY.busy) 끝날 때까지(최대
+    GUI_WAIT_MAX_S) 파일을 읽지 않는다. 결과는 쉬지 않고 읽은 것과 같다."""
+    import time
+
+    assert hs.LOAD_YIELD_S > 0 and hs.GUI_WAIT_MAX_S >= 0.2
+    lay = meta_for("lander").layout
+    rows = write_run(tmp_path, [fake_generation(g, lay, pop=3) for g in range(1, 6)])
+    reads: list[float] = []
+    real = hs.load_generation
+
+    def spy(*a: Any, **k: Any) -> Any:
+        reads.append(time.monotonic())
+        return real(*a, **k)
+
+    monkeypatch.setattr(hs, "load_generation", spy)
+    loader = hs.HistoryLoader(tmp_path, rows, lay, tag=3)
+    got = _collect(loader)
+    with hs.GUI_PRIORITY.busy(quiet=0.0):
+        started = time.monotonic()
+        loader.start()
+        time.sleep(0.1)  # 화면 스레드가 바쁘다(이벤트를 처리하지 않음)
+        released = time.monotonic()
+    qtbot.waitUntil(lambda: got["summary"] is not None, timeout=20000)
+    assert len(reads) == 5
+    assert reads[0] >= min(released, started + 0.2)  # 바쁜 동안은 읽지 않았다(기다림 상한 0.25초 전에)
+    entries = [e for c in got["chunks"] for e in c[1]]
+    assert [e.generation for e in entries] == [1, 2, 3, 4, 5] and got["summary"][1]["observed"] == 5
