@@ -68,13 +68,20 @@ def _model_fields(cls: type[BaseModel]) -> tuple[str, ...]:
     return tuple(name for name, f in cls.model_fields.items() if has_model(f.annotation))
 
 
+_FieldRule = tuple[str, str, int, Any]
+"""(파이썬 칸 이름, 파일 칸 이름, 생긴 형식, 기본값)"""
+_ValueRule = tuple[str, object, int]
+"""(파이썬 칸 이름, 값, 생긴 형식)"""
+
+
 @functools.cache
-def _rules(cls: type[BaseModel]) -> tuple[int, tuple[tuple[str, str, int, Any], ...], tuple[tuple[str, object, int], ...]]:
-    """(종류 형식, 칸 규칙 (칸, 파일 이름, 형식, 기본값), 값 규칙 (칸, 값, 형식)). 부모 모델에 등록한 규칙도 따른다."""
+def _rules(cls: type[BaseModel]) -> tuple[int, tuple[_FieldRule, ...], tuple[_ValueRule, ...]]:
+    """(종류 형식, 칸 규칙들, 값 규칙들). 부모 모델에 등록한 규칙도 따른다."""
     kind = max((v for c, v in KIND_SINCE.items() if issubclass(cls, c)), default=1)
     fields = tuple(
-        (name, cls.model_fields[name].alias or name, since, cls.model_fields[name].get_default(call_default_factory=True))
+        (name, f.alias or name, since, f.get_default(call_default_factory=True))
         for (c, name), since in FIELD_SINCE.items() if issubclass(cls, c)
+        for f in (cls.model_fields[name],)
     )
     values = tuple((name, value, since) for (c, name, value), since in VALUE_SINCE.items() if issubclass(cls, c))
     return kind, fields, values
