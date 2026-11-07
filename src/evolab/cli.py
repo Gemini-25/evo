@@ -83,6 +83,14 @@ class _Parser(argparse.ArgumentParser):
         with _korean_argparse():
             return super().format_help()
 
+    def _check_value(self, action: argparse.Action, value: Any) -> None:
+        """고를 수 없는 값 오류를 파이썬 버전과 상관없이 같은 문장으로(3.12.8·3.13부터 argparse는 고를 수 있는 값을
+        따옴표 없이 쓴다). 값과 목록은 repr로 적는다."""
+        if action.choices is not None and value not in action.choices:
+            choices = ", ".join(repr(c) for c in action.choices)
+            text = S.RV2_ARGPARSE_TEXT["invalid choice: %(value)r (choose from %(choices)s)"]
+            raise argparse.ArgumentError(action, text % {"value": value, "choices": choices})
+
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)  # stderr가 None(창 exe)이어도 argparse가 조용히 넘어간다
         self.exit(2, S.RVM_CLI_BAD_ARGS.format(detail=message) + "\n")
