@@ -946,6 +946,87 @@ def test_apply_config_restart_keys_and_clock_rules() -> None:
     assert not switches(rows) and rows[-1]["learner_stall"] == 72
 
 
+def test_enabling_restart_during_qualifying_counts_from_then_for_every_entrant() -> None:
+    """예선 중에 재시작을 켜면(D17) 통과자가 보관 출전자여도 켠 뒤 첫 검증부터 센다(끈 동안 쌓인 정체로 바로 바꾸지 않음)."""
+    # 출전마다 60회(5세대). 검증 점수가 늘 같아 동점이라 출전 1(보관 출전자)이 이긴다. 12세대(출전 3이 도는 중)에 켠다
+    t, _ = fake_trainer(5.0, qualify_entrants=3, qualify_trials=60)
+    steps(t, 12)
+    reserve = t.state.reserve
+    assert reserve is not None
+    assert (t.state.current.index, reserve.record.index, reserve.record.stall) == (2, 0, 36)
+    snap = t.changeable_state()
+    assert t.apply_config({"restart_patience": 24}) == {"restart_patience": 24}
+    assert (t.state.current.ref, t.state.current.ref_at) == (-math.inf, 24)
+    assert (reserve.record.ref, reserve.record.ref_at, reserve.record.best) == (-math.inf, 60, 5.0)
+    t.restore_changeable(snap)  # 저장 실패 등으로 되돌리면 보관 출전자 기록도 되돌아간다
+    assert t.config.restart_patience is None and (reserve.record.ref, reserve.record.ref_at) == (5.0, 24)
+    t.apply_config({"restart_patience": 24})
+    rows = steps(t, 8)
+    # 통과자(출전 1)는 본선 첫 검증(16세대, 자기 시험 72회)부터 24회 뒤(18세대)에 바꾼다. 처음부터 켠 실행은 끈 동안의
+    # 정체까지 세어 16세대에 바로 바꾼다(test_no_restart_during_qualifying_and_winner_keeps_its_clock)
+    assert switches(rows) == [(15, SWITCH_QUALIFY_PICK), (18, SWITCH_RESTART_FRESH)]
+    assert (rows[3]["generation"], rows[3]["learner"], rows[3]["learner_trials"], rows[3]["learner_stall"]) == \
+        (16, 0, 72, 0)
+
+
+HILL_TEXT = (paths.builtin_env_dir() / "hill_car.evoenv").read_text(encoding="utf-8")
+
+
+def hill_text(half: float) -> str:
+    """언덕차의 차체 반길이(몸 수치) 초깃값만 바꾼 환경. 초깃값은 유전자 배치 신호에 들지 않아 학습 중에 바꿀 수 있다."""
+    data = json.loads(HILL_TEXT)
+    assert data["params"][0]["id"] == "half"
+    data["params"][0]["value"] = half
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+@pytest.mark.parametrize(("mode", "change_at"), [("restart", 2), ("qualify", 0)])
+def test_fresh_learners_start_from_the_current_env_body_values(mode: str, change_at: int, tmp_path: Path) -> None:
+    """몸 수치 초깃값만 바꾼 환경으로 바꾼 뒤 처음 상태에서 새로 시작하는 학습 방법(재시작, 다음 예선 출전자)은 새
+    초깃값에서 시작한다. 그래서 바꾼 뒤 어느 체크포인트에서 이어 가도(이어 간 트레이너는 체크포인트의 환경으로 배치를
+    만든다) 끊지 않은 실행과 같다."""
+    over: dict[str, Any] = ({"restart_patience": 24, "restart_from": "fresh"} if mode == "restart"
+                            else {"qualify_entrants": 3, "qualify_trials": 24})
+    config = small_config(checkpoint_every=1, max_generations=10, **over)
+    new_text = hill_text(1.5)
+    old_layout, new_layout = layout_for(compile_env(HILL_TEXT)), layout_for(compile_env(new_text))
+    assert old_layout.signature() == new_layout.signature()
+    assert old_layout.initial().tobytes() != new_layout.initial().tobytes()
+    store = RunStore.create(tmp_path / "runs", "한 번에", {"env_name": "언덕차"}, policy=KEEP_ALL)
+    store.add_env_version(HILL_TEXT, 0)
+    ev = FakeEvaluator(5.0)
+    t = Trainer(HILL_TEXT, config, ev, store)
+    ev.trainer = t
+    steps(t, change_at)
+    # 세션의 환경 교체와 같은 순서: 트레이너 → 체크포인트 → 보호 → run.json 환경 버전 → 사건 줄
+    snap = t.changeable_state()
+    t.replace_env(new_text)
+    assert t.layout.initial().tobytes() == new_layout.initial().tobytes()
+    t.restore_changeable(snap)  # 저장 실패로 되돌리면 배치(초깃값)도 되돌아간다
+    assert t.layout.initial().tobytes() == old_layout.initial().tobytes()
+    t.replace_env(new_text)
+    if change_at:
+        t.checkpoint()
+        store.protect(change_at)
+    store.append_event("env_change", change_at, version=store.add_env_version(new_text, change_at))
+    rows = []
+    t.run(rows.append)
+    fresh = SWITCH_RESTART_FRESH if mode == "restart" else SWITCH_QUALIFY_NEXT
+    first = next(g for g, code in switches(rows) if code == fresh)
+    assert first > change_at + 1  # 바꾼 뒤 체크포인트가 있고 그 뒤에 처음 상태에서 새로 시작한다
+    for g in range(max(1, change_at), first + 1):
+        child = RunStore.open(branch_run(store.root, g, tmp_path / f"분기{g}"))
+        ev2 = FakeEvaluator(5.0)
+        resumed = Trainer.resume(child, ev2)
+        ev2.trainer = resumed
+        assert resumed.layout.initial().tobytes() == new_layout.initial().tobytes()
+        resumed.run()
+        assert strip(child.read_stats()) == strip(store.read_stats()), g
+        assert resumed.learner.best().tobytes() == t.learner.best().tobytes(), g
+        assert next_ask(resumed).tobytes() == next_ask(t).tobytes(), g
+        assert dataclasses.asdict(resumed.state.current) == dataclasses.asdict(t.state.current), g
+
+
 def _train(tmp_path: Path, *extra: str, gens: str = "2") -> tuple[int, list[Path]]:
     out = tmp_path / "runs"
     code = cli.main(["train", str(LANDER), "--seed", "1", "--popsize", "4", "--trials", "1", "--max-generations", gens,
@@ -992,6 +1073,19 @@ def test_cli_rejects_bad_stability_settings_before_creating_a_run(tmp_path: Path
     assert message in err and "Traceback" not in err
 
 
+def test_cli_default_restart_shorter_than_validation_says_how_to_fix(tmp_path: Path,
+                                                                      capsys: pytest.CaptureFixture[str]) -> None:
+    """v1.0에서 되던 --validate-every 25000: 권장 재시작(2만 회)보다 길면 시작하지 않고 고칠 플래그를 알린다."""
+    out = tmp_path / "runs"
+    args = ["train", str(LANDER), "--seed", "1", "--popsize", "4", "--trials", "1", "--max-generations", "1",
+            "--validate-every", "25000", "--workers", "0", "--out", str(out)]
+    assert cli.main(args) == 2 and not out.exists()
+    err = capsys.readouterr().err
+    assert S.TRAIN_RESTART_TOO_SHORT.format(value=20000, every=25000) in err and S.CLI_RESTART_TOO_SHORT_HINT in err
+    assert cli.main([*args, "--no-restart"]) == 0
+    assert cli.main([*args, "--restart", "30000"]) == 0
+
+
 def test_cli_switch_lines_are_printed_at_once(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code, runs = _train(tmp_path, "--qualify", "2", "--qualify-trials", "8", "--restart", "8", gens="5")
     assert code == 0
@@ -1028,9 +1122,19 @@ def test_cli_resume_changes_restart_like_the_lab(tmp_path: Path, capsys: pytest.
     assert kinds.index("resume") < kinds.index("config_change")
     assert 2 in store.read_run_info()["protected_checkpoints"]
     assert store.load_checkpoint(2)[1]["config"]["restart_patience"] == 15000
-    assert S.TRAIN_CONFIG_CHANGED.format(gen=2, changes="restart_patience=15000, restart_from=alternate") in out
+    # 바꾼 설정은 실험실 칸 이름과 화면의 선택 이름으로 알린다(내부 키 이름, None 같은 파이썬 값이 아니라)
+    changed = S.TRAIN_CONFIG_CHANGED.format(gen=2, changes=(
+        f"{S.LAB_RESTART_PATIENCE} 15,000{S.LAB_UNIT_TRIALS.strip()}, "
+        f"{S.LAB_RESTART_FROM} {S.RESTART_FROM_NAMES['alternate']}"))
+    assert changed in out.splitlines()
     # 같은 값이면 바뀐 것이 없어 사건을 남기지 않는다. --no-restart는 끈다.
     assert cli.main(["train", "--resume", str(run), "--workers", "0", "--restart", "15000"]) == 0
     assert len([e for e in store.read_events() if e["kind"] == "config_change"]) == 1
-    assert cli.main(["train", "--resume", str(run), "--workers", "0", "--no-restart", "--max-generations", "4"]) == 0
+    capsys.readouterr()
+    assert cli.main(["train", "--resume", str(run), "--workers", "0", "--no-restart", "--restart-from", "champion",
+                     "--max-generations", "4"]) == 0
     assert store.load_checkpoint()[1]["config"]["restart_patience"] is None
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(S.TRAIN_CONFIG_CHANGED[:4])]
+    assert lines == [S.TRAIN_CONFIG_CHANGED.format(gen=3, changes=(
+        f"{S.LAB_RESTART} {S.TRAIN_STABILITY_OFF}, {S.LAB_RESTART_FROM} {S.RESTART_FROM_NAMES['champion']}"))]
+    assert not any(word in lines[0] for word in ("restart_patience", "restart_from", "None", "="))

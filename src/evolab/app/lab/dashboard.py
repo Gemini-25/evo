@@ -645,12 +645,14 @@ class _Tile(QFrame):
                 x, tip, label, style = want
                 if before is None or before[3] != style:
                     line.setPen(mark_pen(t, style))
+                # 먼저 보인다: 이름표(InfLineLabel)는 숨은 동안 글자·위치를 고치지 않고, 선을 다시 보일 때도 고치지 않는다
+                # (숨겼던 선을 새로 쓰면 이름표가 비거나 앞 표시의 글자가 남는다)
+                line.show()
                 line.setPos(x)
                 line.setToolTip(tip)
                 if self.mark_labels and k == 0 and line.label is not None:
                     # 이름표 글자는 str.format 틀로 쓰이므로 중괄호를 겹친다
                     line.label.setFormat(label.replace("{", "{{").replace("}", "}}"))
-                line.show()
             applied[j] = want
 
     def legend_html(self, i: int | None) -> str:

@@ -173,11 +173,40 @@ def test_single_step_and_resume_request(qtbot: Any, tmp_path: Path) -> None:
 
 
 FAST = {"validation_seeds": 4, "validation_candidates": 1}
+BLAS_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+
+APPLY_REFERENCE = """
+import json, sys
+from evolab import paths
+from evolab.engine.pool import WorkerPool
+from evolab.engine.trainer import TIME_COLUMNS, TrainConfig, Trainer
+
+config, before, changes, after = json.loads(sys.argv[1]), int(sys.argv[2]), json.loads(sys.argv[3]), int(sys.argv[4])
+text = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8")
+with WorkerPool(0) as pool:
+    t = Trainer(text, TrainConfig.from_dict(config), pool)
+    rows = [t.step() for _ in range(before)]
+    t.apply_config(changes)
+    rows += [t.step() for _ in range(after)]
+print(json.dumps([{k: str(v) for k, v in r.items() if k not in TIME_COLUMNS} for r in rows]))
+"""
 
 
-def test_enabling_restart_while_paused_matches_trainer_apply_config(qtbot: Any, tmp_path: Path) -> None:
-    """v1.1: 멈춤 → config 명령으로 자동 재시작을 켬 → 계속한 결과가 같은 세대에 apply_config한 Trainer와 같다."""
-    client, rec = start(qtbot, tmp_path, start_running=False, config={**FAST, "max_generations": 10})
+def test_enabling_restart_while_paused_matches_trainer_apply_config(qtbot: Any, tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.1: 멈춤 → config 명령으로 자동 재시작을 켬 → 계속한 결과가 같은 세대에 apply_config한 Trainer와 같다.
+
+    프로그램은 모든 프로세스에서 BLAS 스레드 1개로 돈다(명세). pytest 프로세스는 numpy를 먼저 불러 스레드 수가
+    다를 수 있으므로(CMA-ES 고윳값 분해 결과가 마지막 자리에서 달라진다) 학습 프로세스와 기준 계산을 모두 1개로 맞춘다.
+    """
+    import os
+    import subprocess
+    import sys
+
+    for name in BLAS_VARS:
+        monkeypatch.setenv(name, "1")
+    config = {**FAST, "max_generations": 10}
+    client, rec = start(qtbot, tmp_path, start_running=False, config=config)
     qtbot.waitUntil(lambda: bool(rec.states()), timeout=30000)
     for n in (2, 3):
         client.send({"type": "step"})
@@ -193,13 +222,13 @@ def test_enabling_restart_while_paused_matches_trainer_apply_config(qtbot: Any, 
     client.shutdown()
     store = RunStore.open(run_dir)
     assert ("config_change", 2) in [(e["kind"], e["generation"]) for e in store.read_events()]
-    with WorkerPool(0) as pool:
-        t = Trainer(LANDER_TEXT, TrainConfig.from_dict({**CONFIG, **FAST, "max_generations": 10}), pool)
-        expect = [t.step() for _ in range(2)]
-        t.apply_config({"restart_patience": 24})
-        expect += [t.step() for _ in range(8)]
+    proc = subprocess.run([sys.executable, "-c", APPLY_REFERENCE, json.dumps({**CONFIG, **config}), "2",
+                           json.dumps({"restart_patience": 24}), "8"],
+                          capture_output=True, text=True, timeout=600, env=dict(os.environ))
+    assert proc.returncode == 0, proc.stderr
+    expect = json.loads(proc.stdout)
     rows = store.read_stats()
-    assert strip(rows) == strip(expect) == strip([g["row"] for g in rec.of("generation")])
+    assert strip(rows) == expect == strip([g["row"] for g in rec.of("generation")])
     assert any(r["switch"] in ("1", "2") for r in rows)  # 켠 뒤 재시작이 실제로 일어났다
 
 

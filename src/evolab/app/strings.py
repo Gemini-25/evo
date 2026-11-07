@@ -1313,3 +1313,5 @@ TRAIN_CONFIG_CHANGED: Final = "설정 변경({gen}세대부터): {changes}"
 # 반복 실행
 CMP_REPEAT_RESTART: Final = "정체하면 새로 시작"
 CMP_REPEAT_QUALIFY_OFF_HINT: Final = "예산이 작아 예선을 껐습니다(예선 {total:,}회가 예산의 절반을 넘음)."
+LAB_STABILITY_HINT_QUALIFY_ONLY: Final = "예선 합계 학습 시험 {total:,}회(약 {qgens}세대)"
+CLI_RESTART_TOO_SHORT_HINT: Final = "--restart 횟수로 늘리거나 --no-restart로 끄세요."

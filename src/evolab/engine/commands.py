@@ -120,6 +120,20 @@ def _stability_text(config: TrainConfig) -> str:
     return S.TRAIN_STABILITY.format(restart=restart, qualify=qualify)
 
 
+def _changes_text(changes: dict[str, Any]) -> str:
+    """이어 할 때 바꾼 재시작 설정(RESUME_LIVE)을 실험실 칸 이름으로. 끔은 '끔', 출발점은 화면의 선택 이름."""
+    parts: list[str] = []
+    for k, v in changes.items():
+        if k == "restart_patience":
+            parts.append(f"{S.LAB_RESTART} {S.TRAIN_STABILITY_OFF}" if v is None
+                         else f"{S.LAB_RESTART_PATIENCE} {v:,}{S.LAB_UNIT_TRIALS.strip()}")
+        elif k == "restart_from":
+            parts.append(f"{S.LAB_RESTART_FROM} {S.RESTART_FROM_NAMES.get(v, v)}")
+        else:  # RESUME_LIVE 밖의 키는 오지 않는다(오면 이름=값으로라도 알린다)
+            parts.append(f"{k}={v}")
+    return ", ".join(parts)
+
+
 def _score_text(value: Any) -> str:
     return f"{value:.1f}" if isinstance(value, (int, float)) and math.isfinite(value) else "-"
 
@@ -204,7 +218,7 @@ def train_command(args: Any) -> int:
                     trainer.checkpoint()
                     store.protect(g)
                     store.append_event("config_change", g, changes=changes)
-                    say(S.TRAIN_CONFIG_CHANGED.format(gen=g, changes=", ".join(f"{k}={v}" for k, v in changes.items())))
+                    say(S.TRAIN_CONFIG_CHANGED.format(gen=g, changes=_changes_text(changes)))
         else:
             if args.env is None:
                 warn(S.TRAIN_NEED_ENV)
@@ -215,6 +229,12 @@ def train_command(args: Any) -> int:
             from evolab.runs.store import RunStore
 
             base_dir = Path(args.out) if args.out else paths.runs_dir()
+            if (getattr(args, "restart", None) is None and not getattr(args, "no_restart", False)
+                    and config.restart_patience is not None and config.restart_patience < config.validate_every):
+                # 재시작을 따로 주지 않았는데 새 실행 권장값이 검증 주기보다 짧다(v1.0에서 되던 명령): 고칠 방법을 알린다
+                warn(S.TRAIN_CANNOT_START.format(reason=S.TRAIN_RESTART_TOO_SHORT.format(
+                    value=config.restart_patience, every=config.validate_every) + " " + S.CLI_RESTART_TOO_SHORT_HINT))
+                return 2
             config.validate()
             problem = qualify_budget_problem(config)
             if problem is not None:  # 예선만으로 예산을 다 쓰는 실행은 시작하지 않는다(폴더도 만들지 않음)

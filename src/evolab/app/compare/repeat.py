@@ -9,8 +9,9 @@
   않는다. 지금 실행이 막 뜨는 중이라 한 세대도 마치지 못했으면 그 빈 실행 폴더는 지운다(묶음에 값이 없는 실행이
   남아 평균 선과 띠를 지우지 않게). 실행이 오류로 끝나거나 평가 오류로 멈추면(되감기 뒤 멈춤) 묶음 전체를 멈추고
   failed로 알린다.
-- RepeatDialog: 환경 파일(내장 예제 + 파일 열기), 학습 방법, 개체 수(담금질은 이웃 수), 시험 횟수, 반복 횟수(기본 5),
-  첫 시드, 정지 조건(최대 시험 횟수 기본 30,000 또는 최대 시간), 워커 수, 묶음 이름.
+- RepeatDialog: 환경 파일(내장 예제 + 파일 열기), 학습 방법, 개체 수(담금질은 이웃 수), 시험 횟수, 정체하면 새로 시작
+  (기본 켬), 반복 횟수(기본 5), 첫 시드, 정지 조건(최대 시험 횟수 기본 30,000 또는 최대 시간), 워커 수, 묶음 이름.
+  설정은 새 실행 권장값(TrainConfig.for_new_run) 위에 폼 값이다. 예선이 예산에 비해 크면(예산 이상이거나 절반 넘음) 끈다.
   학습 방법 목록에는 make_learner가 실제로 받는 방법만 보인다(available_methods). 아직 만들지 않은 방법은
   ValueError·NotImplementedError를 내고, 만드는 중인 모듈은 가져오기나 인자에서 다른 예외를 낼 수 있어 모두 뺀다.
 """
@@ -28,6 +29,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -50,7 +52,7 @@ from evolab import paths
 from evolab.app import strings as S
 from evolab.app.lab.client import TrainingClient
 from evolab.engine.session import SessionRequest
-from evolab.engine.trainer import TrainConfig, make_learner
+from evolab.engine.trainer import TrainConfig, make_learner, qualify_budget_problem
 from evolab.runs.catalog import delete_run
 from evolab.runs.store import RunStore, RunStoreError
 
@@ -97,6 +99,19 @@ def available_methods(layout: Any) -> list[str]:
 def size_key(method: str) -> str:
     """개체 수 칸이 바꾸는 TrainConfig 필드. 담금질은 개체 수를 쓰지 않고 이웃 수를 쓴다."""
     return "sa_neighbors" if method == "sa" else "popsize"
+
+
+def qualify_too_big(config: TrainConfig) -> int | None:
+    """반복 실행에서 끌 예선이면 그 합계 학습 시험(출전 수 × 출전마다 시험), 아니면 None.
+
+    예선이 최대 시험 횟수 이상이거나(qualify_budget_problem) 그 절반을 넘으면 본선에 남는 예산이 너무 적다(설계 11.3).
+    """
+    k, b, m = config.qualify_entrants, config.qualify_trials, config.max_evaluations
+    if k <= 1:
+        return None
+    if qualify_budget_problem(config) is not None or (m is not None and k * b > m / 2):
+        return k * b
+    return None
 
 
 def default_group_name(env_name: str, method: str, first_seed: int, count: int) -> str:
@@ -433,6 +448,11 @@ class RepeatDialog(QDialog):
         self.trials = QSpinBox()
         self.trials.setRange(0, 1000)
         self.trials.setSpecialValueText(S.CMP_REPEAT_TRIALS_ENV)
+        self.restart = QCheckBox(S.CMP_REPEAT_RESTART)  # 새 실행 권장값(자동 재시작)을 쓴다. 끄면 v1.0처럼 한 학습 방법만
+        self.restart.setChecked(True)
+        self.qualify_note = QLabel()  # 새 실행 권장값에서 예선이 켜졌는데 예산이 작아 끌 때만 보인다
+        self.qualify_note.setWordWrap(True)
+        self.qualify_note.hide()
         self.count_spin = QSpinBox()
         self.count_spin.setRange(1, MAX_COUNT)
         self.count_spin.setValue(DEFAULT_COUNT)
@@ -459,6 +479,7 @@ class RepeatDialog(QDialog):
         self.max_minutes.setDecimals(1)
         self.max_minutes.setValue(DEFAULT_MAX_MINUTES)
         self.stop_evals.toggled.connect(self._update_stop)
+        self.max_evaluations.valueChanged.connect(lambda _v: self._update_qualify_note())
 
         from evolab.engine.pool import default_workers
 
@@ -478,6 +499,7 @@ class RepeatDialog(QDialog):
         form.addRow("", self.method_note)
         form.addRow(self.size_label, self.size_spin)
         form.addRow(S.CMP_REPEAT_TRIALS, self.trials)
+        form.addRow("", self.restart)
         form.addRow(S.CMP_REPEAT_COUNT, self.count_spin)
         form.addRow(S.CMP_REPEAT_BASE_SEED, self.base_seed)
         form.addRow("", self.seeds_label)
@@ -487,6 +509,7 @@ class RepeatDialog(QDialog):
         stop.addWidget(self.stop_time, 1, 0)
         stop.addWidget(self.max_minutes, 1, 1)
         form.addRow(S.CMP_REPEAT_STOP, stop)
+        form.addRow("", self.qualify_note)
         form.addRow(S.CMP_REPEAT_WORKERS, self.workers)
         form.addRow(S.CMP_REPEAT_NAME, self.group_name)
 
@@ -606,18 +629,39 @@ class RepeatDialog(QDialog):
         evals = self.stop_evals.isChecked()
         self.max_evaluations.setEnabled(evals)
         self.max_minutes.setEnabled(not evals)
+        self._update_qualify_note()
 
-    # -- 결과 -----------------------------------------------------------------
-    def config(self) -> TrainConfig:
-        """폼의 학습 설정(run_seed는 첫 시드). 값이 잘못되면 TrainerChangeError(ValueError, 한국어)."""
-        m = str(self.method.currentData() or "cmaes")
-        c = TrainConfig(method=m, run_seed=self.base_seed.value())
-        setattr(c, size_key(m), self.size_spin.value())
-        c.trials = self.trials.value() or None
+    def _stop_config(self, c: TrainConfig) -> None:
+        """정지 조건(최대 시험 횟수 또는 최대 시간)을 넣고, 예산에 비해 큰 예선은 끈다."""
         if self.stop_evals.isChecked():
             c.max_evaluations = self.max_evaluations.value()
         else:
             c.max_time = self.max_minutes.value() * 60.0
+        if qualify_too_big(c) is not None:
+            c.qualify_entrants = 1
+
+    def _update_qualify_note(self) -> None:
+        """예선을 끄게 되면 그렇다고 알린다(새 실행 권장값에서 예선이 꺼져 있으면 늘 숨김)."""
+        c = TrainConfig.for_new_run()
+        if self.stop_evals.isChecked():
+            c.max_evaluations = self.max_evaluations.value()
+        total = qualify_too_big(c)
+        self.qualify_note.setText(S.CMP_REPEAT_QUALIFY_OFF_HINT.format(total=total) if total is not None else "")
+        self.qualify_note.setVisible(total is not None)
+
+    # -- 결과 -----------------------------------------------------------------
+    def config(self) -> TrainConfig:
+        """폼의 학습 설정(run_seed는 첫 시드). 값이 잘못되면 TrainerChangeError(ValueError, 한국어).
+
+        바탕은 새 실행 권장값(자동 재시작 등)이고, '정체하면 새로 시작'을 끄면 restart_patience = None(끔)이다.
+        """
+        m = str(self.method.currentData() or "cmaes")
+        c = TrainConfig.for_new_run(method=m, run_seed=self.base_seed.value())
+        setattr(c, size_key(m), self.size_spin.value())
+        c.trials = self.trials.value() or None
+        if not self.restart.isChecked():
+            c.restart_patience = None
+        self._stop_config(c)
         c.validate()
         return c
 

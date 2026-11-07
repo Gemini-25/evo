@@ -12,7 +12,7 @@ import dataclasses
 import gc
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +50,18 @@ from evolab.engine import seeds
 from evolab.engine.pool import default_workers
 from evolab.engine.replay import Replay, agent_geoms, replay
 from evolab.engine.session import SessionRequest
-from evolab.engine.trainer import TrainConfig
+from evolab.engine.trainer import (
+    MAX_QUALIFY_ENTRANTS,
+    NEW_RUN_DEFAULTS,
+    RESTART_FROM,
+    SWITCH_QUALIFY_NEXT,
+    SWITCH_QUALIFY_PICK,
+    SWITCH_RESTART_CHAMPION,
+    SWITCH_RESTART_FRESH,
+    TrainConfig,
+    generation_trials,
+    qualify_budget_problem,
+)
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec.compiled import EnvFileError, EnvSpec
 from evolab.spec.io import compile_env, env_hash
@@ -62,6 +73,13 @@ COLOR_NOW = QColor(255, 120, 40)
 MARK_KINDS = ("resume", "env_change", "config_change", "branch")
 SHUTDOWN_WAIT_S = 120.0
 """창을 닫을 때 이번 세대를 마치고 체크포인트를 남길 때까지 기다리는 시간(큰 개체 수는 세대가 길다)."""
+SHOWN_RESTART_PATIENCE = int(NEW_RUN_DEFAULTS["restart_patience"] or 20000)
+"""자동 재시작을 끈 설정(None)일 때 '정체 판단 학습 시험' 칸에 보이는 값: 체크하면 이 값으로 켠다."""
+OPENED_RUN_CHECKPOINT_KEYS = ("restart_patience", "restart_from")
+"""기록에서 연 실행에서 마지막 체크포인트 값을 쓰는 설정. 멈춘 상태에서 바꾼 자동 재시작 설정은 run.json(시작 때 설정)에
+남지 않고 체크포인트와 사건 줄에만 남는다. 다른 설정은 v1.0처럼 run.json 값을 보인다."""
+SHOWN_QUALIFY_TRIALS = 12000
+"""키가 없는 예전 설정일 때 '출전마다 학습 시험' 칸에 보이는 값(데이터클래스 기본값, 예선 없음이라 쓰이지 않는다)."""
 
 
 def settings_store() -> QSettings:
@@ -258,6 +276,12 @@ class LabView(QWidget):
         self.state = "idle"
         self.generation = 0
         self._spec_cache: dict[str, EnvSpec] = {}
+        self._switch_at: int | None = None
+        """학습 방법을 마지막으로 바꾼(switch > 0) 통계 줄의 번호."""
+        self._switch_note = ""
+        """상태 글 셋째 줄: 마지막 학습 방법 교체 알림(자동 재시작, 예선 다음 출전, 예선 끝)."""
+        self._stopped_line = ""
+        """학습이 끝난(finished) 까닭 줄. 끝난 상태에서 설정을 적용해 상태 글을 다시 만들 때도 붙인다."""
 
         # 재생 상태
         self.view_mode = "live"  # live(관전), fast(고속 챔피언), replay(타임라인·겹쳐 보기)
@@ -465,11 +489,52 @@ class LabView(QWidget):
         sf.addRow(S.LAB_MAX_MINUTES, self.max_minutes)
         sf.addRow(S.LAB_TARGET, self.target)
         sf.addRow(S.LAB_STAGNATION, self.stagnation)
+        lay.addWidget(stop)
+
+        # 학습 안정성(v1.1): 정체하면 새로 시작은 멈춘 학습에도 '적용'하고, 예선은 새 실행에서만 정한다
+        stab = QGroupBox(S.LAB_STABILITY_GROUP)
+        bf = QFormLayout(stab)
+        self.restart_on = QCheckBox(S.LAB_RESTART)
+        self.restart_on.setToolTip(S.LAB_RESTART_TIP)
+        self.restart_on.setChecked(NEW_RUN_DEFAULTS["restart_patience"] is not None)
+        self.restart_patience = _spin(1000, 10**7, SHOWN_RESTART_PATIENCE)
+        self.restart_patience.setSingleStep(1000)
+        self.restart_patience.setGroupSeparatorShown(True)
+        self.restart_patience.setSuffix(S.LAB_UNIT_TRIALS)
+        self.restart_patience.setToolTip(S.LAB_RESTART_TIP)
+        self.restart_from = QComboBox()
+        for key in RESTART_FROM:
+            self.restart_from.addItem(S.RESTART_FROM_NAMES[key], key)
+        self.restart_from.setCurrentIndex(max(0, self.restart_from.findData(NEW_RUN_DEFAULTS["restart_from"])))
+        self.restart_from.setToolTip(S.LAB_RESTART_FROM_TIP)
+        self.qualify_entrants = _spin(1, MAX_QUALIFY_ENTRANTS, int(NEW_RUN_DEFAULTS["qualify_entrants"]),
+                                      special=S.LAB_QUALIFY_OFF)
+        self.qualify_entrants.setToolTip(S.LAB_QUALIFY_TIP)
+        self.qualify_trials = _spin(1000, 10**6, int(NEW_RUN_DEFAULTS["qualify_trials"]))
+        self.qualify_trials.setSingleStep(1000)
+        self.qualify_trials.setGroupSeparatorShown(True)
+        self.qualify_trials.setSuffix(S.LAB_UNIT_TRIALS)
+        self.qualify_trials.setToolTip(S.LAB_QUALIFY_TIP)
+        self.stability_hint = QLabel()
+        self.stability_hint.setWordWrap(True)
+        self.stability_hint.setStyleSheet("color: #8a93a6;")  # 흐린 글(밝은·어두운 테마 공통)
+        bf.addRow(self.restart_on)
+        bf.addRow(S.LAB_RESTART_PATIENCE, self.restart_patience)
+        bf.addRow(S.LAB_RESTART_FROM, self.restart_from)
+        bf.addRow(S.LAB_QUALIFY, self.qualify_entrants)
+        bf.addRow(S.LAB_QUALIFY_TRIALS, self.qualify_trials)
+        bf.addRow(self.stability_hint)
         self.btn_apply = QPushButton(S.LAB_APPLY)
         self.btn_apply.setToolTip(S.LAB_APPLY_TIP)
         self.btn_apply.clicked.connect(self.apply_settings)
-        sf.addRow(self.btn_apply)
-        lay.addWidget(stop)
+        bf.addRow(self.btn_apply)
+        lay.addWidget(stab)
+        # 세대당 학습 시험이 바뀌는 칸(방법, 개체 수, 이웃 수, 시험 수)과 새 칸이 바뀌면 칸 상태·어림 글을 다시 정한다
+        for changed in (self.method.currentIndexChanged, self.popsize.valueChanged, self.sa_neighbors.valueChanged,
+                        self.trials.valueChanged, self.stagnation.valueChanged, self.restart_on.toggled,
+                        self.restart_patience.valueChanged, self.qualify_entrants.valueChanged,
+                        self.qualify_trials.valueChanged):
+            changed.connect(lambda *_a: self._update_stability())
 
         ctl = QGroupBox(S.LAB_CONTROL_GROUP)
         g = QGridLayout(ctl)
@@ -647,9 +712,9 @@ class LabView(QWidget):
         return convert(widget.value())
 
     def config_from_form(self) -> TrainConfig:
-        """설정 칸의 값. 칸이 없는 값(validate_every 등)은 복제한 실행의 설정에서, 아니면 기본값."""
+        """설정 칸의 값. 칸이 없는 값(validate_every 등)은 복제한 실행의 설정에서, 아니면 새 실행 기본값(for_new_run)."""
         method = str(self.method.currentData())
-        base = TrainConfig.from_dict(self._base_config) if self._base_config else TrainConfig()
+        base = TrainConfig.from_dict(self._base_config) if self._base_config else TrainConfig.for_new_run()
         fields = {key: self._form_value(key, widget, convert) for key, widget, convert in (
             ("run_seed", self.seed, _same), ("popsize", self.popsize, _same), ("sigma0", self.sigma, _same),
             ("trials", self.trials, _or_none), ("ga_elites", self.ga_elites, _same),
@@ -657,10 +722,17 @@ class LabView(QWidget):
             ("ga_mutation_sigma", self.ga_mut_sigma, _same), ("ga_sigma_decay", self.ga_decay, _same),
             ("sa_neighbors", self.sa_neighbors, _same), ("sa_step", self.sa_step, _same),
             ("sa_initial_temperature", self.sa_temp, _or_none), ("sa_cooling", self.sa_cooling, _same),
+            ("qualify_entrants", self.qualify_entrants, _same), ("qualify_trials", self.qualify_trials, _same),
         )}
-        c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked(), **fields)
+        c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked(), **fields, **self._restart_fields())
         self._stop_fields(c)
         return c
+
+    def _restart_fields(self) -> dict[str, Any]:
+        """자동 재시작 칸(새 실행, 멈춘 학습에 설정 적용). 체크를 끄면 restart_patience는 None(끔)."""
+        on = self.restart_on.isChecked()
+        return {"restart_patience": self._form_value("restart_patience", self.restart_patience, _same) if on else None,
+                "restart_from": str(self.restart_from.currentData())}
 
     def _stop_fields(self, c: TrainConfig) -> None:
         """정지 조건 칸(새 실행, 멈춘 학습에 설정 적용)."""
@@ -707,6 +779,17 @@ class LabView(QWidget):
         setv(self.max_minutes, "max_time", 0.0, scale=60.0)
         setv(self.target, "target_score", self.target.minimum())
         setv(self.stagnation, "stagnation_generations", 0)
+        # 학습 안정성: 키가 없는 예전(v1.0) 설정은 자동 재시작·예선 없이 돈 실행이다(데이터클래스 기본값 = 끔)
+        patience = c.get("restart_patience")
+        self.restart_on.setChecked(patience is not None)
+        if patience is None:
+            # 끔은 체크 상자가 나타낸다. 칸에는 켤 때 쓸 값을 두고 원래 값(None)으로 붙잡지 않는다(체크하면 칸 값으로 켠다)
+            self.restart_patience.setValue(SHOWN_RESTART_PATIENCE)
+        else:
+            setv(self.restart_patience, "restart_patience", SHOWN_RESTART_PATIENCE)
+        self.restart_from.setCurrentIndex(max(0, self.restart_from.findData(c.get("restart_from", "fresh"))))
+        setv(self.qualify_entrants, "qualify_entrants", 1)
+        setv(self.qualify_trials, "qualify_trials", SHOWN_QUALIFY_TRIALS)
 
     # ------------------------------------------------------------------
     # 학습 시작·조작
@@ -719,6 +802,10 @@ class LabView(QWidget):
             config.validate()
         except ValueError as exc:
             QMessageBox.warning(self, S.LAB_CHANGE_FAILED, str(exc))
+            return False
+        problem = qualify_budget_problem(config)  # 예선만으로 최대 시험 횟수를 다 쓰면 시작하지 않는다
+        if problem is not None:
+            QMessageBox.warning(self, S.LAB_CHANGE_FAILED, problem)
             return False
         self._reset_run_view()
         self.state = "starting"
@@ -776,11 +863,13 @@ class LabView(QWidget):
             return
         c = TrainConfig()
         self._stop_fields(c)
-        # 칸에 있는 정지 조건은 다 보낸다(바뀌지 않은 값은 학습 프로세스가 기록하지 않는다)
+        # 칸에 있는 정지 조건과 자동 재시작 설정은 다 보낸다(바뀌지 않은 값은 학습 프로세스가 기록하지 않는다).
+        # 예선 설정은 실행 처음에만 뜻이 있어 보내지 않는다(학습 중에는 칸도 잠근다).
         changes = {
             "max_generations": c.max_generations, "max_evaluations": c.max_evaluations, "max_time": c.max_time,
             "target_score": c.target_score, "stagnation_generations": c.stagnation_generations,
             "trials": self._form_value("trials", self.trials, _or_none),
+            **self._restart_fields(),
         }
         self.client.send({"type": "config", "changes": changes})
 
@@ -838,6 +927,8 @@ class LabView(QWidget):
         self.rows = []
         self.events = []
         self.champion = None
+        self._switch_at = None
+        self._switch_note = ""
         self.queue.clear()
         self.playing = None
         self.generation = 0
@@ -856,6 +947,10 @@ class LabView(QWidget):
     def _adopt_run(self, msg: dict[str, Any]) -> None:
         self.run_dir = Path(msg["run_dir"])
         self.run_info = dict(msg.get("run_info") or {})
+        if msg.get("config"):
+            # 지금 학습이 쓰는 설정(이어 간 실행이면 run.json 뒤에 멈춘 상태에서 바꾼 값이 체크포인트에 있다).
+            # 상태 글의 예선·자동 재시작 값은 여기서 읽고, 설정을 적용하면 _on_applied가 고친다.
+            self.run_info["config"] = {**(self.run_info.get("config") or {}), **msg["config"]}
         self.env_text = str(msg["env_text"])
         self.spec = compile_env(self.env_text)
         self.layout = GenomeLayout.from_dict(msg["layout"]) if msg.get("layout") else layout_for(self.spec)
@@ -863,6 +958,10 @@ class LabView(QWidget):
         self.champion = msg.get("champion")
         self.rows = list(msg.get("stats") or [])
         self.events = list(msg.get("events") or [])
+        # 통계 전체를 받았으면 마지막 학습 방법 교체 줄로 알림을 다시 만든다
+        self._switch_at = next((i for i in range(len(self.rows) - 1, -1, -1)
+                                if (_int_value(self.rows[i].get("switch")) or 0) > 0), None)
+        self._switch_note = switch_note(self.rows, self._switch_at) if self._switch_at is not None else ""
         self._spec_cache.clear()
         self.env_label.setText(f"{self.spec.file.name}\n{self.run_dir}")
         self._form_from_config(msg.get("config") or {})
@@ -926,6 +1025,7 @@ class LabView(QWidget):
         row = msg["row"]
         self.generation = int(msg["generation"])
         self.rows.append(row)
+        self._note_switch()
         self.dashboard.add_row(row)
         if msg.get("champion") is not None:
             self.champion = msg["champion"]
@@ -955,7 +1055,8 @@ class LabView(QWidget):
         self._update_status()
         if self.state == "finished":
             reason = S.TRAIN_STOP_REASONS.get(str(msg.get("reason")), str(msg.get("reason")))
-            self.status.setText(self.status.text() + "\n" + S.LAB_STOPPED_BECAUSE.format(reason=reason))
+            self._stopped_line = S.LAB_STOPPED_BECAUSE.format(reason=reason)
+            self.status.setText(self.status.text() + "\n" + self._stopped_line)
         self._update_buttons()
 
     def _on_applied(self, msg: dict[str, Any]) -> None:
@@ -976,6 +1077,10 @@ class LabView(QWidget):
             self.env_text = str(msg["env_text"])
             self.spec = compile_env(self.env_text)
             self._spec_cache.clear()
+        # 상태 글을 바뀐 설정(정체 판단 시험, 자동 재시작 끔·켬)으로 다시 만든다: 멈춘 동안에는 다음 세대 알림이 오지 않는다
+        self._update_status()
+        if self.state == "finished" and self._stopped_line:
+            self.status.setText(self.status.text() + "\n" + self._stopped_line)
         self.status.setText(self.status.text() + "\n" + S.LAB_CHANGE_DONE.format(gen=gen))
 
     def _on_failed(self, message: str, fatal: bool) -> None:
@@ -1004,9 +1109,81 @@ class LabView(QWidget):
             champ_text, evals = "-", 0
         text = S.LAB_STATUS.format(state=S.LAB_STATE_NAMES.get(self.state, self.state), gen=self.generation,
                                    evals=evals, champ=champ_text)
+        learner = self._learner_status(last)
+        if learner:
+            text += "\n" + learner
+        if self._switch_note:
+            text += "\n" + self._switch_note
         if getattr(self, "platform_warning", None):
             text += "\n" + S.LAB_OTHER_PLATFORM.format(what=", ".join(self.platform_warning))
         self.status.setText(text)
+
+    def _learner_status(self, row: Mapping[str, Any]) -> str | None:
+        """상태 글 둘째 줄: 예선 중이면 출전 번호와 출전 시험, 본선이면 시도 번호와 정체(재시작 시계).
+
+        v1.1 학습 방법 열이 있는 통계 줄만(예전 열 머리로 시작한 실행은 None). 값은 그 세대를 만든 학습 방법 기준이고,
+        예선 출전 수·출전마다 시험·정체 판단 시험은 지금 학습 설정(run_info의 config)에서 읽는다.
+        """
+        values = [_int_value(row.get(k)) for k in ("learner", "learner_trials", "learner_stall", "restarts",
+                                                    "qualifying")]
+        if any(v is None for v in values):
+            return None
+        learner, trials, stall, restarts, qualifying = values
+        config = self.run_info.get("config") or {}
+        if qualifying:
+            return S.LAB_STATUS_QUALIFY.format(n=learner + 1, k=_int_value(config.get("qualify_entrants")) or 1,
+                                               t=trials, b=_int_value(config.get("qualify_trials")) or 0)
+        patience = _int_value(config.get("restart_patience"))
+        if patience is None:
+            return S.LAB_STATUS_ATTEMPT_OFF.format(n=restarts + 1)
+        return S.LAB_STATUS_ATTEMPT.format(n=restarts + 1, stall=stall, p=patience)
+
+    def _note_switch(self) -> None:
+        """방금 받은 통계 줄이 학습 방법을 바꿨으면(switch > 0) 알림을 정한다. 바로 앞 줄이 교체였으면 다시 만든다
+        (예선 끝 알림의 통과자 번호는 다음 줄의 learner로 확인한다)."""
+        i = len(self.rows) - 1
+        if (_int_value(self.rows[i].get("switch")) or 0) > 0:
+            self._switch_at = i
+        elif self._switch_at is None or self._switch_at != i - 1:
+            return
+        self._switch_note = switch_note(self.rows, self._switch_at)
+
+    def _update_stability(self) -> None:
+        """학습 안정성 칸의 켜짐(예선 칸은 학습 중 잠금, 재시작 칸은 늘 켜 두고 '적용'은 멈췄을 때만)과 어림 글."""
+        active = self.client.active
+        self.restart_patience.setEnabled(self.restart_on.isChecked())
+        self.qualify_entrants.setEnabled(not active)
+        self.qualify_trials.setEnabled(not active and self.qualify_entrants.value() > 1)
+        self.stability_hint.setText(self.stability_hint_text())
+
+    def stability_hint_text(self) -> str:
+        """칸 값으로 어림한 예선 합계와 정체 판단까지의 세대 수(학습 방법 하나의 세대당 학습 시험 기준).
+
+        정체 멈춤(N세대)이 자동 재시작보다 먼저 오면 덧붙여 알린다. 환경이 없거나 둘 다 끄면 빈 글.
+        """
+        if self.spec is None:
+            return ""
+        c = self.config_from_form()
+        try:
+            per = generation_trials(c, self.spec)
+        except (TypeError, ValueError):
+            return ""
+        if per <= 0:
+            return ""
+        k, b, p = c.qualify_entrants, c.qualify_trials, c.restart_patience
+        rgens = math.ceil(p / per) if p is not None else 0
+        if k > 1:
+            qualify = {"total": k * b, "qgens": k * math.ceil(b / per)}
+            text = (S.LAB_STABILITY_HINT.format(rgens=rgens, **qualify) if p is not None
+                    else S.LAB_STABILITY_HINT_QUALIFY_ONLY.format(**qualify))
+        elif p is not None:
+            text = S.LAB_STABILITY_HINT_NO_QUALIFY.format(rgens=rgens)
+        else:
+            return ""
+        stop = c.stagnation_generations
+        if p is not None and stop is not None and stop * per < p:
+            text += S.LAB_STABILITY_STOP_FIRST.format(stop=stop)
+        return text
 
     def _update_buttons(self) -> None:
         active = self.client.active
@@ -1026,6 +1203,7 @@ class LabView(QWidget):
                   self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
                   self.sa_neighbors, self.sa_step, self.sa_temp, self.sa_cooling):
             w.setEnabled(not active)
+        self._update_stability()  # 예선 칸(qualify_entrants, qualify_trials)도 학습 중이면 끈다
         has_gen = self.generation > 0 and self.run_dir is not None
         self.btn_timeline.setEnabled(has_gen)
         self.btn_versus.setEnabled(has_gen)
@@ -1367,8 +1545,9 @@ class LabView(QWidget):
                 data = store.load_champion(gens[-1], "champion")
                 champion = {"genome": data["genome"], "score": float(data.get("score", np.nan)), "generation": gens[-1]}
             stats = store.read_stats()
+            config = {**(info.get("config") or {}), **_checkpoint_settings(store, OPENED_RUN_CHECKPOINT_KEYS)}
             msg = {"run_dir": str(run_dir), "run_info": info, "env_text": text, "generation": len(stats),
-                   "config": info.get("config", {}), "layout": info.get("layout"), "stats": stats,
+                   "config": config, "layout": info.get("layout"), "stats": stats,
                    "events": store.read_events(), "champion": champion}
         except (RunStoreError, OSError, KeyError, IndexError, ValueError, EnvFileError) as exc:
             QMessageBox.warning(self, S.LAB_ERROR_TITLE, str(exc))
@@ -1400,6 +1579,78 @@ class LabView(QWidget):
                 th.wait()
         finally:
             self._closing = False
+
+
+def _checkpoint_settings(store: Any, keys: Sequence[str]) -> dict[str, Any]:
+    """마지막 체크포인트 설정에서 keys 값(있는 것만). 설정을 바꾸면 늘 그 세대 체크포인트를 남긴 뒤 사건 줄을 쓰므로
+    마지막 체크포인트가 지금 설정이다. 사건 줄로 되짚지 않는다: 앞 체크포인트에서 이어 가도 사건 줄은 지우지 않는다.
+
+    체크포인트가 없거나 읽을 수 없으면 빈 dict(run.json 값으로 보인다. 깨진 체크포인트는 이어 갈 때 알린다).
+    """
+    from evolab.runs.store import RunStoreError
+
+    try:
+        gens = store.checkpoints()
+        if not gens:
+            return {}
+        _, d = store.load_checkpoint(gens[-1])
+    except (RunStoreError, OSError):
+        return {}
+    config = d.get("config")
+    if not isinstance(config, dict):
+        return {}
+    return {k: config[k] for k in keys if k in config}
+
+
+def switch_note(rows: Sequence[Mapping[str, Any]], i: int) -> str:
+    """i번째 통계 줄 끝에 일어난 학습 방법 교체 알림(명령줄과 같은 문장). 교체가 없는 줄이면 빈 글.
+
+    값은 학습 프로세스가 보낸 줄(숫자)이든 stats.csv에서 읽은 줄(글자)이든 같다. 예선 끝(switch 4)의 통과자는 다음 줄의
+    learner다. 다음 줄이 아직 없으면 출전이 끝난 줄(switch 3·4)의 learner_best 가운데 첫 최댓값으로 정한다(엔진의
+    선정 규칙: 출전자 검증 최고점, 동점이면 앞 번호). 알림의 점수는 통과자가 출전을 끝냈을 때의 검증 최고점이다.
+    """
+    row = rows[i]
+    code = _int_value(row.get("switch")) or 0
+    gen = _int_value(row.get("generation"))
+    learner = _int_value(row.get("learner")) or 0
+    if code in (SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION):
+        where = S.RESTART_FROM_NAMES_SHORT["champion" if code == SWITCH_RESTART_CHAMPION else "fresh"]
+        return S.TRAIN_SWITCH_RESTART.format(gen=gen, stall=_int_value(row.get("learner_stall")) or 0, where=where,
+                                             n=(_int_value(row.get("restarts")) or 0) + 2)
+    if code == SWITCH_QUALIFY_NEXT:
+        return S.TRAIN_SWITCH_QUALIFY_NEXT.format(gen=gen, n=learner + 1, score=_score_text(row.get("learner_best")),
+                                                  next=learner + 2)
+    if code != SWITCH_QUALIFY_PICK:
+        return ""
+    ends: dict[int, float] = {}  # 출전 번호(learner) → 그 출전이 끝난 줄의 검증 최고점(없으면 -inf)
+    for r in rows[: i + 1]:
+        if _int_value(r.get("switch")) in (SWITCH_QUALIFY_NEXT, SWITCH_QUALIFY_PICK):
+            best = _float_value(r.get("learner_best"))
+            ends.setdefault(_int_value(r.get("learner")) or 0, best if best is not None else -math.inf)
+    winner = _int_value(rows[i + 1].get("learner")) if i + 1 < len(rows) else None
+    if winner is None:
+        winner = max(sorted(ends), key=lambda k: ends[k]) if ends else learner  # max는 같은 값이면 앞의 것
+    return S.TRAIN_SWITCH_QUALIFY_PICK.format(gen=gen, winner=winner + 1, score=_score_text(ends.get(winner)))
+
+
+def _int_value(v: Any) -> int | None:
+    """통계 값(숫자 또는 글자)을 정수로. 빈칸·없는 열·숫자가 아니면 None."""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _float_value(v: Any) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _score_text(v: Any) -> str:
+    x = _float_value(v)
+    return f"{x:.2f}" if x is not None and math.isfinite(x) else "-"
 
 
 def _same(v: Any) -> Any:

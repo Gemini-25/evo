@@ -115,6 +115,11 @@ def shown_x(tile: Any, plot_index: int = 0) -> list[float]:
     return [x for x, _ in shown(tile, plot_index)]
 
 
+def drawn_labels(tile: Any) -> list[tuple[float, str]]:
+    """보이는 세로선 (가로축 값, 실제로 그려진 이름표 글자), 가로축 순. label.format(틀)이 아니라 글자 칸을 본다."""
+    return sorted((line.value(), line.label.textItem.toPlainText()) for line in tile._mark_pools[0] if line.isVisible())
+
+
 def line_at(tile: Any, x: float, plot_index: int = 0) -> Any:
     found = [line for line in tile._mark_pools[plot_index] if line.isVisible() and line.value() == x]
     assert len(found) == 1, (x, found)
@@ -176,10 +181,34 @@ def test_switch_marks_generations_labels_pens_and_tips(qtbot: QtBot, tmp_path: P
     trend = dash.tile("trend")
     labels = [line_at(trend, x).label.format for x in (3.0, 5.0, 6.0)]
     assert labels == [S.DASH_MARK_LABELS[k] for k in ("restart", "qualify_next", "qualify_pick")]
+    assert [x for x, _ in drawn_labels(trend)] == [3.0, 5.0, 6.0] and [t for _, t in drawn_labels(trend)] == labels
     # 처음부터 일곱 줄을 한 번에 열어도 같다
     again = make_dashboard(qtbot, tmp_path, "again.ini")
     again.set_rows(rows)
     assert shown(again.tile("trend")) == shown(trend)
+
+
+def test_mark_labels_are_drawn_on_lines_shown_later_and_reused(qtbot: QtBot, tmp_path: Path) -> None:
+    """pyqtgraph 이름표는 숨은 선에 쓴 글자를 그리지 않고, 선을 다시 보일 때도 고치지 않는다. 학습 중에 더한 사건 선,
+    자동 재시작으로 늘어난 선, 다른 실행을 열어 다시 쓰는 선에도 제 이름표가 그려진다."""
+    names = S.DASH_MARK_LABELS
+    dash = make_dashboard(qtbot, tmp_path)
+    trend = dash.tile("trend")
+    rows = switch_rows()
+    dash.set_rows(rows[:2])
+    dash.set_marks([(1, "resume")])  # 실험실의 '적용' 뒤(_update_marks)처럼 학습 중에 더한 사건
+    assert drawn_labels(trend) == [(1.0, names["resume"])]
+    dash.add_row(rows[2])  # 3세대 끝 자동 재시작: 선이 하나 늘어난다
+    assert drawn_labels(trend) == [(1.0, names["resume"]), (3.0, names["restart"])]
+    dash.set_marks([(1, "resume"), (2, "config_change")])
+    assert drawn_labels(trend) == [(1.0, names["resume"]), (2.0, names["config_change"]), (3.0, names["restart"])]
+    # 다른 실행을 열 때(실험실 순서: 비우기 → 사건 없음 → 통계 줄): 숨겼던 선을 다시 써도 앞 표시의 글자가 남지 않는다
+    dash.clear()
+    dash.set_marks([])
+    assert drawn_labels(trend) == []
+    dash.set_rows(stability_rows(200, entrants=1))
+    assert [(g, k) for g, k, _ in dash.auto_marks] == [(80, "restart"), (140, "restart")]
+    assert drawn_labels(trend) == [(80.0, names["restart"]), (140.0, names["restart"])]
 
 
 def test_champion_restart_tip_and_csv_strings(qtbot: QtBot, tmp_path: Path) -> None:

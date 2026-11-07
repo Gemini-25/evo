@@ -133,7 +133,8 @@ class TrainConfig:
     restart_patience: int | None = None
     """지금 학습 방법의 검증 최고점이 그 학습 방법의 학습 시험 이만큼 동안 오르지 않으면 새 학습 방법으로 바꾼다. None = 끔."""
     restart_from: str = "fresh"
-    """fresh: 처음 유전자(몸 초깃값, 뇌 0). champion: 챔피언 유전자. alternate: 홀수 번째 fresh, 짝수 번째 champion."""
+    """fresh: 처음 유전자(지금 환경의 몸 초깃값, 뇌 0). champion: 챔피언 유전자.
+    alternate: 홀수 번째 fresh, 짝수 번째 champion."""
     qualify_entrants: int = 1
     """예선 출전 수. 1 = 예선 없음. 2..MAX_QUALIFY_ENTRANTS면 처음에 출전자마다 qualify_trials씩 차례로 돌린다."""
     qualify_trials: int = 12000
@@ -631,8 +632,8 @@ class Trainer:
             self.learner, s.current, s.reserve, s.qualifying = learner, rec, None, False
             s.improved_generation = max(s.improved_generation, s.generation)  # 정체 멈춤은 여기서부터 센다
             return
-        x0 = s.champion.genome.copy() if code == SWITCH_RESTART_CHAMPION and s.champion.genome is not None \
-            else self.layout.initial()
+        champion = s.champion.genome
+        x0 = champion.copy() if code == SWITCH_RESTART_CHAMPION and champion is not None else self.layout.initial()
         self._new_learner(x0)
         s.restarts += 1
 
@@ -645,10 +646,13 @@ class Trainer:
         s.learners = idx + 1
         s.current = LearnerRecord(index=idx)
 
-    def _rearm(self) -> None:
-        """재시작 기준점을 다시 잡는다(재시작을 켤 때, 환경 버전이 바뀔 때). 다음 검증부터 다시 센다."""
-        cur = self.state.current
-        cur.ref, cur.ref_at = -math.inf, cur.trials
+    def _rearm(self, record: LearnerRecord | None = None) -> None:
+        """재시작 기준점을 다시 잡는다(재시작을 켤 때, 환경 버전이 바뀔 때). 다음 검증부터 다시 센다.
+
+        record가 없으면 지금 학습 방법의 기록(재시작을 켤 때는 예선의 보관 출전자 기록도 이것으로 다시 잡는다).
+        """
+        rec = self.state.current if record is None else record
+        rec.ref, rec.ref_at = -math.inf, rec.trials
 
     def _stats_row(
         self, gen: int, X: np.ndarray, agg: np.ndarray, res: EvalResult, rep: int, validated: float | None,
@@ -735,21 +739,29 @@ class Trainer:
             cur.validations = cur.trials // self.config.validate_every
         if was_off and self.config.restart_patience is not None:
             # 끔 → 켬: 기준점을 다시 잡아 켠 뒤 첫 검증부터 센다(오래 정체한 실행을 켜자마자 바꾸지 않게,
-            # 통계 없이도 이어하기·재현이 같게)
+            # 통계 없이도 이어하기·재현이 같게). 예선 중이면 보관 출전자도 다시 잡는다: 통과자는 보관 출전자일 때가
+            # 많은데, 끈 동안 쌓인 정체로 본선 첫 세대에 바로 바뀌면 안 된다(누가 이기든 켠 뒤부터 센다)
             self._rearm()
+            if self.state.reserve is not None:
+                self._rearm(self.state.reserve.record)
         return done
 
     def changeable_state(self) -> dict[str, Any]:
         """설정 변경·환경 교체를 되돌릴 때 쓰는 사본(저장에 실패하면 트레이너를 그대로 돌려놓는다)."""
+        s = self.state
         return {"config": TrainConfig.from_dict(self.config.to_dict()), "env_text": self.env_text, "spec": self.spec,
-                "env_version": self.env_version, "trials": self.trials, "how": self.how,
-                "current": dataclasses.replace(self.state.current)}
+                "env_version": self.env_version, "layout": self.layout, "trials": self.trials, "how": self.how,
+                "current": dataclasses.replace(s.current),
+                "reserve_record": None if s.reserve is None else dataclasses.replace(s.reserve.record)}
 
     def restore_changeable(self, snap: dict[str, Any]) -> None:
         self.config = snap["config"]
         self.env_text, self.spec, self.env_version = snap["env_text"], snap["spec"], snap["env_version"]
+        self.layout = snap["layout"]
         self.trials, self.how = snap["trials"], snap["how"]
         self.state.current = dataclasses.replace(snap["current"])
+        if self.state.reserve is not None and snap["reserve_record"] is not None:
+            self.state.reserve.record = dataclasses.replace(snap["reserve_record"])
 
     def replace_env(self, env_text: str) -> str:
         """환경을 바꾼다(유전자 배치, 점수 블록, 종료 조건 목록이 같아야 한다). 새 환경 버전 id(해시)를 돌려준다.
@@ -776,6 +788,10 @@ class Trainer:
             self._rearm()
         self.env_text = env_text
         self.spec = spec
+        # 새 환경의 배치를 쓴다. 신호(signature)가 같아 학습 상태·체크포인트·평가는 그대로이고, 몸 수치 초깃값만
+        # 달라질 수 있다: 처음 상태에서 새로 시작하는 학습 방법과 다음 예선 출전자의 출발점(layout.initial())이
+        # 지금 환경을 따라야, 그 뒤 체크포인트에서 이어 간 트레이너(체크포인트의 환경으로 배치를 만든다)와 같다
+        self.layout = layout
         self.env_version = version
         self.trials = trials_for(spec, self.config)
         self.how = self.config.aggregate or spec.file.evaluation.aggregate
