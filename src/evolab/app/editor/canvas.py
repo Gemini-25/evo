@@ -762,7 +762,6 @@ class _SceneBuilder:
                 self.scene.badges.append(BadgeItem(ref, "motor", None, str(a.get("joint"))))
 
     def _sensors(self) -> None:
-        ev = self.ev
         ep_rays: dict[str, list[float]] = {}
         if self.ep is not None:
             from evolab.spec import model as m

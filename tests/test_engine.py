@@ -1,6 +1,5 @@
 """M2: 시드, 묶음 평가, 워커 풀, Trainer의 결정성과 이어하기."""
 
-import copy
 import json
 import subprocess
 import sys

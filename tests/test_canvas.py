@@ -17,7 +17,7 @@ from evolab.engine import seeds
 from evolab.engine.evaluate import Trajectory, evaluate
 from evolab.policy.genome import layout_for
 from evolab.spec.io import load_env
-from evolab.world.physics2d.episode import BodyGeom, Episode, ShapeGeom, WorldGeometry
+from evolab.world.physics2d.episode import Episode, ShapeGeom, WorldGeometry
 
 W, H = 1280, 720
 DT = 1.0 / 60.0

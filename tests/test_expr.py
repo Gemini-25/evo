@@ -19,7 +19,7 @@ import pytest
 
 from evolab.app import strings as S
 from evolab.scoring import expr as E
-from evolab.scoring.expr import Compiled, ExprError, Sym, compile_expr, formula_body, is_formula
+from evolab.scoring.expr import ExprError, Sym, compile_expr, formula_body, is_formula
 
 HANGUL = re.compile(r"[가-힣]")
 EXPR_SOURCE = Path(E.__file__)
