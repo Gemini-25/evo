@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QKeyEvent, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QButtonGroup,

@@ -63,8 +63,8 @@ from evolab.spec.compiled import Issue
 _MISSING = object()
 _NONE = type(None)
 _ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REF_RE = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_.가-힣]*$")
-_MODEL_ID_RE = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_가-힣]*$")
+_REF_RE = re.compile(str(get_args(m.Ref)[1].pattern))  # 모델과 같은 규칙(한글 id 허용)
+_MODEL_ID_RE = re.compile(str(get_args(m.Id)[1].pattern))
 _PARAM_REF_RE = re.compile(r"=\s*p\.([A-Za-z_][A-Za-z0-9_]*)\s*")
 ISSUE_COLOR = "#d9534f"
 
