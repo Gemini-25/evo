@@ -16,7 +16,13 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
+"""환경 파일 형식 번호. 1: v1.x. 2: v2.0(정해진 움직임 물체, 장애물 줄, 점프 추진기, 공기역학, 날개 모양, 모양별 밀도).
+
+칸·종류·값마다 생긴 형식을 spec/io.py의 FIELD_SINCE·KIND_SINCE·VALUE_SINCE에 적고, 저장과 해시는 그 내용을 담을 수
+있는 가장 낮은 형식으로 한다(v1 기능만 쓴 파일은 v1.x가 쓴 글과 글자까지 같다). 새 칸은 반드시 다음 형식 번호로
+등록한다(tests/test_format_v2.py가 지킨다).
+"""
 
 Id = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*$", max_length=40)]
 Ref = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_.\uac00-\ud7a3]*$", max_length=80)]
@@ -85,18 +91,24 @@ class Box(_Model):
     h: Num
     offset: Vec2 = (0.0, 0.0)
     angle: Num = 0.0
+    density: Num | None = None
+    """이 모양만 따로 쓰는 밀도. 비우면 물체 재질의 밀도. 작고 무거운 추로 무게 중심을 옮길 때 쓴다(형식 2)."""
 
 
 class Circle(_Model):
     kind: Literal["circle"]
     r: Num
     offset: Vec2 = (0.0, 0.0)
+    density: Num | None = None
+    """이 모양만 따로 쓰는 밀도. 비우면 물체 재질의 밀도. 작고 무거운 추로 무게 중심을 옮길 때 쓴다(형식 2)."""
 
 
 class Poly(_Model):
     kind: Literal["poly"]
     points: list[Vec2] = Field(min_length=3, max_length=64)
     """오목해도 된다. 만들 때 볼록 조각으로 나눈다."""
+    density: Num | None = None
+    """이 모양만 따로 쓰는 밀도. 비우면 물체 재질의 밀도. 작고 무거운 추로 무게 중심을 옮길 때 쓴다(형식 2)."""
 
 
 class Radial(_Model):
@@ -104,6 +116,8 @@ class Radial(_Model):
     radii: list[Num] = Field(min_length=3, max_length=32)
     """중심에서 같은 각도 간격으로 뻗은 반지름들. 늘 올바른 모양이라 진화하는 차체에 쓴다."""
     angle: Num = 0.0
+    density: Num | None = None
+    """이 모양만 따로 쓰는 밀도. 비우면 물체 재질의 밀도. 작고 무거운 추로 무게 중심을 옮길 때 쓴다(형식 2)."""
 
 
 class Chain(_Model):
@@ -113,7 +127,68 @@ class Chain(_Model):
     radius: float = Field(default=0.05, ge=0.0)
 
 
-Shape = Annotated[Union[Box, Circle, Poly, Radial, Chain], Field(discriminator="kind")]
+class Wing(_Model):
+    """날개 모양(형식 2): 꼭짓점 넷(앞전, 위, 뒷전, 아래, 반시계)인 다각형.
+
+    뒷전 = le - chord x (cos angle, sin angle). 시위 가운데에서 법선 (-sin angle, cos angle) 쪽으로 위 꼭짓점은
+    chord x (camber + thick / 2), 아래 꼭짓점은 chord x (camber - thick / 2)만큼 떨어진다. thick > 0이면 어떤 값에서도
+    꼬이지 않는 단순 다각형이라 몸 수치로 진화하는 날개에 쓴다.
+    """
+
+    kind: Literal["wing"]
+    le: Vec2 = (0.0, 0.0)
+    """앞전(공기를 먼저 만나는 앞쪽 끝), 물체 좌표."""
+    chord: Num = 1.0
+    """시위 길이: 앞전에서 뒷전까지(m)."""
+    angle: Num = 0.0
+    """붙임각(라디안). 양수면 앞전이 들린다."""
+    thick: Num = 0.04
+    """두께(시위 길이에 대한 비율)."""
+    camber: Num = 0.0
+    """휨(시위 길이에 대한 비율). 양수면 위로 휜다."""
+    density: Num | None = None
+    """이 모양만 따로 쓰는 밀도. 비우면 물체 재질의 밀도."""
+
+
+Shape = Annotated[Union[Box, Circle, Poly, Radial, Chain, Wing], Field(discriminator="kind")]
+
+
+class PathMotion(_Model):
+    """정해진 길을 따라 움직임(형식 2). 시간만의 함수라 같은 시험의 모든 개체가 같은 움직임을 본다.
+
+    출발(start초) 뒤 t초 동안 길을 따라 간 거리 = speed x t + accel x t² / 2(속력은 0 아래로 내려가지 않는다).
+    once: 끝점에서 멈춤, loop: 끝점에서 첫 점으로 이어 돎(닫힌 길), pingpong: 끝점에서 되돌아옴.
+    """
+
+    kind: Literal["path"]
+    points: list[Vec2] = Field(min_length=2, max_length=256)
+    """지날 점. 물체 pos를 기준으로 한 위치이고 첫 점은 보통 (0, 0)이다."""
+    speed: Num = 1.0
+    """처음 속력(m/s)."""
+    accel: Num = 0.0
+    """속력이 초마다 늘어나는 양(m/s²). 음수면 느려지다 멈춘다."""
+    start: Num = 0.0
+    """이 시각(초)까지 첫 점에 서 있다."""
+    mode: Literal["once", "loop", "pingpong"] = "once"
+    spin: Num = 0.0
+    """제자리 회전 속도(rad/s, +는 반시계). 출발 시각(start)과 상관없이 0초부터 돈다."""
+
+
+class WaveMotion(_Model):
+    """제자리에서 흔들림(형식 2). 위치 = pos + amplitude x sin(2π(t / period + phase))."""
+
+    kind: Literal["wave"]
+    amplitude: Vec2 = (0.0, 1.0)
+    """흔들림 폭 (x, y)(m)."""
+    period: Num = 2.0
+    """한 번 오갔다 오는 시간(초)."""
+    phase: Num = 0.0
+    """시작 위상(주기에 대한 비율, 0..1)."""
+    spin: Num = 0.0
+    """제자리 회전 속도(rad/s, +는 반시계)."""
+
+
+Motion = Annotated[Union[PathMotion, WaveMotion], Field(discriminator="kind")]
 
 
 class Material(_Model):
@@ -127,6 +202,7 @@ class Body(_Model):
     label: Label = ""
     owner: Literal["agent", "world"] = "agent"
     type: Literal["dynamic", "static", "kinematic"] = "dynamic"
+    """dynamic: 힘을 받아 움직임. static: 고정. kinematic: motion을 따라 스스로 움직임(세계 물체만, 형식 2)."""
     pos: Vec2 = (0.0, 0.0)
     """에이전트 물체는 에이전트 좌표계(시작 위치 기준), 세계 물체는 세계 좌표."""
     angle: Num = 0.0
@@ -137,6 +213,8 @@ class Body(_Model):
     tags: list[Id] = []
     drag: Num = 0.0
     """바람에 대한 선형 항력 계수 N/(m/s)."""
+    motion: Motion | None = None
+    """정해진 움직임(type이 kinematic인 세계 물체만, 형식 2). 수식은 r.*과 gen.*만 쓸 수 있다."""
 
 
 class Joint(_Model):
@@ -230,7 +308,57 @@ class Motor(_Model):
     keys_neg: list[str] = []
 
 
-Actuator = Annotated[Union[FuelTank, Thruster, Vehicle, Motor], Field(discriminator="kind")]
+class Jump(_Model):
+    """점프 추진기(형식 2). 출력 하나, 범위 0..1.
+
+    출력이 0.5 이상이고, ground에 닿아 있고(세계 contact_debounce 적용, 앞 스텝 기준), 마지막으로 뛴 스텝에서
+    cooldown이 지났으면(스텝 수로 올림) 뛰는 방향(dir)의 속도를 speed로 맞춘다(이미 더 빠르면 그대로). 질량과 무관하게
+    점프 높이는 대략 speed² / (2 x 중력)이다. 실제 출력(에너지 블록, 행동 분포)은 뛴 스텝만 1이고 나머지는 0이다.
+    """
+
+    kind: Literal["jump"]
+    id: Id
+    label: Label = ""
+    body: Ref
+    speed: Num = 6.0
+    """뛰는 방향 속도(m/s)."""
+    dir: Num = 1.5707963267948966
+    """뛰는 방향(라디안, 세계 좌표). 기본은 위쪽. 물체가 기울어도 바뀌지 않는다."""
+    ground: list[Ref] = ["tag.ground"]
+    """여기(물체 id나 tag.<태그>)에 닿아 있을 때만 뛴다. 비우면 공중에서도 뛴다."""
+    cooldown: float = Field(default=0.25, ge=0.0, le=60.0)
+    """한 번 뛴 뒤 다시 뛸 수 있을 때까지의 시간(초)."""
+    keys: list[str] = []
+    """직접 조종 키 이름. 누르는 동안 출력 1. 점프에는 Space도 쓸 수 있다."""
+
+
+class Aero(_Model):
+    """공기역학(형식 2, 출력 없음). 물체 모양의 테두리 변마다 작은 평판으로 보고 양력과 항력을 건다.
+
+    변마다 그 점에서 본 상대 바람으로 받음각을 재고, 실속 전에는 양력 기울기 2π / (1 + 2 / aspect_ratio)인 붙은 흐름,
+    stall 근처부터 평판 수직 힘으로 부드럽게 잇는다. 유도 항력과 표면 마찰을 더한다. 바람은 세계의 wind를 쓴다.
+    원과 선 모양은 공기를 받지 않는다.
+    """
+
+    kind: Literal["aero"]
+    id: Id
+    label: Label = ""
+    body: Ref
+    density: Num = 1.2
+    """공기 밀도(kg/m³)."""
+    span: Num = 1.0
+    """화면 안쪽 방향 날개 폭(m). 공기힘이 이 폭에 비례한다."""
+    aspect_ratio: Num = 6.0
+    """가로세로비(날개 폭 / 시위). 0이면 끝없이 긴 날개(2D)."""
+    stall: Num = 0.25
+    """실속 받음각(라디안)."""
+    friction: Num = 0.01
+    """표면 마찰 계수."""
+    surfaces: Literal["all", "wings"] = "all"
+    """all: 사각형·다각형·방사형·날개 모양 테두리가 모두 공기를 받음. wings: 날개 모양만."""
+
+
+Actuator = Annotated[Union[FuelTank, Thruster, Vehicle, Motor, Jump, Aero], Field(discriminator="kind")]
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +547,49 @@ class HillGen(_Model):
     radius: float = Field(default=0.1, ge=0.0)
 
 
-Generator = Annotated[Union[HeightmapGen, TrackGen, HillGen], Field(discriminator="kind")]
+class ObstacleGen(_Model):
+    """장애물 줄(형식 2). 정해진 움직임 세계 물체 <id> 하나(모양 태그 obstacle)에 사각형 장애물 count개를 줄지어 놓고
+    direction 쪽으로 speed에서 시작해 초마다 accel씩 빨라지며 민다(줄 전체가 같은 속도).
+
+    간격 gap은 초다: 앞 장애물과 이 장애물이 x = 0(선수 자리)에 닿는 시각의 차이라 빨라져도 뛸 틈이 남는다. 첫 장애물은
+    x에서 출발한다. 장애물마다 폭 width, 높이 height를 시드로 뽑고, air_chance 확률로 바닥 y + air_y에 두께 air_height인
+    공중 장애물(태그 obstacle과 air)이 된다. gen.<id>.speed, gen.<id>.accel, gen.<id>.length를 쓸 수 있다.
+    """
+
+    kind: Literal["obstacles"]
+    id: Id
+    label: Label = ""
+    seed: Num = 0.0
+    """장애물 줄 시드. 보통 랜덤 값(=r.<id>)이라 시험마다 다른 줄이 된다."""
+    count: int = Field(default=30, ge=1, le=500)
+    """장애물 수."""
+    x: Num = 25.0
+    """첫 장애물이 출발하는 x(m)."""
+    y: Num = 0.0
+    """바닥 높이(m)."""
+    gap: tuple[Num, Num] = (1.4, 3.0)
+    """간격 범위(초)."""
+    width: tuple[Num, Num] = (0.6, 1.4)
+    """장애물 폭 범위(m)."""
+    height: tuple[Num, Num] = (0.5, 1.2)
+    """땅 장애물 높이 범위(m)."""
+    air_chance: Num = 0.25
+    """공중 장애물 비율(0..1)."""
+    air_y: tuple[Num, Num] = (1.3, 1.6)
+    """공중 장애물 아랫면 높이 범위(바닥 기준, m)."""
+    air_height: tuple[Num, Num] = (0.5, 0.8)
+    """공중 장애물 두께 범위(m)."""
+    speed: Num = 6.0
+    """처음 속도(m/s)."""
+    accel: Num = 0.15
+    """초마다 빨라지는 양(m/s²). 음수면 느려지다 멈춘다."""
+    direction: Num = 3.141592653589793
+    """미는 방향(라디안). 기본은 왼쪽(선수 쪽)."""
+    friction: Num = 0.5
+    """장애물 마찰."""
+
+
+Generator = Annotated[Union[HeightmapGen, TrackGen, HillGen, ObstacleGen], Field(discriminator="kind")]
 
 
 # ---------------------------------------------------------------------------

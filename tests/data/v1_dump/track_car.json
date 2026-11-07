@@ -1,0 +1,307 @@
+{
+  "version": 1,
+  "name": "트랙 자동차",
+  "description": "위에서 내려다보는 트랙을 레이 센서로 보며 벽에 닿지 않고 빨리 도는 운전법을 배우고, 처음 보는 트랙에서도 달린다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      0.0
+    ],
+    "wind": [
+      0.0,
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 60.0,
+    "bounds": [
+      -250.0,
+      -250.0,
+      250.0,
+      250.0
+    ],
+    "contact_debounce": 0.1
+  },
+  "params": [
+    {
+      "id": "car_len",
+      "label": "차체 길이",
+      "value": 2.4,
+      "evolve": false,
+      "min": 1.6,
+      "max": 3.6
+    },
+    {
+      "id": "ray_spread",
+      "label": "레이 부채꼴 각도",
+      "value": 3.141592653589793,
+      "evolve": false,
+      "min": 1.0,
+      "max": 3.6
+    }
+  ],
+  "randomize": [
+    {
+      "id": "a0",
+      "label": "출발 각도",
+      "dist": "uniform",
+      "low": -0.2,
+      "high": 0.2,
+      "mean": null,
+      "std": null,
+      "values": null
+    }
+  ],
+  "generators": [
+    {
+      "kind": "track",
+      "id": "track",
+      "label": "트랙",
+      "source": "generated",
+      "set_seed": 1,
+      "set_size": 5,
+      "centerline": null,
+      "width": 8.0,
+      "segments": 12,
+      "curvature": 0.5,
+      "length_range": [
+        120.0,
+        200.0
+      ],
+      "checkpoints": 24,
+      "friction": 0.5,
+      "wall_radius": 0.1
+    }
+  ],
+  "agent": {
+    "spawn": {
+      "x": "=gen.track.start.x",
+      "y": "=gen.track.start.y",
+      "angle": "=gen.track.start.angle + r.a0",
+      "vx": 0.0,
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "car",
+      "label": "차체",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": "=p.car_len",
+          "h": 1.2,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0
+        }
+      ],
+      "material": {
+        "density": 50.0,
+        "friction": 0.5,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "car"
+      ],
+      "drag": 0.0
+    }
+  ],
+  "joints": [],
+  "actuators": [
+    {
+      "kind": "vehicle",
+      "id": "drive",
+      "label": "차량 구동기",
+      "body": "car",
+      "max_accel": 8.0,
+      "max_steer": 0.5,
+      "lateral_grip": 0.9,
+      "wheelbase": "=p.car_len * 0.8",
+      "drag": 0.5,
+      "max_lateral_accel": 8.0,
+      "keys_forward": [
+        "Up",
+        "W"
+      ],
+      "keys_back": [
+        "Down",
+        "S"
+      ],
+      "keys_left": [
+        "Left",
+        "A"
+      ],
+      "keys_right": [
+        "Right",
+        "D"
+      ]
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "rays",
+      "id": "ray",
+      "label": "벽까지 거리",
+      "body": "car",
+      "origin": [
+        "=p.car_len / 2",
+        0.0
+      ],
+      "count": 7,
+      "spread": "=p.ray_spread",
+      "center": 0.0,
+      "length": 40.0,
+      "hits": [
+        "tag.wall"
+      ]
+    },
+    {
+      "kind": "body_state",
+      "id": "st",
+      "label": "속도",
+      "body": "car",
+      "fields": [
+        "v_fwd",
+        "v_lat"
+      ],
+      "frame": "body",
+      "scale": {
+        "v_fwd": 10.0,
+        "v_lat": 5.0
+      }
+    }
+  ],
+  "regions": [],
+  "checkpoints": [],
+  "events": [
+    {
+      "id": "crash",
+      "label": "벽 충돌",
+      "when": "contact(car, tag.wall)",
+      "hold": 0.0
+    },
+    {
+      "id": "stall",
+      "label": "정체",
+      "when": "track.cp.since > 5.0",
+      "hold": 0.0
+    },
+    {
+      "id": "finish",
+      "label": "완주",
+      "when": "track.cp.laps >= 2",
+      "hold": 0.0
+    }
+  ],
+  "termination": [
+    {
+      "event": "finish",
+      "outcome": "success",
+      "label": "완주"
+    },
+    {
+      "event": "crash",
+      "outcome": "failure",
+      "label": "벽 충돌"
+    },
+    {
+      "event": "stall",
+      "outcome": "failure",
+      "label": "정체"
+    },
+    {
+      "event": "out_of_bounds",
+      "outcome": "failure",
+      "label": "이탈"
+    },
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 초과"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "id": "s_cp",
+        "label": "체크포인트",
+        "weight": 10.0,
+        "kind": "checkpoints",
+        "checkpoints": "track.cp"
+      },
+      {
+        "id": "s_prog",
+        "label": "진행 거리",
+        "weight": 1.0,
+        "kind": "expr",
+        "expr": "track.cp.progress",
+        "agg": "final"
+      },
+      {
+        "id": "s_finish",
+        "label": "완주",
+        "weight": 100.0,
+        "kind": "event",
+        "event": "finish",
+        "value": "occurred"
+      },
+      {
+        "id": "s_lap",
+        "label": "랩 시간",
+        "weight": -1.0,
+        "kind": "lap_time",
+        "checkpoints": "track.cp"
+      },
+      {
+        "id": "s_crash",
+        "label": "벽 충돌",
+        "weight": -50.0,
+        "kind": "event",
+        "event": "crash",
+        "value": "occurred"
+      },
+      {
+        "id": "s_stall",
+        "label": "정체 종료",
+        "weight": -50.0,
+        "kind": "event",
+        "event": "stall",
+        "value": "occurred"
+      },
+      {
+        "id": "s_smooth",
+        "label": "부드러움",
+        "weight": -0.1,
+        "kind": "smoothness",
+        "actuators": "all"
+      }
+    ],
+    "formula": null
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 5,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {}
+}

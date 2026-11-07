@@ -3,13 +3,18 @@
 - 파일은 UTF-8 JSON이다.
 - version이 지금보다 낮으면 MIGRATIONS를 차례로 적용하고, 높으면 '새 버전에서 만든 파일'로 거부한다.
 - 저장은 기본값까지 모두 쓰는 정규 형식이다. 같은 내용이면 늘 같은 글자열이 나온다.
+- 저장과 해시는 그 내용을 담을 수 있는 가장 낮은 형식으로 한다(v2 설계 D2): 칸·종류·값마다 생긴 형식을
+  FIELD_SINCE·KIND_SINCE·VALUE_SINCE에 적어 두고, 쓰인 것 중 가장 큰 형식(feature_version)보다 새 칸(정의상 기본값)은
+  글에서 지운다. 그래서 v1 기능만 쓴 파일은 v1.x 프로그램이 쓴 글·해시와 글자까지 같다(챔피언의 env_version, 판정,
+  「내 최고 기록」, 경주가 그대로 이어진다). 새 칸은 반드시 다음 형식 번호로 등록한다(tests/test_format_v2.py가 지킴).
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, get_args
 
@@ -21,8 +26,132 @@ from evolab.spec.compiled import EnvFileError, EnvSpec, Issue
 
 Migration = Callable[[dict[str, Any]], dict[str, Any]]
 
+
+def _fields_added_only(data: dict[str, Any]) -> dict[str, Any]:
+    """칸·종류·값을 더하기만 한 형식 변경. 새 칸은 모두 기본값이 있고 기본값이면 옛 뜻과 같아 사전을 그대로 쓴다."""
+    return data
+
+
 # MIGRATIONS[n]은 version n 파일을 version n+1로 바꾼다.
-MIGRATIONS: dict[int, Migration] = {}
+MIGRATIONS: dict[int, Migration] = {
+    1: _fields_added_only,  # 1 -> 2 (v2.0): 정해진 움직임, 장애물 줄, 점프, 공기역학, 날개 모양, 모양별 밀도
+}
+
+# ---------------------------------------------------------------------------
+# 형식 번호: 칸·종류·값이 생긴 형식 (설계 2.2)
+# ---------------------------------------------------------------------------
+
+FIELD_SINCE: dict[tuple[type[BaseModel], str], int] = {
+    (m.Box, "density"): 2, (m.Circle, "density"): 2, (m.Poly, "density"): 2, (m.Radial, "density"): 2,
+    (m.Body, "motion"): 2,
+}
+"""옛 모델에 더한 칸(모델, 파이썬 칸 이름) -> 생긴 형식. 기본값이 아니면 그 형식이 필요하고, 그보다 낮은 형식 글에서는
+지운다. 새로 더하는 칸은 반드시 다음 형식 번호로(이미 나간 형식에 더하면 그 형식 파일들의 해시가 바뀐다)."""
+KIND_SINCE: dict[type[BaseModel], int] = {
+    m.Wing: 2, m.Jump: 2, m.Aero: 2, m.ObstacleGen: 2, m.PathMotion: 2, m.WaveMotion: 2,
+}
+"""새 모델(종류) -> 생긴 형식. 파일에 하나라도 있으면 그 형식이다. 그 모델의 칸은 따로 등록하지 않는다."""
+VALUE_SINCE: dict[tuple[type[BaseModel], str, object], int] = {
+    (m.Body, "type", "kinematic"): 2,
+}
+"""옛 칸의 새 값(모델, 칸, 값) -> 생긴 형식."""
+
+
+@functools.cache
+def _model_fields(cls: type[BaseModel]) -> tuple[str, ...]:
+    """모델 인스턴스를 담을 수 있는 칸(형에 모델이 들어 있는 칸). 숫자 목록 같은 칸은 걷지 않는다."""
+    def has_model(tp: object) -> bool:
+        if isinstance(tp, type) and issubclass(tp, BaseModel):
+            return True
+        return any(has_model(a) for a in get_args(tp))
+
+    return tuple(name for name, f in cls.model_fields.items() if has_model(f.annotation))
+
+
+@functools.cache
+def _rules(cls: type[BaseModel]) -> tuple[int, tuple[tuple[str, str, int, Any], ...], tuple[tuple[str, object, int], ...]]:
+    """(종류 형식, 칸 규칙 (칸, 파일 이름, 형식, 기본값), 값 규칙 (칸, 값, 형식)). 부모 모델에 등록한 규칙도 따른다."""
+    kind = max((v for c, v in KIND_SINCE.items() if issubclass(cls, c)), default=1)
+    fields = tuple(
+        (name, cls.model_fields[name].alias or name, since, cls.model_fields[name].get_default(call_default_factory=True))
+        for (c, name), since in FIELD_SINCE.items() if issubclass(cls, c)
+    )
+    values = tuple((name, value, since) for (c, name, value), since in VALUE_SINCE.items() if issubclass(cls, c))
+    return kind, fields, values
+
+
+def _children(value: Any) -> Iterator[Any]:
+    """value 안의 모델·목록·사전 값(모델 칸만 따라간다)."""
+    if isinstance(value, BaseModel):
+        for name in _model_fields(type(value)):
+            yield getattr(value, name)
+    elif isinstance(value, (list, tuple)):
+        yield from value
+    elif isinstance(value, dict):
+        yield from value.values()
+
+
+def _models(value: Any) -> Iterator[BaseModel]:
+    """나무 안의 모든 모델 인스턴스(자기 자신 포함)."""
+    if isinstance(value, BaseModel):
+        yield value
+    for child in _children(value):
+        if isinstance(child, (BaseModel, list, tuple, dict)):
+            yield from _models(child)
+
+
+def feature_version(env: m.EnvFile) -> int:
+    """이 내용을 담을 수 있는 가장 낮은 형식 번호(최소 1).
+
+    모델 나무를 걸으며 쓰인 KIND_SINCE 종류, 기본값이 아닌 FIELD_SINCE 칸, 쓰인 VALUE_SINCE 값의 형식 중 가장 큰 것.
+    v2 기능을 하나도 안 쓰면 1이라 v1.x 프로그램도 그 파일을 연다.
+    """
+    version = 1
+    for inst in _models(env):
+        kind, fields, values = _rules(type(inst))
+        version = max(version, kind)
+        for name, _key, since, default in fields:
+            if since > version and getattr(inst, name) != default:
+                version = since
+        for name, value, since in values:
+            if since > version and getattr(inst, name) == value:
+                version = since
+    return version
+
+
+def _strip_newer(value: Any, data: Any, version: int) -> None:
+    """모델 나무와 그 덤프(사전)를 함께 걸으며 version보다 새 칸을 사전에서 지운다."""
+    if isinstance(value, BaseModel):
+        if not isinstance(data, dict):
+            return
+        for _name, key, since, _default in _rules(type(value))[1]:
+            if since > version:
+                data.pop(key, None)
+        fields = type(value).model_fields
+        for name in _model_fields(type(value)):
+            key = fields[name].alias or name
+            if key in data:
+                _strip_newer(getattr(value, name), data[key], version)
+    elif isinstance(value, (list, tuple)) and isinstance(data, list):
+        for v, d in zip(value, data, strict=False):
+            _strip_newer(v, d, version)
+    elif isinstance(value, dict) and isinstance(data, dict):
+        for k, v in value.items():
+            if k in data:
+                _strip_newer(v, data[k], version)
+
+
+def canonical_dict(env: m.EnvFile, exclude: set[str] | None = None) -> dict[str, Any]:
+    """저장·해시용 사전: model_dump(mode="json", by_alias=True, exclude=exclude)에서 FIELD_SINCE 형식이
+    feature_version보다 큰 칸을 지우고 version = feature_version.
+
+    지우는 칸은 정의상 모두 기본값이다(기본값이 아니면 feature_version이 그만큼 크다). 칸 순서는 모델 순서 그대로다.
+    """
+    data = env.model_dump(mode="json", by_alias=True, exclude=exclude)
+    version = feature_version(env)
+    _strip_newer(env, data, version)
+    data["version"] = version
+    return data
 
 
 def migrate(data: dict[str, Any]) -> dict[str, Any]:
@@ -85,8 +214,8 @@ def load_env(path: str | Path) -> EnvSpec:
 
 
 def dump_env(env: m.EnvFile) -> str:
-    """정규 JSON. 기본값까지 모두 쓰고, 칸 순서는 모델 순서를 따른다."""
-    data = env.model_dump(mode="json", by_alias=True)
+    """정규 JSON. 기본값까지 모두 쓰고, 칸 순서는 모델 순서를 따른다. 형식은 내용을 담을 수 있는 가장 낮은 것."""
+    data = canonical_dict(env)
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
@@ -95,8 +224,11 @@ def save_env(env: m.EnvFile, path: str | Path) -> None:
 
 
 def env_hash(env: m.EnvFile) -> str:
-    """에디터 전용 칸을 뺀 내용의 해시. 실행 폴더의 환경 버전을 가리킬 때 쓴다."""
-    data = env.model_dump(mode="json", by_alias=True, exclude={"editor"})
+    """에디터 전용 칸을 뺀 내용의 해시. 실행 폴더의 환경 버전을 가리킬 때 쓴다.
+
+    가장 낮은 형식의 정규 사전으로 계산하므로 v1 기능만 쓴 파일은 v1.x와 같은 해시다.
+    """
+    data = canonical_dict(env, exclude={"editor"})
     text = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -168,7 +300,7 @@ def _format_loc(loc: tuple[int | str, ...]) -> tuple[str, str | None]:
             if branch is None:
                 branch = "names" if item.startswith(("list[", "literal[")) else "num"
         elif item in _KIND_TAGS and (
-            (isinstance(prev, int) and prev2 in _TAGGED_LISTS) or prev == "shape"
+            (isinstance(prev, int) and prev2 in _TAGGED_LISTS) or prev in ("shape", "motion")
         ):
             pass
         else:
