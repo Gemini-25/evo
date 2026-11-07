@@ -475,12 +475,32 @@ def test_brain_source_priority_and_hidden_brain(qtbot: Any, lab: LabView, tmp_pa
     dash.set_page("fun")  # 늦게 보이면(_tick) 같은 개체를 따로 가볍게 추적한다(_replay_tag는 그대로)
     qtbot.waitUntil(lambda: dash.brain_source is not None and dash.brain_source.traced, timeout=60000)
     assert lab._replay_tag == tag and dash.brain_source.label == S.LAB_LABEL_REP.format(gen=2)
-    # '실시간 보기'로 돌아가면 ①이 없어지고, 관전 중이 아니므로 원천이 없다(챔피언 멈춘 그림)
+    # '실시간 보기'로 돌아가면 ①이 없어지고, 관전 중이 아니므로 원천이 없다(챔피언, 그때 챔피언이 없으면 보는 세대
+    # 대표의 멈춘 그림)
     lab.back_to_live()
     assert dash.brain_source is None
     dash.flush()
     tile = dash.tile("brain")
-    assert isinstance(tile, BrainTile) and tile.source_kind in ("champion", None)
+    assert isinstance(tile, BrainTile) and tile.source_kind in ("champion", "rep")
+
+
+def test_observation_summary_failure_is_a_status_notice_not_a_box(
+        qtbot: Any, lab: LabView, tmp_path: Path, message_boxes: list[tuple[str, str]]) -> None:
+    """D9: 관찰 기록 요약 실패(notice가 붙은 error)는 학습을 멈추지 않으므로 막는 상자 대신 상태 글 끝줄로, 세대가 와서
+    상태 글을 다시 만들어도, 되감아도 남고, 다른 실행을 열면 지운다. 다른 오류는 지금처럼 상자."""
+    store = train_run(tmp_path / "runs", 2)
+    assert lab.open_run(store.root)
+    note = S.TRAIN_OBSERVE_FAILED.format(reason="boom")
+    lab.client._dispatch({"type": "error", "fatal": False, "notice": True, "message": note})
+    assert message_boxes == [] and lab.status.text().endswith("\n" + note)
+    lab._update_status()
+    assert lab.status.text().endswith("\n" + note)
+    lab.client._dispatch({"type": "error", "fatal": False, "message": "other"})
+    assert message_boxes == [(S.LAB_ERROR_TITLE, "other")]
+    lab._on_rewound(snapshot(store))  # 같은 학습 프로세스 안의 되감기: 알림은 한 번만 오므로 남긴다
+    assert lab.status.text().endswith("\n" + note)
+    assert lab.open_run(store.root)
+    assert note not in lab.status.text()
 
 
 if __name__ == "__main__":  # test_opening_a_750_generation_run_keeps_the_event_loop_responsive의 측정 프로세스

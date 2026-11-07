@@ -1212,25 +1212,18 @@ _TILE_CLASSES: dict[str, type[_Tile]] = {
     "ends": _EndsTile,
     "perf": _PerfTile,
 }
-BRAIN_MODULE = "evolab.app.lab.brain_view"
-
-
 def tile_class(tile_id: str) -> type[_Tile]:
-    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈은 여기서 늦게 불러온다(그 모듈들이 _Tile을 상속하려고 이 모듈을
-    불러오므로 위에서 불러오면 순환한다). 뇌 타일 모듈(brain_view)이 아직 없으면 빈 안내 타일을 쓴다."""
+    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈(watch_tiles, brain_view)은 여기서 늦게 불러온다(그 모듈들이
+    _Tile을 상속하려고 이 모듈을 불러오므로 위에서 불러오면 순환한다)."""
     cls = _TILE_CLASSES.get(tile_id)
     if cls is not None:
         return cls
+    if tile_id == "brain":
+        from evolab.app.lab.brain_view import BrainTile
+
+        return BrainTile
     from evolab.app.lab import watch_tiles
 
-    if tile_id == "brain":
-        try:
-            from evolab.app.lab.brain_view import BrainTile
-        except ModuleNotFoundError as exc:  # 모듈이 없을 때만. 그 모듈 안의 잘못은 그대로 드러낸다
-            if exc.name != BRAIN_MODULE:
-                raise
-            return watch_tiles.BrainPlaceholderTile
-        return BrainTile
     return watch_tiles.TILE_CLASSES[tile_id]
 
 

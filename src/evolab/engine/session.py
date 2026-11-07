@@ -407,7 +407,8 @@ class Session:
         problem = getattr(self.trainer, "observe_problem", None)
         if problem and not self.observe_warned:
             self.observe_warned = True
-            self._send({"type": "error", "fatal": False, "message": problem})
+            # notice: 학습은 그대로 이어지므로 화면은 막는 상자 대신 상태 글로 알린다(설계 D9)
+            self._send({"type": "error", "fatal": False, "notice": True, "message": problem})
 
 
 def _reason(exc: BaseException) -> str:

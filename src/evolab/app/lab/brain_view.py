@@ -343,8 +343,10 @@ class BrainView(QWidget):
         w, h = float(self.width()), float(self.height())
         fm = QFontMetrics(self._font)
         limit = w * 0.28
-        left = min(limit, max((fm.horizontalAdvance(short_name(n)) for n, _ in self.inputs), default=0)) + PAD * 2
-        right = min(limit, max((fm.horizontalAdvance(short_name(n)) for n, _ in self.outputs), default=0)) + PAD * 2
+        # 이름 칸 = 글 너비 + 여백 + 가장 큰 뉴런 반지름(이름은 원 바깥에서 시작하므로, 빼면 긴 출력 이름 끝이 잘린다)
+        edge = PAD * 2 + NODE_RADIUS[1]
+        left = min(limit, max((fm.horizontalAdvance(short_name(n)) for n, _ in self.inputs), default=0)) + edge
+        right = min(limit, max((fm.horizontalAdvance(short_name(n)) for n, _ in self.outputs), default=0)) + edge
         top = fm.height() + PAD
         bottom = PAD
         sizes = brain.sizes
@@ -418,8 +420,8 @@ class BrainView(QWidget):
                     if j >= len(self._pos[k]):
                         break
                     x, y = float(self._pos[k][j, 0]), float(self._pos[k][j, 1])
-                    shown = fm.elidedText(short_name(name), Qt.TextElideMode.ElideRight, int(max(10.0, room - PAD)))
-                    box_w = max(10.0, room - PAD)
+                    box_w = max(10.0, room - PAD - r)
+                    shown = fm.elidedText(short_name(name), Qt.TextElideMode.ElideRight, int(box_w))
                     if align == Qt.AlignmentFlag.AlignRight:
                         rect = QRectF(x - r - PAD / 2 - box_w, y - h / 2, box_w, h)
                     else:
@@ -602,7 +604,8 @@ class BrainTile(_WatchTile):
     """「보는 재미」의 뇌 들여다보기 타일(설계 4.3). 원천은 dashboard.brain_source(D24):
 
     playing(캔버스가 추적 재생 중인 개체) · live(관전 중 그 세대 대표를 시험 0번으로 따로 다시 돌린 것) · 없으면 보는
-    세대까지의 마지막 챔피언 멈춘 그림. 연결선 그림은 유전자가 바뀔 때만 다시 만든다.
+    세대까지의 마지막 챔피언 멈춘 그림. 그때까지 챔피언이 없으면(검증 전, 고속 모드의 첫 세대들) 보는 세대 대표의 멈춘
+    그림(경주의 RACE_LANE_REP_INSTEAD와 같은 규칙). 연결선 그림은 유전자가 바뀔 때만 다시 만든다.
     """
 
     follows_axis = False
@@ -615,7 +618,7 @@ class BrainTile(_WatchTile):
         self._title_parts: tuple[str, str, float] | None = None
         """(종류, 이름 또는 세대 글, 재생 길이(초)): show_time이 제목의 시각만 바꾼다."""
         self.source_kind: str | None = None
-        """지금 그리는 원천: "playing" | "live" | "champion" | None(빈 상태)."""
+        """지금 그리는 원천: "playing" | "live" | "champion" | "rep"(챔피언이 없어 보는 세대 대표) | None(빈 상태)."""
         self.source_generation: int | None = None
         self.show_message(S.BRAIN_EMPTY, [])
 
@@ -655,11 +658,16 @@ class BrainTile(_WatchTile):
         else:
             gen_now = self.dash.view_generation()
             champ = self.dash.champion_at(gen_now if gen_now is not None else 2**62)
-            if champ is None:
-                self._empty()
-                return
-            gen, genome = champ
-            kind, rep = "champion", None
+            if champ is not None:
+                gen, genome = champ
+                kind, rep = "champion", None
+            else:
+                still = self.dash.rep_genome(gen_now) if gen_now is not None else None
+                if still is None:
+                    self._empty()
+                    return
+                gen, genome = gen_now, still
+                kind, rep = "rep", None
         lay = meta.layout
         try:
             params = lay.brain_params(np.asarray(genome, dtype=np.float64)[None, :])[0]
@@ -681,8 +689,8 @@ class BrainTile(_WatchTile):
             self.brain.set_trace(None, None, self.brain.dt)
         self.brain.set_time(self.dash.play_time)
         self.source_kind, self.source_generation = kind, gen
-        if kind == "champion":
-            self._title_parts = ("champion", str(gen), 0.0)
+        if kind in ("champion", "rep"):
+            self._title_parts = (kind, str(gen), 0.0)
             notes.append(S.BRAIN_LEGEND_STILL)
         else:
             label = src.label if src is not None else ""
@@ -714,6 +722,8 @@ class BrainTile(_WatchTile):
         shown = min(max(0.0, float(t)), duration) if duration > 0 else max(0.0, float(t))
         if kind == "champion":
             title = S.BRAIN_TITLE_CHAMPION.format(gen=name)
+        elif kind == "rep":
+            title = S.BRAIN_TITLE_REP.format(gen=name)
         elif kind == "live":
             title = S.BRAIN_TITLE_LIVE.format(gen=name, t=shown)
         else:

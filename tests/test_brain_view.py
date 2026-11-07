@@ -311,6 +311,30 @@ def test_brain_tile_notes_for_relu_and_capped_networks(qtbot: QtBot, tmp_path: P
     assert S.BRAIN_RELU_NOTE not in tile.note.text()
 
 
+def test_brain_tile_shows_the_viewed_representative_until_a_champion_exists(qtbot: QtBot, tmp_path: Path) -> None:
+    """검증 전(고속 모드의 첫 세대들)에는 챔피언이 없다: 빈 안내 대신 보는 세대 대표의 멈춘 그림, 챔피언이 생기면 그것."""
+    spec, lay, meta = setup(env_text("lander"))
+    dash = make_dashboard(qtbot, tmp_path, "brain_rep.ini")
+    dash.set_page("fun")
+    dash.set_watch_meta(meta)
+    tile = dash.tile("brain")
+    pops = {g: np.stack([genome(lay, 100 * g + k) for k in range(4)]) for g in (1, 2, 3)}
+    for g, pop in pops.items():
+        dash.add_generation(g, None, pop, 2, None)
+    dash.flush()
+    assert tile.source_kind == "rep" and tile.source_generation == 3
+    assert tile.title_text == S.BRAIN_TITLE_REP.format(gen=3) and S.BRAIN_LEGEND_STILL in tile.note.text()
+    assert np.array_equal(tile.brain.weights[0].ravel(), lay.brain_params(pops[3][2][None, :])[0][: 9 * 16])
+    dash.set_focus(1)
+    dash.flush()
+    assert tile.source_kind == "rep" and tile.source_generation == 1
+    dash.add_generation(3, None, pops[3], 2, (2, pops[2][0], 1.5))  # 2세대에 뽑힌 챔피언
+    dash.set_focus(None)
+    dash.flush()
+    assert tile.source_kind == "champion" and tile.source_generation == 2
+    assert tile.title_text == S.BRAIN_TITLE_CHAMPION.format(gen=2)
+
+
 def test_brain_tile_survives_meta_change_and_dark_theme_tokens(qtbot: QtBot, tmp_path: Path) -> None:
     _spec, lay, meta = setup(env_text("lander"))
     dash = brain_dashboard(qtbot, tmp_path, meta)

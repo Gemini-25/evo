@@ -3,7 +3,7 @@
 자료는 Dashboard.history(RunHistory, history.py)에서, 보는 세대는 Dashboard.view_generation()에서 읽는다. 타일은
 dashboard._Tile을 상속하고 갱신은 대시보드의 펌프(보이는 dirty 타일을 하나씩)를 따른다. 색은 대시보드 Theme 토큰만
 쓴다(궤적 밀도의 관전 캔버스는 테마와 상관없이 늘 어두운 바탕이라 어두운 테마 DARK의 토큰으로 칠한다).
-뇌 들여다보기(BrainTile)는 app/lab/brain_view.py에 있고, 그 모듈이 없을 때만 BrainPlaceholderTile을 쓴다.
+뇌 들여다보기(BrainTile)는 app/lab/brain_view.py에 있다.
 """
 
 from __future__ import annotations
@@ -615,7 +615,9 @@ class BodyTile(_WatchTile):
         super().__init__(dash, tile_id)
         t = self.theme
         self.plot = self.add_plot(S.BODY_AXIS_ALL)
-        self.controls.addWidget(QLabel(S.BODY_PICK_LABEL))
+        self.pick_label = QLabel(S.BODY_PICK_LABEL)
+        self.pick_label.hide()
+        self.controls.addWidget(self.pick_label)
         self.pick = QComboBox()
         self.pick.setToolTip(S.BODY_PICK_TIP)
         self.pick.currentIndexChanged.connect(lambda _i: self.refresh())
@@ -656,6 +658,7 @@ class BodyTile(_WatchTile):
             self.pick.addItem(p.name, j)
         self.pick.blockSignals(False)
         self.pick.setVisible(len(params) > 0)
+        self.pick_label.setVisible(len(params) > 0)  # 몸 수치가 없는 환경에서 이름표만 남지 않게
         self._rebuild_items(len(params))
 
     def _rebuild_items(self, count: int) -> None:
@@ -909,6 +912,8 @@ class ActionsTile(_WatchTile):
         return np.zeros((0, hs.ob.ACTION_BINS)) if img is None else np.asarray(img)
 
     def entries(self) -> list[_Entry]:
+        if self._series is None:  # 빈 상태(안내 글만)에는 그림 설명도 없다(몸 수치·궤적 밀도와 같게)
+            return []
         t = self.theme
         return [_Entry(t.ramp[3], GLYPH_FILL, S.ACT_HINT), _Entry(t.ink, GLYPH_LINE, S.ACT_MEAN_LINE)]
 
@@ -1053,6 +1058,9 @@ class DensityTile(_WatchTile):
         if geometry is None:
             self.show_message(S.DENS_PREPARING)
             return
+        # 답을 받았으면 '청함'을 지운다: 대시보드가 기억하는 세계 그림은 최근 GEOMETRY_CACHE개뿐이라, 밀려난 세계를
+        # 다시 보게 되면 또 청해야 한다(청함만 남아 있으면 DENS_PREPARING에 멈춘다).
+        self._requested.discard(key)
         if self._scene_key != key:
             self.canvas.set_scene(geometry, None, None)
             self.canvas.set_population([])
@@ -1104,21 +1112,6 @@ class DensityTile(_WatchTile):
             elif event.type() == QEvent.Type.Leave:
                 self.unhover()
         return super().eventFilter(watched, event)
-
-
-# ---------------------------------------------------------------------------
-class BrainPlaceholderTile(_WatchTile):
-    """뇌 들여다보기 자리(app/lab/brain_view.py의 BrainTile이 아직 없을 때): 빈 상태 안내만."""
-
-    def __init__(self, dash: Dashboard, tile_id: str) -> None:
-        super().__init__(dash, tile_id)
-        self.show_message(S.BRAIN_EMPTY, [])
-
-    def update_data(self) -> None:
-        self.stack.setCurrentWidget(self.message)
-
-    def sync_marks(self) -> None:
-        pass
 
 
 TILE_CLASSES: dict[str, type[_Tile]] = {

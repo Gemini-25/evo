@@ -134,6 +134,7 @@ class _LaneCanvas(SpectatorCanvas):
         super().__init__(parent)
         self._on_paint = on_paint
         self.setMinimumSize(*LANE_MIN_SIZE)
+        self.empty_text = ""  # 준비 중은 칸 아래 글줄(RACE_PREPARING)이 알린다(실험실 캔버스의 빈 화면 글은 맞지 않음)
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         t0 = time.perf_counter()

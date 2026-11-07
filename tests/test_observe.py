@@ -787,7 +787,8 @@ def test_summary_failure_is_reported_once_by_the_session(tmp_path: Path, monkeyp
     finally:
         s.close()
     errors = s.of("error")
-    assert errors == [{"type": "error", "fatal": False, "message": S.TRAIN_OBSERVE_FAILED.format(reason="boom")}]
+    assert errors == [{"type": "error", "fatal": False, "notice": True,
+                       "message": S.TRAIN_OBSERVE_FAILED.format(reason="boom")}]
     gens = s.of("generation")
     assert [m["generation"] for m in gens] == [1, 2, 3]
     assert all("observation" in m and m["observation"] is None for m in gens)

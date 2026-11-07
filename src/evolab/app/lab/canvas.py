@@ -249,6 +249,8 @@ class SpectatorCanvas(QWidget):
         self.hud = ""
         self.use_static_cache = True
         """정적인 세계를 그려 둔 그림으로 다시 쓴다(성능 측정에서 끄고 비교할 수 있게)."""
+        self.empty_text = S.SPEC_NO_SCENE
+        """세계가 없을 때 가운데에 쓰는 글. 준비 중을 다른 곳에서 알리는 화면(나란히 경주 칸)은 빈 글로 둔다."""
         self._t = 0.0
         self._zoom = 1.0
         self._center = (0.0, 0.0)
@@ -769,8 +771,9 @@ class SpectatorCanvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.world is None:
             p.fillRect(self.rect(), COLOR_BG)
-            p.setPen(COLOR_HUD)
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, S.SPEC_NO_SCENE)
+            if self.empty_text:
+                p.setPen(COLOR_HUD)
+                p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_text)
             p.end()
             return
         s, ox, oy = self._base()

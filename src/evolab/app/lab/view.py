@@ -301,6 +301,7 @@ class LabView(QWidget):
         self.client.applied.connect(self._on_applied)
         self.client.rewound.connect(self._on_rewound)
         self.client.failed.connect(self._on_failed)
+        self.client.notice.connect(self._on_notice)
         self.client.closed.connect(self._on_closed)
 
         # 지금 보고 있는 실행
@@ -322,6 +323,8 @@ class LabView(QWidget):
         """상태 글 셋째 줄: 마지막 학습 방법 교체 알림(자동 재시작, 예선 다음 출전, 예선 끝)."""
         self._stopped_line = ""
         """학습이 끝난(finished) 까닭 줄. 끝난 상태에서 설정을 적용해 상태 글을 다시 만들 때도 붙인다."""
+        self._session_note = ""
+        """상태 글 끝줄: 학습을 멈추지 않는 학습 프로세스 알림(관찰 기록 요약 실패, TRAIN_OBSERVE_FAILED). 실행이 바뀌면 지움."""
 
         # 재생 상태
         self.view_mode = "live"  # live(관전), fast(고속 챔피언), replay(타임라인·겹쳐 보기)
@@ -1020,6 +1023,7 @@ class LabView(QWidget):
     # ------------------------------------------------------------------
     def _reset_run_view(self) -> None:
         self.rows = []
+        self._session_note = ""
         self.events = []
         self.champion = None
         self._switch_at = None
@@ -1126,7 +1130,9 @@ class LabView(QWidget):
             self._maybe_fast_replay(force=True)
 
     def _on_rewound(self, msg: dict[str, Any]) -> None:
+        note = self._session_note
         self._reset_run_view()
+        self._session_note = note  # 같은 학습 프로세스의 알림(한 번만 옴)은 되감아도 남긴다
         self._adopt_run(msg)
 
     def _on_generation(self, msg: dict[str, Any]) -> None:
@@ -1192,6 +1198,11 @@ class LabView(QWidget):
             self.status.setText(self.status.text() + "\n" + self._stopped_line)
         self.status.setText(self.status.text() + "\n" + S.LAB_CHANGE_DONE.format(gen=gen))
 
+    def _on_notice(self, message: str) -> None:
+        """학습은 그대로 이어지는 알림: 막는 상자 대신 상태 글 끝줄로(세대가 와서 상태 글을 다시 만들어도 남는다)."""
+        self._session_note = message
+        self._update_status()
+
     def _on_failed(self, message: str, fatal: bool) -> None:
         QMessageBox.warning(self, S.LAB_ERROR_TITLE, message)
         if fatal:
@@ -1207,7 +1218,8 @@ class LabView(QWidget):
 
     def _update_status(self) -> None:
         if not self.rows:
-            self.status.setText(S.LAB_STATE_NAMES.get(self.state, self.state))
+            text = S.LAB_STATE_NAMES.get(self.state, self.state)
+            self.status.setText(text + ("\n" + self._session_note if self._session_note else ""))
             return
         last = self.rows[-1]
         champ = last.get("champion_score", "")
@@ -1225,6 +1237,8 @@ class LabView(QWidget):
             text += "\n" + self._switch_note
         if getattr(self, "platform_warning", None):
             text += "\n" + S.LAB_OTHER_PLATFORM.format(what=", ".join(self.platform_warning))
+        if self._session_note:
+            text += "\n" + self._session_note
         self.status.setText(text)
 
     def _learner_status(self, row: Mapping[str, Any]) -> str | None:

@@ -30,6 +30,7 @@ import numpy as np
 
 from evolab.app import strings as S
 from evolab.engine import seeds
+from evolab.runs.catalog import env_versions_until
 from evolab.runs.store import PENDING_SUFFIX, STATS_FILE, RunStore, RunStoreError
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.io import EnvFileError, compile_env, env_hash
@@ -128,13 +129,6 @@ def env_hash_of(env_text: str) -> str:
     return env_hash(compile_cached(env_text).file)[:16]
 
 
-def _from_generation(record: dict[str, Any]) -> int:
-    try:
-        return int(record.get("from_generation", 0))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _versions(store: RunStore) -> list[dict[str, Any]]:
     versions = store.read_run_info().get("env_versions") or []
     return [v for v in versions if isinstance(v, dict)]
@@ -145,8 +139,7 @@ def env_text_at(store: RunStore, generation: int) -> str:
 
     실험실 재생(LabView.env_text_for_generation)과 같은 규칙이다. 환경 기록이 없으면 RunStoreError.
     """
-    versions = _versions(store)
-    usable = [v for v in versions if _from_generation(v) <= int(generation) - 1] or versions[:1]
+    usable = env_versions_until(store.read_run_info(), int(generation) - 1)  # 체크포인트 generation−1까지의 환경
     if not usable:
         raise RunStoreError(S.RUNS_ENV_VERSION_MISSING.format(version="-"))
     return store.env_text(str(usable[-1].get("id")))

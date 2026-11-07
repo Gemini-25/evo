@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -306,9 +305,10 @@ def test_brain_source_show_time_and_visibility(qtbot: QtBot, tmp_path: Path) -> 
     qtbot.waitUntil(lambda: not tile.dirty)
 
 
-def test_brain_tile_falls_back_to_a_placeholder_without_brain_view(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, "evolab.app.lab.brain_view", None)
-    assert D.tile_class("brain") is W.BrainPlaceholderTile
+def test_tile_classes_of_both_pages() -> None:
+    from evolab.app.lab.brain_view import BrainTile
+
+    assert D.tile_class("brain") is BrainTile
     assert D.tile_class("genemap") is W.GeneMapTile and D.tile_class("trend") is D._TrendTile
 
 
@@ -495,6 +495,16 @@ def test_density_tile_asks_for_the_world_and_draws_the_layer(qtbot: QtBot, tmp_p
     tile.refresh()
     tile.hover_world(cx, cy)
     assert f"{int(dv.counts.max())}" in tile.legend.text()
+    # 대시보드는 세계 그림을 최근 GEOMETRY_CACHE개만 기억한다: 밀려난 세계를 다시 보면 다시 청한다(DENS_PREPARING에
+    # 멈추지 않는다)
+    for k in range(D.GEOMETRY_CACHE):
+        dash.set_world_geometry(f"other{k:02d}", geometry)
+    assert dash.world_geometry(TRACK_KEY) is None
+    tile.refresh()
+    assert asked[-1] == (5, TRACK_KEY) and len(asked) == 2
+    assert tile.message.text() == S.DENS_PREPARING
+    dash.set_world_geometry(TRACK_KEY, geometry)
+    assert tile.stack.currentWidget() is tile.host
 
 
 def test_density_of_changing_worlds_cannot_merge(qtbot: QtBot, tmp_path: Path) -> None:

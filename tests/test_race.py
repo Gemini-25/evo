@@ -340,6 +340,8 @@ def test_race_dialog_runs_to_ranks(qtbot: Any, runs: Runs, owner: QWidget) -> No
     assert len(view.lanes) == 3
     assert {view.grid.getItemPosition(view.grid.indexOf(lane))[:2] for lane in view.lanes} == {(0, 0), (0, 1), (0, 2)}
     assert all(lane.status.text() == S.RACE_PREPARING.format(done=0, total=3) for lane in view.lanes)
+    # 준비 중인 칸 캔버스에는 실험실 빈 화면 글(SPEC_NO_SCENE)을 쓰지 않는다(칸 아래 글줄이 알린다)
+    assert all(lane.canvas.world is None and lane.canvas.empty_text == "" for lane in view.lanes)
     qtbot.waitUntil(lambda: view.ready and view.playing, timeout=30000)  # 준비되면 저절로 출발
     view.pause()
     assert view.start_button.text() == S.RACE_START

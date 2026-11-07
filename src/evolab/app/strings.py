@@ -634,7 +634,6 @@ BUNDLE_SAME: Final = "원래 실행과 같습니다({gens}세대, 시간 열 제
 BUNDLE_DIFFERENT: Final = "원래 실행과 {gen}세대부터 다릅니다(다른 PC나 다른 빌드면 비트 단위로 같지 않을 수 있습니다)."
 CSV_DONE: Final = "통계 CSV를 저장했습니다: {path}"
 CLI_HELP_BUNDLE: Final = "실행 폴더에서 재현 묶음(zip)을 만듭니다."
-CLI_HELP_RUN_DIR: Final = "실행 폴더"
 CLI_HELP_BUNDLE_OUT: Final = "만들 zip 파일 (기본: 실행 폴더\\exports)"
 CLI_HELP_REPRODUCE: Final = "재현 묶음을 다시 돌리고 원래 통계와 비교합니다."
 CLI_HELP_BUNDLE_FILE: Final = "재현 묶음 zip 파일"
@@ -1361,8 +1360,8 @@ DASH_FOCUS_CURSOR: Final = "보는 세대"
 
 # 유전자 지도 (app/lab/watch_tiles.py, app/lab/history.py)
 GMAP_EMPTY: Final = "학습을 시작하면 세대마다 집단이 이 지도 위의 점으로 나타납니다. 가까운 점일수록 비슷한 개체입니다."
-GMAP_AXIS_X: Final = "지도 가로: 가장 크게 달라지는 방향 ({pct:.0f}%)"
-GMAP_AXIS_Y: Final = "지도 세로: 그다음으로 달라지는 방향 ({pct:.0f}%)"
+GMAP_AXIS_X: Final = "가로: 가장 크게 달라지는 방향 ({pct:.0f}%)"
+GMAP_AXIS_Y: Final = "세로: 그다음 방향 ({pct:.0f}%)"
 GMAP_COLOR_LABEL: Final = "색"
 GMAP_COLOR_MODES: Final = {"score": "점수", "success": "성공 비율"}
 GMAP_COLOR_TIP: Final = "점 색을 점수(색 막대)로 칠할지, 학습 시험에서 성공한 비율로 칠할지 고릅니다."
@@ -1381,6 +1380,7 @@ GMAP_GHOST: Final = "앞 세대"
 GMAP_HINT: Final = "점에 마우스를 올리면 개체 정보가 보이고, 흐린 점을 누르면 그 세대로, 두 번 누르면 그 개체를 다시 봅니다."
 GMAP_POINT_TIP: Final = "{gen}세대 {index}번 개체 · 점수 {score} · 시험 성공 {success}/{trials}"
 GMAP_POINT_TIP_REP: Final = "{gen}세대 대표({index}번 개체) · 점수 {score}"
+GMAP_POINT_TIP_OLD: Final = "{gen}세대 대표 · 점수 {score} (이 세대는 집단 기록이 없어 대표만 보입니다)"
 GMAP_CHAMPION_TIP: Final = "그때 챔피언({gen}세대에 뽑힘) · 검증 점수 {score}"
 GMAP_START_TIP: Final = "출발점: 처음 유전자(몸은 처음 값, 뇌는 모두 0)"
 GMAP_LABEL_INDIVIDUAL: Final = "{gen}세대 {index}번 개체"
@@ -1406,6 +1406,7 @@ BRAIN_EMPTY: Final = "학습을 시작하면 지금 가장 잘하는 개체의 �
 BRAIN_TITLE_CHAMPION: Final = "그때 챔피언({gen}세대) · 멈춘 그림"
 BRAIN_TITLE_LIVE: Final = "{gen}세대 대표 · 관전 화면과 같은 시험 · {t:.1f}초"
 BRAIN_TITLE_PLAYING: Final = "{label} · {t:.1f}초"
+BRAIN_TITLE_REP: Final = "{gen}세대 대표(그때 챔피언 없음) · 멈춘 그림"
 BRAIN_PREPARING: Final = "뉴런 움직임을 계산하는 중…"
 BRAIN_LEGEND: Final = "파랑 = 더하는 연결, 주황 = 빼는 연결, 굵을수록 셈 · 뉴런 색이 강할수록 지금 값이 큼"
 BRAIN_LEGEND_STILL: Final = "파랑 = 더하는 연결, 주황 = 빼는 연결, 굵을수록 셈 · 재생하면 뉴런이 켜집니다"
@@ -1503,12 +1504,7 @@ RACE_TOO_MANY: Final = "경주는 한 번에 {max}개까지입니다. 앞의 {ma
 RACE_NEED_GENS: Final = "세대 대표가 2세대 이상 있어야 세대끼리 경주할 수 있습니다."
 RACE_NO_CHAMPION: Final = "{name}: 그 시점까지 챔피언이 없어 세대 대표({gen}세대)로 달립니다."
 RACE_SKIPPED: Final = "{name}: 재생할 유전자를 읽지 못해 뺐습니다({reason})."
+RACE_NO_GENERATIONS: Final = "아직 끝낸 세대가 없습니다"
 RACE_FAILED: Final = "경주를 준비하지 못했습니다: {reason}"
 RACE_HUD: Final = "코스 {n} · {t:.1f}초 · {speed:g}배"
 VIDEO_RACE_TITLE: Final = "나란히 경주 · 코스 {n}"
-
-# ---- v1.2 그룹 B(대시보드 「보는 재미」 타일)에서 더한 문구 ----
-GMAP_POINT_TIP_OLD: Final = "{gen}세대 대표 · 점수 {score} (이 세대는 집단 기록이 없어 대표만 보입니다)"
-
-# ---- v1.2 그룹 D(나란히 경주: app/race/model.py)에서 더한 문구 ----
-RACE_NO_GENERATIONS: Final = "아직 끝낸 세대가 없습니다"

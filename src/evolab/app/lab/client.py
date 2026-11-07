@@ -51,6 +51,8 @@ class TrainingClient(QObject):
     rewound = Signal(dict)
     failed = Signal(str, bool)
     """(한국어 메시지, 학습 프로세스가 끝났는지)"""
+    notice = Signal(str)
+    """학습을 멈추지 않는 알림(관찰 기록 요약 실패 등: error 메시지에 notice가 참). 화면은 막지 않고 보여 준다."""
     closed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -175,7 +177,10 @@ class TrainingClient(QObject):
         elif kind == "rewind":
             self.rewound.emit(msg)
         elif kind == "error":
-            self.failed.emit(str(msg.get("message", "")), bool(msg.get("fatal")))
+            if msg.get("notice") and not msg.get("fatal"):
+                self.notice.emit(str(msg.get("message", "")))
+            else:
+                self.failed.emit(str(msg.get("message", "")), bool(msg.get("fatal")))
         elif kind == "closed":
             self._finish()
 

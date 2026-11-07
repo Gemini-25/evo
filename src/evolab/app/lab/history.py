@@ -40,6 +40,8 @@ LOAD_CHUNK: Final = 64
 PCA_SMALL_DIM: Final = 256
 """이 차원 이하는 누적 공분산(ΣX, ΣXᵀX) + eigh, 넘으면 표본의 무작위 PCA(D18)."""
 PCA_SAMPLE_ROWS: Final = 4096
+PCA_BATCH: Final = 64
+"""유전자 지도 누적 합에 한 번에 쌓아 더하는 세대 수(배경 읽기 묶음과 같은 크기)."""
 PCA_RANK: Final = 4
 """무작위 범위 찾기의 무작위 벡터 수(두 축 + 여유 둘)."""
 PCA_POWER_ITERS: Final = 2
@@ -318,12 +320,19 @@ class GenePCA:
 
     def add(self, genomes: np.ndarray) -> None:
         """세대 하나의 유전자 (N, D)(float16 가능)를 더한다."""
-        x = np.asarray(genomes, dtype=np.float64).reshape(-1, self.dim)
-        if self.s1 is not None and self.s2 is not None:
-            self.s1 += x.sum(axis=0)
-            self.s2 += x.T @ x
-        self.rows += int(x.shape[0])
-        self.generations += 1
+        self.add_many([genomes])
+
+    def add_many(self, blocks: Sequence[np.ndarray]) -> None:
+        """여러 세대의 유전자를 한 번에 더한다(세대마다 더한 합과는 부동소수 반올림만 다름). 배경 읽기의 묶음(64세대)을
+        numpy 몇 번으로 끝내, 화면 스레드가 세대마다 numpy를 부르며 읽기 스레드와 GIL을 수백 번 주고받지 않게 한다(T39)."""
+        for i in range(0, len(blocks), PCA_BATCH):  # 한 번에 쌓는 크기를 묶어 둔다(750세대를 한꺼번에 받아도)
+            parts = [np.asarray(b).reshape(-1, self.dim) for b in blocks[i:i + PCA_BATCH]]
+            x = (parts[0] if len(parts) == 1 else np.concatenate(parts)).astype(np.float64, copy=False)
+            if self.s1 is not None and self.s2 is not None:
+                self.s1 += x.sum(axis=0)
+                self.s2 += x.T @ x
+            self.rows += int(x.shape[0])
+            self.generations += len(parts)
 
     def wants_fit(self) -> bool:
         return self.generations > 0 and (self.fitted_generations == 0 or
@@ -464,6 +473,23 @@ class RunHistory:
 
     def add(self, entry: GenEntry, *, exact: np.ndarray | None = None) -> None:
         """세대 하나를 넣는다(같은 세대가 있으면 바꾼다). exact: 그 세대의 정확한 float64 집단(최근 64세대만 둔다)."""
+        blocks: list[np.ndarray] = []
+        self._put(entry, exact, blocks)
+        if blocks and self.pca is not None:
+            self.pca.add_many(blocks)
+        self.version += 1
+
+    def add_many(self, entries: Iterable[GenEntry]) -> None:
+        """여러 세대를 넣는다(배경 읽기의 묶음). 유전자 지도 누적 합은 새 세대들을 모아 한 번에 더한다."""
+        blocks: list[np.ndarray] = []
+        for e in entries:
+            self._put(e, None, blocks)
+        if blocks and self.pca is not None:
+            self.pca.add_many(blocks)
+        self.version += 1
+
+    def _put(self, entry: GenEntry, exact: np.ndarray | None, blocks: list[np.ndarray]) -> None:
+        """add·add_many의 몸통: 기록에 넣고, 처음 들어온 세대의 지도 유전자를 blocks에 모은다."""
         g = int(entry.generation)
         old = self._entries.get(g)
         self._entries[g] = entry
@@ -471,7 +497,7 @@ class RunHistory:
             bisect.insort(self.gens, g)
             genomes = entry.map_genomes
             if self.pca is not None and genomes is not None and genomes.shape[1] == self.pca.dim:
-                self.pca.add(genomes)
+                blocks.append(genomes)
         else:
             self._pca_stale = True
         if exact is not None:
@@ -479,11 +505,6 @@ class RunHistory:
             self._exact.move_to_end(g)
             while len(self._exact) > KEEP_EXACT:
                 self._exact.popitem(last=False)
-        self.version += 1
-
-    def add_many(self, entries: Iterable[GenEntry]) -> None:
-        for e in entries:
-            self.add(e)
 
     def add_champion(self, generation: int, genome: Any, score: float = math.nan) -> None:
         """챔피언 (뽑힌 세대, 유전자 float64, 검증 점수). 같은 세대면 바꾼다."""
@@ -600,10 +621,9 @@ class RunHistory:
         if self.pca is not None and self._pca_stale and self.layout is not None:
             old = self.pca
             pca = GenePCA(self.layout.dim)
-            for g in self.gens:
-                genomes = self._entries[g].map_genomes
-                if genomes is not None and genomes.shape[1] == pca.dim:
-                    pca.add(genomes)
+            blocks = [b for b in (self._entries[g].map_genomes for g in self.gens)
+                      if b is not None and b.shape[1] == pca.dim]
+            pca.add_many(blocks)
             pca.axes, pca.mean, pca.explained = old.axes, old.mean, old.explained
             pca.fitted_generations, pca.fits, pca.version = old.fitted_generations, old.fits, old.version + 1
             self.pca = pca
