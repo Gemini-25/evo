@@ -385,7 +385,8 @@ class PlayWindow(QWidget):
         keys_help = "\n".join(
             S.PLAY_KEY_LINE.format(keys=" / ".join(kb.key_names), label=kb.label) for kb in self.bindings
         )
-        help_label = QLabel(S.PLAY_HELP.format(keys=keys_help))
+        # v2.0 0단계: PLAY_HELP에 {pause} 자리가 생김. 지금은 Space만 일시정지(Esc·점프 게임 규칙은 묶음 C).
+        help_label = QLabel(S.PLAY_HELP.format(keys=keys_help, pause="Space"))
         help_label.setWordWrap(True)
 
         side = QVBoxLayout()

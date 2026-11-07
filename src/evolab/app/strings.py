@@ -218,7 +218,7 @@ PLAY_REPLAY_SAME: Final = "재생 결과가 기록과 같습니다 (점수 {scor
 PLAY_REPLAY_DIFF: Final = "재생 결과가 기록과 다릅니다: 기록 {a}, 재생 {b}"
 PLAY_REPLAY_ENV_DIFF: Final = "이 기록은 다른 내용의 환경 파일에서 만들었습니다. 결과가 다를 수 있습니다."
 PLAY_KEY_LINE: Final = "{keys}: {label}"
-PLAY_HELP: Final = "조종 키\n{keys}\n\nR 다시 시작 · N 새 시드 · Space 일시정지 · 마우스 휠 확대"
+PLAY_HELP: Final = "조종 키\n{keys}\n\nR 다시 시작 · N 새 시드 · {pause} 일시정지 · 마우스 휠 확대"
 PLAY_OPEN_FAILED: Final = "환경 파일을 열 수 없습니다"
 MENU_PLAY: Final = "직접 조종"
 MENU_PLAY_LANDER: Final = "달 착륙선 몰아 보기"
@@ -996,6 +996,21 @@ EDP_FIELD_NAMES: Final = {
     "TrackGen.width": "트랙 폭", "TrackGen.checkpoints": "체크포인트 수", "PadSpec.x": "패드 가운데 x",
     "PadSpec.width": "패드 폭", "EventBlock.value": "값 종류", "Spawn.x": "x", "Spawn.y": "y",
     "Spawn.angle": "각도", "Spawn.vx": "x 속도", "Spawn.vy": "y 속도", "Spawn.omega": "각속도",
+    # v2.0 움직이는 세계와 공기
+    "motion": "움직임", "PathMotion.points": "지날 점(물체 위치 기준)", "speed": "속력", "accel": "가속(초당)",
+    "start": "출발(초)", "mode": "방식", "spin": "회전 속도(rad/s)", "period": "주기(초)", "phase": "위상(주기 비율)",
+    "WaveMotion.amplitude": "흔들림 폭 (x, y)",
+    "Jump.speed": "점프 속도(m/s)", "Jump.dir": "뛰는 방향(라디안)", "ground": "땅으로 볼 것", "cooldown": "다시 뛰기까지(초)",
+    "Aero.density": "공기 밀도", "span": "날개 폭(화면 안쪽)", "aspect_ratio": "가로세로비", "stall": "실속 각도",
+    "Aero.friction": "표면 마찰", "surfaces": "공기를 받는 모양",
+    "Wing.le": "앞전 (x, y)", "chord": "시위 길이", "Wing.angle": "붙임각(라디안)", "thick": "두께(시위 비율)",
+    "camber": "휨(시위 비율)",
+    "Box.density": "이 모양 밀도", "Circle.density": "이 모양 밀도", "Poly.density": "이 모양 밀도",
+    "Radial.density": "이 모양 밀도", "Wing.density": "이 모양 밀도",
+    "ObstacleGen.count": "장애물 수", "ObstacleGen.x": "첫 장애물 x", "ObstacleGen.y": "바닥 y", "gap": "간격(초)",
+    "ObstacleGen.width": "폭 범위", "ObstacleGen.height": "높이 범위", "air_chance": "공중 장애물 비율",
+    "air_y": "공중 장애물 높이", "air_height": "공중 장애물 두께", "ObstacleGen.speed": "처음 속도",
+    "ObstacleGen.accel": "빨라지는 정도(초당)", "ObstacleGen.direction": "미는 방향(라디안)",
 }
 EDP_FIELD_TIPS: Final = {
     # 칸 도움말(모델 설명 앞에 붙는다). "모델.칸"이 있으면 그것이 먼저다.
@@ -1027,6 +1042,53 @@ EDP_FIELD_TIPS: Final = {
     "expr": "매 스텝 계산하는 수식('=' 없이). 참은 1입니다.",
     "inputs": "신경망 입력 순서. 켠 채널만 이 순서대로 넣습니다.",
     "outputs": "신경망 출력 순서. 켠 채널만 이 순서대로 씁니다.",
+    # v2.0 움직이는 세계와 공기 (묶은 exe에는 model.py 설명이 없으므로 새 칸마다 둔다)
+    "motion": "정해진 움직임 물체가 시간에 따라 움직이는 방법입니다. 모든 개체가 같은 움직임을 봅니다.",
+    "PathMotion.points": "지나갈 점들입니다. 물체 위치를 기준으로 적고 첫 점은 보통 (0, 0)입니다.",
+    "mode": "한 번: 끝에서 멈춤. 돌기: 끝에서 첫 점으로 이어 돎. 왕복: 끝에서 되돌아옴.",
+    "start": "이 시각까지 출발점에 서 있습니다. 랜덤 값을 쓰면 시험마다 달라집니다.",
+    "accel": "초마다 속력이 이만큼 늘어납니다. 음수면 느려지다 멈춥니다.",
+    "Jump.speed": "땅을 박차고 오르는 속도입니다. 점프 높이는 대략 속도² ÷ (2 × 중력)입니다.",
+    "ground": "여기에 닿아 있을 때만 뜁니다. 비우면 공중에서도 뜁니다(날갯짓).",
+    "cooldown": "한 번 뛴 뒤 다시 뛸 수 있을 때까지의 시간입니다.",
+    "Aero.density": "공기의 밀도(kg/m³). 바다 높이 공기는 약 1.2입니다.",
+    "span": "화면에 보이지 않는 안쪽 방향 날개 폭입니다. 공기힘이 이 폭에 비례합니다.",
+    "aspect_ratio": "날개 폭 ÷ 시위입니다. 클수록 같은 각도에서 양력이 크고 유도 항력이 작습니다. 0이면 끝없이 긴 날개.",
+    "stall": "이 받음각을 넘으면 흐름이 떨어져 양력이 줄고 항력이 커집니다.",
+    "surfaces": "모든 모양: 사각형·다각형·방사형·날개 모양 테두리가 모두 공기를 받습니다. 날개 모양만: 동체 같은 다른 모양은 받지 않습니다.",
+    "Wing.le": "날개의 앞쪽 끝(공기를 먼저 만나는 쪽)입니다. 물체 좌표로 적습니다.",
+    "chord": "앞전에서 뒷전까지 길이입니다.",
+    "Wing.angle": "시위가 기울어진 각도입니다. 양수면 앞전이 들립니다.",
+    "thick": "날개 두께를 시위 길이에 대한 비율로 적습니다. 0보다 크면 날개 모양이 늘 올바릅니다.",
+    "camber": "날개가 위로 휜 정도를 시위 길이에 대한 비율로 적습니다.",
+    "Box.density": "비우면 물체 재료의 밀도를 씁니다. 작고 무거운 추로 무게 중심을 옮길 때 씁니다.",
+    "Circle.density": "비우면 물체 재료의 밀도를 씁니다. 작고 무거운 추로 무게 중심을 옮길 때 씁니다.",
+    "Poly.density": "비우면 물체 재료의 밀도를 씁니다. 작고 무거운 추로 무게 중심을 옮길 때 씁니다.",
+    "Radial.density": "비우면 물체 재료의 밀도를 씁니다. 작고 무거운 추로 무게 중심을 옮길 때 씁니다.",
+    "Wing.density": "비우면 물체 재료의 밀도를 씁니다. 작고 무거운 추로 무게 중심을 옮길 때 씁니다.",
+    "gap": "앞 장애물과 이 장애물이 선수에게 닿는 시각의 차이(초)입니다. 빨라져도 뛸 틈이 남습니다.",
+    "air_chance": "이 비율만큼 장애물이 공중에 뜹니다. 서 있으면 지나가고 뛰면 부딪힙니다.",
+    # v2.0 0단계에서 더함: 설계 6절 목록에 없던 새 칸의 도움말(새 칸마다 도움말을 둔다는 D28·T47을 채움)
+    "PathMotion.speed": "길을 따라 움직이는 처음 속력(m/s)입니다.",
+    "spin": "제자리에서 도는 빠르기(rad/s)입니다. +는 반시계 방향입니다.",
+    "period": "한 번 오갔다 제자리로 돌아오는 시간(초)입니다.",
+    "phase": "흔들기를 주기의 몇 분의 1만큼 앞서 시작할지 적습니다(0~1).",
+    "WaveMotion.amplitude": "가운데에서 한쪽 끝까지 흔들리는 거리 (x, y)입니다.",
+    "Jump.dir": "뛰는 방향(라디안, 세계 기준)입니다. 1.57이면 위쪽입니다. 물체가 기울어도 바뀌지 않습니다.",
+    "Jump.keys": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W, Space). 점프에는 Space도 쓸 수 있습니다. R, N은 창 제어용이라 쓸 수 없습니다.",
+    "Aero.friction": "공기가 표면을 스치며 생기는 마찰 계수입니다. 보통 0.01 안팎입니다.",
+    "ObstacleGen.seed": "장애물 줄을 뽑는 시드입니다. 랜덤 값(=r.이름)을 쓰면 시험마다 다른 줄이 나옵니다.",
+    "ObstacleGen.count": "줄에 놓을 장애물 수입니다.",
+    "ObstacleGen.x": "첫 장애물이 출발하는 x 위치입니다. 선수 시작 위치에서 2m 넘게 떨어뜨리세요.",
+    "ObstacleGen.y": "장애물이 놓이는 바닥 높이입니다.",
+    "ObstacleGen.width": "장애물 폭을 이 범위(최소, 최대)에서 뽑습니다.",
+    "ObstacleGen.height": "땅 장애물 높이를 이 범위(최소, 최대)에서 뽑습니다.",
+    "air_y": "공중 장애물 아랫면이 바닥에서 떠 있는 높이 범위입니다.",
+    "air_height": "공중 장애물 두께 범위입니다.",
+    "ObstacleGen.speed": "장애물 줄이 처음 다가오는 속도(m/s)입니다.",
+    "ObstacleGen.accel": "초마다 장애물 줄이 이만큼 빨라집니다. 음수면 느려지다 멈춥니다.",
+    "ObstacleGen.direction": "장애물 줄을 미는 방향(라디안)입니다. 3.14면 왼쪽(선수 쪽)입니다.",
+    "ObstacleGen.friction": "장애물 표면의 마찰입니다.",
 }
 EDP_VALUE_NAMES: Final = {
     # 고르기 칸의 값 -> 화면 이름. "칸.값"이 있으면 그것이 먼저다.
@@ -1052,6 +1114,10 @@ EDP_VALUE_NAMES: Final = {
     "timeout": "시간 초과", "out_of_bounds": "경계 이탈",
     "x": "x 위치", "y": "y 위치", "vx": "x 속도", "vy": "y 속도", "speed": "속력", "angle": "각도",
     "omega": "각속도", "v_fwd": "앞뒤 속도", "v_lat": "옆 속도",
+    # v2.0 움직이는 세계와 공기 ("kinematic": "정해진 움직임"은 위에 있음). all은 다른 칸("전부")과 겹치지 않게 칸 이름을 붙임
+    "path": "경로", "wave": "흔들기", "once": "한 번", "loop": "돌기", "pingpong": "왕복",
+    "jump": "점프 추진기", "aero": "공기역학", "wing": "날개", "obstacles": "장애물 줄",
+    "surfaces.all": "모든 모양", "surfaces.wings": "날개 모양만",
 }
 EDP_SECTION_NAMES: Final = {
     "bodies": "물체", "joints": "관절", "actuators": "구동기", "sensors": "센서", "regions": "영역",
@@ -1145,7 +1211,7 @@ EDP_BRAIN_CHANNEL: Final = "{name}  ({label})"
 EDP_BRAIN_PARAMS_NONE: Final = "검사 오류가 있어 파라미터 수를 계산할 수 없습니다."
 EDP_BRAIN_NO_CHANNELS: Final = "파일 구조에 오류가 있어 채널 목록을 만들 수 없습니다. 검사 결과 탭을 보세요."
 EDP_BRAIN_UNKNOWN: Final = "{name} (없는 채널)"
-EDP_ISSUES_SEVERITY: Final = {"error": "오류", "warning": "경고"}
+EDP_ISSUES_SEVERITY: Final = {"error": "오류", "warning": "경고", "info": "안내"}
 EDP_ISSUES_HEADERS: Final = ("종류", "위치", "내용")
 EDP_ISSUES_NONE: Final = "문제가 없습니다."
 EDP_ISSUES_HINT: Final = "두 번 누르면 그 부품을 고르고 화면을 옮깁니다."
@@ -1517,3 +1583,80 @@ DASH_AXIS_TOOLTIP_V12: Final = "점수 추이, 탐색 폭, 종료 원인, 처리
 RACE_LANE_DUP: Final = "{name} ({tag})"
 RACE_LANE_BRANCH_TAG: Final = "{gen}세대에서 분기"
 VIDEO_NO_MEMORY: Final = "메모리가 모자라 영상을 저장하지 못했습니다."
+
+# ---------------------------------------------------------------------------
+# v2.0 움직이는 세계와 공기: 점프 게임, 글라이더 (0단계: 설계 6절 v2.0 전체 목록)
+# 에디터 칸 이름·도움말·고르기 값은 위 EDP_FIELD_NAMES·EDP_FIELD_TIPS·EDP_VALUE_NAMES에, 검사 심각도 「안내」는
+# EDP_ISSUES_SEVERITY에 더했고, PLAY_HELP는 제자리에서 {pause} 자리로 바꿨다(PLAY_PAUSE_KEYS로 채움).
+# 설계의 PLAY_BUILD_FAILED(몸 조립 실패)는 이미 있는 PLAY_BUILD_FAILED(시드로 환경 조립 실패)와 이름이 겹쳐
+# PLAY_BODY_BUILD_FAILED로 둔다.
+# ---------------------------------------------------------------------------
+# v2 환경 파일 검사 (spec/compiled.py)
+SPEC_KINEMATIC_AGENT: Final = "에이전트 물체 '{id}'는 정해진 움직임이 될 수 없습니다. 세계 물체만 스스로 움직일 수 있습니다."
+SPEC_MOTION_NOT_KINEMATIC: Final = "물체 '{id}'에 움직임이 있지만 움직임 종류가 '정해진 움직임'이 아닙니다."
+SPEC_KINEMATIC_NO_MOTION: Final = "물체 '{id}'는 정해진 움직임인데 움직임이 없어 고정 물체와 같습니다."
+SPEC_MOTION_STILL: Final = "물체 '{id}'의 길 길이나 속력이 0이라 움직이지 않습니다."
+SPEC_MOTION_PERIOD: Final = "물체 '{id}'의 흔들기 주기는 0보다 커야 합니다."
+SPEC_KEY_SPACE_JUMP_ONLY: Final = "Space 키는 점프 추진기에만 쓸 수 있습니다 ('{id}')."
+SPEC_AERO_NO_EDGES: Final = "공기역학 '{id}': 물체 '{body}'에 공기를 받을 모양이 없습니다(원과 선은 받지 않습니다)."
+SPEC_AERO_RANGE: Final = "공기역학 '{id}'의 {name} 값이 범위 밖입니다."
+SPEC_WING_SIZE: Final = "물체 '{id}'의 날개 모양은 시위와 두께가 0보다 커야 합니다."
+SPEC_SHAPE_DENSITY_STATIC: Final = "물체 '{id}'는 움직이지 않는 물체라 모양별 밀도를 쓰지 않습니다."
+SPEC_OBSTACLES_GAP: Final = "장애물 줄 '{id}'의 간격(초)은 0보다 커야 합니다."
+SPEC_OBSTACLES_START: Final = "장애물 줄 '{id}'의 첫 장애물이 에이전트 시작 위치에 너무 가깝습니다(2m 이상 떨어뜨리세요)."
+SPEC_BRAINLESS: Final = "출력이 없어 뇌 없이 몸만 진화합니다."
+
+# v2 런타임·판정 (world/physics2d, engine/evaluate.py, engine/commands.py, cli.py)
+RT_BUILD_FAILED_END: Final = "조립 실패"
+JUDGE_RESULT_NO_SUCCESS: Final = ("판정({gen}세대 챔피언, 판정 시드 {n}개): 평균 점수 {mean:.2f} (이 환경에는 성공 판정이 없습니다)\n"
+                                  "종료 원인: {ends}")
+CLI_JUDGE_PROGRESS: Final = "진행 거리({block}) 중앙값 {median:.1f}m, 하위 10% {p10:.1f}m"
+BENCH_V2_PARTS: Final = "v2 부품: 움직이는 물체 {movers}개, 공기역학 변 {edges}개, 한 스텝 상한 발동 {clamped}스텝"
+NO_SUCCESS_CELL: Final = "—"
+
+# v2 에디터 도구·캔버스 (app/editor/tools.py, palette.py, canvas.py, view.py, forms.py)
+EDC_GROUP_MOTION: Final = "움직임과 공기"
+EDC_TOOL_PATH: Final = "길 그리기"
+EDC_TOOL_OBSTACLES: Final = "장애물 줄"
+EDC_TOOL_JUMP: Final = "점프 추진기"
+EDC_TOOL_WING: Final = "날개"
+EDC_TOOL_AERO: Final = "공기역학"
+EDC_HINT_PATH: Final = "세계 물체를 누른 뒤 지날 점을 차례로 누릅니다. 두 번 누르거나 Enter로 끝, Esc로 취소."
+EDC_HINT_OBSTACLES: Final = "다가오는 장애물 줄을 더합니다. 간격·크기·빨라지는 정도는 생성기 탭에서 고칩니다."
+EDC_HINT_JUMP: Final = "에이전트 물체를 눌러 점프 추진기를 달고, 끌어서 뛰는 방향을 정합니다."
+EDC_HINT_WING: Final = "에이전트 물체 위에서 앞전부터 뒷전까지 끌어 날개 모양을 그립니다."
+EDC_HINT_AERO: Final = "에이전트 물체를 누르면 그 물체의 테두리가 공기를 받습니다(양력과 항력)."
+EDC_PATH_WORLD_ONLY: Final = "길은 세계 물체에만 그릴 수 있습니다."
+EDC_PATH_TOO_MANY: Final = "길의 점은 256개까지입니다."
+EDC_ACTUATOR_AGENT_ONLY: Final = "이 부품은 에이전트의 움직이는 물체에만 달 수 있습니다."
+EDC_UNDO_MAKE_MOVING: Final = "움직이는 물체로 바꾸기"
+EDC_UNDO_ADD_WING: Final = "날개 모양 더하기"
+EDC_OBSTACLES_MORE: Final = "→ 장애물 {count}개"
+EDP_JUMP_HEIGHT: Final = "점프 높이 약 {h:.1f}m (중력 {g:.1f} 기준, 어림)"
+EDP_WING_AREA: Final = "날개 면적 {a:.2f}m² (시위 {c:.2f}m × 폭 {s:.2f}m)"
+EDP_PATH_INFO: Final = "길 길이 {length:.1f}m, 한 바퀴 {period:.1f}초"
+EDP_PATH_LENGTH: Final = "길 길이 {length:.1f}m"
+EDP_PATH_DRAW: Final = "캔버스에서 길 그리기"
+EDP_BRAIN_NONE: Final = "뇌가 없는 환경입니다(출력이 없음). 몸 수치만 진화합니다."
+EDP_HIDDEN_NONE: Final = "은닉층 없음"
+ED_PREVIEW_TIME: Final = "미리보기 시각"
+ED_PREVIEW_PLAY: Final = "움직임 미리보기"
+ED_PREVIEW_TIME_TIP: Final = "정해진 움직임 물체가 이 시각에 어디 있는지 봅니다(학습에는 영향 없음). 고치면 0초로 돌아갑니다."
+ED_VIEW_SAVE: Final = "지금 보기를 기본 보기로"
+ED_VIEW_CLEAR: Final = "기본 보기 지우기"
+ED_VIEW_SAVED: Final = "기본 보기를 저장했습니다. 직접 조종과 실험실도 이 보기로 시작합니다."
+ED_BUILTIN_JUMP: Final = "점프 게임"
+ED_BUILTIN_GLIDER: Final = "글라이더"
+
+# v2 직접 조종 (app/play/window.py)
+PLAY_PAUSE_KEYS: Final = {"both": "Space·Esc", "esc": "Esc"}
+PLAY_JUMP_READY: Final = "점프 준비됨"
+PLAY_JUMP_AIR: Final = "공중"
+PLAY_WATCH_ONLY: Final = "조종할 것이 없는 환경입니다. 지켜보세요."
+PLAY_BODY_BUILD_FAILED: Final = "이 몸은 만들 수 없습니다(모양이 올바르지 않음)."
+
+# v2 실험실·대시보드 (app/lab/view.py, watch_tiles.py, brain_view.py)
+LAB_BUILD_FAILED_N: Final = "이 세대에 몸을 만들 수 없는 개체가 {n}개 있습니다(가장 낮은 점수로 셈)."
+DASH_EMPTY_NO_BRAIN: Final = "이 환경은 뇌가 없습니다. 몸만 진화합니다."
+DASH_EMPTY_NO_OUTPUTS: Final = "구동기 출력이 없습니다."
+DASH_END_BUILD_FAILED: Final = "조립 실패"
