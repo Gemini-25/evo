@@ -13,7 +13,6 @@ import multiprocessing.util  # noqa: F401  아래 atexit 순서 때문에 먼저
 import queue
 import threading
 import time
-import weakref
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -25,7 +24,8 @@ POLL_MS = 15
 MAX_PER_TICK = 32
 
 
-_LIVE: weakref.WeakSet[TrainingClient] = weakref.WeakSet()
+_LIVE: set[TrainingClient] = set()
+"""살아 있는 학습 프로세스를 가진 클라이언트(강한 참조: 클라이언트가 정리 없이 버려져도 끝날 때 정리한다)."""
 
 
 def _close_all_at_exit() -> None:

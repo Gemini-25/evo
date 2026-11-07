@@ -34,6 +34,21 @@ from evolab.world.physics2d.episode import Trial
 
 POLL_S = 0.2
 MAX_RETRIES = 2
+WAIT_CHUNK = 60
+"""윈도우 WaitForMultipleObjects는 한 번에 63개까지만 기다린다(워커 30개를 넘으면 결과 파이프 + 프로세스 신호가 넘침)."""
+
+
+def _wait(objs: list[Any], timeout: float) -> list[Any]:
+    """multiprocessing.connection.wait를 핸들 수 제한 없이: 많으면 나눠서 먼저 훑고, 없으면 첫 묶음만 기다린다."""
+    if len(objs) <= WAIT_CHUNK:
+        return list(wait(objs, timeout=timeout))
+    chunks = [objs[i:i + WAIT_CHUNK] for i in range(0, len(objs), WAIT_CHUNK)]
+    ready: list[Any] = []
+    for chunk in chunks:
+        ready += wait(chunk, timeout=0)
+    if ready:
+        return ready
+    return list(wait(chunks[0], timeout=timeout))
 
 
 class PoolError(RuntimeError):
@@ -219,7 +234,7 @@ class WorkerPool:
             # 일하던 워커가 보내는 결과는 받아서 버린다(안 받으면 윈도우에서 보내기가 끝나지 않는다).
             conns = {link.result_conn: s for s, (p, link) in live.items()}
             try:
-                ready = wait(list(conns) + list(live), timeout=0.1)
+                ready = _wait(list(conns) + list(live), timeout=0.1)
             except OSError:
                 break
             for obj in ready:
@@ -309,7 +324,7 @@ class WorkerPool:
             feed(w)
         while done < len(tasks):
             busy = {self._links[w].result_conn: w for w in running}
-            for conn in wait(list(busy) + [p.sentinel for p in self._procs], timeout=POLL_S):
+            for conn in _wait(list(busy) + [p.sentinel for p in self._procs], timeout=POLL_S):
                 w = busy.get(conn) if not isinstance(conn, int) else None
                 if w is None:
                     continue  # 프로세스 종료 신호: 아래 복구에서 처리

@@ -100,7 +100,7 @@ def reproduce(bundle: Path, runs_dir: Path, workers: int | None = None,
                               "memo": S.BUNDLE_MEMO.format(run=data["manifest"].get("run"))})
     with WorkerPool(n) as pool:
         trainer = Trainer(first, config, pool, store)
-        while trainer.state.generation < target:
+        while True:
             g = trainer.state.generation
             for e in changes.get(g, []):
                 if e["kind"] == "config_change":
@@ -111,6 +111,8 @@ def reproduce(bundle: Path, runs_dir: Path, workers: int | None = None,
                     trainer.replace_env(text)
                     store.add_env_version(text, g)
                     store.append_event("env_change", g, version=e["version"])
+            if g >= target:
+                break
             row = trainer.step()
             if on_generation is not None:
                 on_generation(row)

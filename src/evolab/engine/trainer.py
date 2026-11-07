@@ -124,6 +124,14 @@ class TrainConfig:
         for name in ("popsize", "validate_every", "validation_seeds", "validation_candidates"):
             if not is_int(getattr(self, name)) or getattr(self, name) < 1:
                 raise bad(name)
+        if self.popsize < 2:
+            raise bad("popsize")
+        if not is_int(self.run_seed) or self.run_seed < 0:
+            raise bad("run_seed")
+        if not is_num(self.sigma0) or self.sigma0 <= 0:
+            raise bad("sigma0")
+        if not is_int(self.diagonal_threshold) or self.diagonal_threshold < 0:
+            raise bad("diagonal_threshold")
         if not is_int(self.checkpoint_every) or self.checkpoint_every < 0:
             raise bad("checkpoint_every")
         for name in ("trials", "max_generations", "max_evaluations", "stagnation_generations"):
@@ -350,6 +358,9 @@ class Trainer:
         t0 = self.clock()
         s = self.state
         gen = s.generation
+        # 세대가 끝까지(통계·챔피언 저장까지) 가지 않으면 이 트레이너는 반쯤 바뀐 상태다(learner.tell, 세대 번호).
+        # 그 상태로는 체크포인트를 남기지 않는다(리뷰: 끝나지 않은 세대가 체크포인트되어 통계 줄이 빠짐).
+        self.in_step = True
         X = self.learner.ask()
         trials = training_trials(self.spec, self.config.run_seed, gen, self.trials)
         pairs = [(i, t) for i in range(X.shape[0]) for t in trials]
@@ -360,6 +371,7 @@ class Trainer:
         else:
             res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, X, pairs)
         eval_wall = self.clock() - t_eval
+        busy = float(getattr(self.evaluator, "last_busy", 0.0) or 0.0)  # 검증 평가가 덮어쓰기 전에 읽는다
         pop, T = X.shape[0], len(trials)
         scores = res.scores.reshape(pop, T)
         agg = aggregate(scores, self.how)
@@ -381,7 +393,6 @@ class Trainer:
 
         row = self._stats_row(label, X, agg, res, rep, validated, gen_time)
         workers = max(1, int(getattr(self.evaluator, "workers", 1) or 1))
-        busy = float(getattr(self.evaluator, "last_busy", 0.0) or 0.0)
         row["worker_utilization"] = min(1.0, busy / (workers * eval_wall)) if eval_wall > 0 else 0.0
         row = self._fit_columns(row)
         self.last_stats = row
@@ -392,9 +403,11 @@ class Trainer:
                                           s.champion.generation != champion_before)
         if self.store is not None:
             self.store.append_stats(row)
-            self.store.save_champion(label, "representative", X[rep], score=float(agg[rep]))
-            if self.config.checkpoint_every and s.generation % self.config.checkpoint_every == 0:
-                self.checkpoint()
+            self.store.save_champion(label, "representative", X[rep], score=float(agg[rep]),
+                                     env_version=self.env_version)
+        self.in_step = False
+        if self.store is not None and self.config.checkpoint_every and s.generation % self.config.checkpoint_every == 0:
+            self.checkpoint()
         return row
 
     def _validate(self, X: np.ndarray, agg: np.ndarray) -> float:
@@ -414,7 +427,7 @@ class Trainer:
             self._compare(cands[best])
             if self.store is not None:
                 self.store.save_champion(s.generation, "champion", cands[best], score=float(val[best]),
-                                         compare_score=s.compare_score)
+                                         compare_score=s.compare_score, env_version=self.env_version)
         if val[best] > s.best_validation:
             s.best_validation = float(val[best])
             s.improved_generation = s.generation
@@ -497,7 +510,22 @@ class Trainer:
         self.config = trial_config
         self.trials = trials_for(self.spec, self.config)
         self.how = self.config.aggregate or self.spec.file.evaluation.aggregate
+        if "validate_every" in done:
+            # 검증은 학습 시험 수가 새 주기의 배수를 넘을 때마다: 지금까지 한 수를 새 단위로 바꿔야 바로 이어진다
+            self.state.validations_done = self.state.evaluations // self.config.validate_every
         return done
+
+    def changeable_state(self) -> dict[str, Any]:
+        """설정 변경·환경 교체를 되돌릴 때 쓰는 사본(저장에 실패하면 트레이너를 그대로 돌려놓는다)."""
+        return {"config": TrainConfig.from_dict(self.config.to_dict()), "env_text": self.env_text, "spec": self.spec,
+                "env_version": self.env_version, "trials": self.trials, "how": self.how,
+                "validations_done": self.state.validations_done}
+
+    def restore_changeable(self, snap: dict[str, Any]) -> None:
+        self.config = snap["config"]
+        self.env_text, self.spec, self.env_version = snap["env_text"], snap["spec"], snap["env_version"]
+        self.trials, self.how = snap["trials"], snap["how"]
+        self.state.validations_done = snap["validations_done"]
 
     def replace_env(self, env_text: str) -> str:
         """환경을 바꾼다(유전자 배치, 점수 블록, 종료 조건 목록이 같아야 한다). 새 환경 버전 id(해시)를 돌려준다."""
@@ -566,6 +594,8 @@ class Trainer:
         )
 
     def checkpoint(self) -> None:
+        if getattr(self, "in_step", False):
+            return  # 끝나지 않은 세대(오류로 중간에 멈춤): 마지막 정상 체크포인트를 그대로 둔다
         if self.store is not None and self.state.generation:
             self.store.save_checkpoint(self.state.generation, self.state_dict())
 

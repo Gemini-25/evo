@@ -179,14 +179,28 @@ def judge_command(args: Any) -> int:
     gen = gens[-1]
     champ = store.load_champion(gen, "champion")
     info = store.read_run_info()
-    versions = [v for v in info["env_versions"] if v["from_generation"] <= gen] or info["env_versions"][:1]
+    # 챔피언은 gen세대를 계산할 때 쓴 환경으로 잰다: 적용 세대가 gen - 1 이하인 마지막 버전
+    # (gen세대 경계에서 바꾼 환경은 gen + 1세대부터 쓴다).
+    versions = [v for v in info["env_versions"] if v["from_generation"] <= gen - 1] or info["env_versions"][:1]
     env_text = store.env_text(versions[-1]["id"])
+    want = str(champ["env_version"]) if "env_version" in champ else None
+    if want is not None and env_hash(compile_env(env_text).file)[:16] != want:
+        for v in info["env_versions"]:  # 챔피언 파일에 적힌 환경 버전이 있으면 그것으로
+            text = store.env_text(v["id"])
+            if env_hash(compile_env(text).file)[:16] == want:
+                env_text = text
+                break
     spec = compile_env(env_text)
     layout = layout_for(spec)
     trials = seeds.judge_trials(args.seeds)
     workers = args.workers if args.workers is not None else default_workers()
-    with WorkerPool(workers) as pool:
-        res = pool.evaluate(env_hash(spec.file)[:16], env_text, layout, champ["genome"][None, :], [(0, t) for t in trials])
+    try:
+        with WorkerPool(workers) as pool:
+            res = pool.evaluate(env_hash(spec.file)[:16], env_text, layout, champ["genome"][None, :],
+                                [(0, t) for t in trials])
+    except PoolError as exc:
+        warn(str(exc))
+        return 3
     success = sum(1 for o in res.outcomes if o == "success")
     labels = {t.event: (t.label or t.event) for t in spec.terminations}
     counts: dict[str, int] = {}
@@ -284,6 +298,9 @@ def reproduce_command(args: Any) -> int:
     try:
         original = read_bundle(Path(args.bundle))["stats"]
         new_dir = reproduce(Path(args.bundle), base, args.workers, progress)
+    except PoolError as exc:
+        warn(str(exc))
+        return 3
     except (RunStoreError, EnvFileError, ValueError, OSError) as exc:
         warn(str(exc))
         return 2

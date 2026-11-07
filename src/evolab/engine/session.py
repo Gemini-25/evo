@@ -276,7 +276,7 @@ class Session:
             self.spectate = bool(msg.get("spectate"))
             self.acked = self.trainer.state.generation
         elif kind == "played":
-            self.acked = max(self.acked, int(msg.get("generation", 0)))
+            self.acked = min(self.trainer.state.generation, max(self.acked, int(msg.get("generation", 0))))
         elif kind == "config":
             self._apply(msg, "config")
         elif kind == "env":
@@ -290,6 +290,7 @@ class Session:
             self._send({"type": "applied", "what": what, "ok": False, "message": S.SESSION_PAUSE_FIRST})
             return
         t, gen = self.trainer, self.trainer.state.generation
+        snap = t.changeable_state()
         try:
             if what == "config":
                 changes = t.apply_config(dict(msg.get("changes") or {}))
@@ -308,7 +309,10 @@ class Session:
                     self._mark_change_point()
                 self._send({"type": "applied", "what": what, "ok": True, "generation": gen,
                             "env_text": t.env_text, "env_version": t.env_version})
-        except (TrainerChangeError, EnvFileError, ValueError) as exc:
+        except (TrainerChangeError, EnvFileError, ValueError, OSError) as exc:
+            # 기록(run.json, events.jsonl, 체크포인트)에 실패했으면 트레이너도 바꾸기 전으로 되돌린다:
+            # 기록되지 않은 환경·설정으로 학습하면 이어하기·재현이 어긋난다.
+            t.restore_changeable(snap)
             self._send({"type": "applied", "what": what, "ok": False, "message": _reason(exc)})
 
     def _mark_change_point(self) -> None:

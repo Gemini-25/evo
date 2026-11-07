@@ -57,6 +57,8 @@ SPEEDS = (1, 2, 4, 8)
 COLOR_OLD = QColor(80, 140, 255)
 COLOR_NOW = QColor(255, 120, 40)
 MARK_KINDS = ("resume", "env_change", "config_change", "branch")
+SHUTDOWN_WAIT_S = 120.0
+"""창을 닫을 때 이번 세대를 마치고 체크포인트를 남길 때까지 기다리는 시간(큰 개체 수는 세대가 길다)."""
 
 
 def settings_store() -> QSettings:
@@ -625,7 +627,7 @@ class LabView(QWidget):
             self.setCursor(Qt.CursorShape.WaitCursor)
             self.status.setText(S.LAB_CLOSE_WAIT)
             try:
-                self.client.shutdown()
+                self.client.shutdown(timeout=SHUTDOWN_WAIT_S)
             finally:
                 self.unsetCursor()
 
@@ -1148,7 +1150,7 @@ class LabView(QWidget):
 
     def shutdown(self) -> None:
         self._timer.stop()
-        self.client.shutdown()
+        self.client.shutdown(timeout=SHUTDOWN_WAIT_S)
         for th in list(self._threads):
             th.wait(10000)
 

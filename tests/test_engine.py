@@ -301,3 +301,51 @@ def test_gui_replay_matches_worker_score_and_trajectory(batch: Any) -> None:
         assert r.observations is not None and r.observations.shape == (r.result.steps, layout.brain.n_in)
         assert [a.shape[1] for a in r.activations] == [fo for _, fo in layout.brain.shapes]
         assert len(r.agent) == r.trajectory.poses.shape[1]
+
+
+def test_unfinished_generation_is_never_checkpointed(tmp_path: Path) -> None:
+    """세대 도중 오류(통계 저장 실패 등)로 끝나면 그 세대는 체크포인트되지 않는다(리뷰: 통계 줄이 영구히 빠짐)."""
+    store = make_store(tmp_path, "도중 오류")
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, small_config(max_generations=10), pool, store)
+        t.step()
+        t.step()
+        t.checkpoint()
+        real = store.append_stats
+
+        def broken(row: dict[str, Any]) -> None:
+            raise OSError("locked")
+
+        store.append_stats = broken  # type: ignore[method-assign]
+        with pytest.raises(OSError):
+            t.step()
+        store.append_stats = real  # type: ignore[method-assign]
+        t.checkpoint()  # 끝나지 않은 3세대: 남기지 않는다
+    assert store.checkpoints() == [2]
+    with WorkerPool(0) as pool:
+        resumed = Trainer.resume(store, pool)
+        resumed.run()
+    assert [int(r["generation"]) for r in store.read_stats()] == list(range(1, 11))
+
+
+def test_changing_validate_every_keeps_validating() -> None:
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, small_config(max_generations=40, validate_every=12), pool)
+        for _ in range(6):
+            t.step()
+        before = t.state.validations_done
+        t.apply_config({"validate_every": 24})
+        assert t.state.validations_done == t.state.evaluations // 24
+        rows = [t.step() for _ in range(4)]
+    assert before > 0 and any(r["validation_best"] != "" for r in rows)
+
+
+def test_pool_wait_handles_many_objects() -> None:
+    from evolab.engine import pool as pool_mod
+
+    import multiprocessing as mp
+
+    conns = [mp.Pipe(duplex=False) for _ in range(70)]
+    conns[65][1].send("x")
+    ready = pool_mod._wait([r for r, _ in conns], timeout=1.0)
+    assert ready == [conns[65][0]]
