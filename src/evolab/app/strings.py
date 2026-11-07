@@ -422,7 +422,8 @@ DASH_PERF_GEN_SECONDS: Final = "세대당 시간(초)"
 DASH_PERF_STEPS: Final = "초당 시뮬레이션 스텝"
 DASH_PERF_UTIL: Final = "워커 사용률(%)"
 DASH_PERF_AXES: Final = {"gen_seconds": "초", "steps_per_second": "스텝/초", "worker_utilization": "%"}
-DASH_MARK_LABELS: Final = {"resume": "이어하기", "env_change": "환경 수정", "config_change": "설정 변경", "branch": "분기"}
+DASH_MARK_LABELS: Final = {"resume": "이어하기", "env_change": "환경 수정", "config_change": "설정 변경", "branch": "분기",
+                            "restart": "새로 시작", "qualify_next": "예선 다음", "qualify_pick": "예선 끝"}
 DASH_MARK_TOOLTIP: Final = "{gen}세대: {label}"
 DASH_HOVER_X: Final = {"generation": "{gen}세대", "evaluations": "{gen}세대 · 시험 {x}회", "elapsed": "{gen}세대 · {x}초"}
 # M3 records (기록 화면, 실행 목록·분기·삭제)
@@ -490,7 +491,7 @@ LAB_TARGET: Final = "목표 점수"
 LAB_STAGNATION: Final = "정체 세대"
 LAB_NONE: Final = "없음"
 LAB_APPLY: Final = "설정 적용"
-LAB_APPLY_TIP: Final = "멈춘 상태에서 정지 조건과 시험 횟수를 바꿉니다."
+LAB_APPLY_TIP: Final = "멈춘 상태에서 정지 조건, 시험 횟수, 자동 재시작 설정을 바꿉니다."
 LAB_CONTROL_GROUP: Final = "진행"
 LAB_START: Final = "새로 시작"
 LAB_PAUSE: Final = "멈춤"
@@ -553,7 +554,7 @@ PLAY_KEY_FORWARD: Final = "{name} 앞으로"
 PLAY_KEY_BACK: Final = "{name} 뒤로"
 PLAY_KEY_LEFT: Final = "{name} 왼쪽"
 PLAY_KEY_RIGHT: Final = "{name} 오른쪽"
-CLI_HELP_IPOP: Final = "정체하면 개체 수를 두 배로 늘려 다시 시작(IPOP-CMA-ES)"
+CLI_HELP_IPOP: Final = "pycma 종료 조건이 차면 개체 수를 두 배로 늘려 다시 시작(IPOP-CMA-ES, 자동 재시작 --restart와 다름)"
 
 # M4 트랙 생성기 (generators/track.py)
 TRACK_ERR_SEED: Final = "트랙 시드는 0 이상의 정수여야 합니다 (받은 값: {value})."
@@ -648,7 +649,7 @@ VIDEO_DONE: Final = "영상을 저장했습니다: {path}"
 VIDEO_NOTHING: Final = "먼저 타임라인에서 세대 대표를 재생하거나 '1세대 대표와 지금 챔피언'을 누르세요."
 
 # M6 실험실 방법별 설정 (lead)
-LAB_IPOP: Final = "정체하면 개체 수 2배로 재시작(IPOP)"
+LAB_IPOP: Final = "pycma 종료 조건이 차면 개체 수 2배로 다시 시작(IPOP, CMA-ES만)"
 LAB_GA_ELITES: Final = "엘리트 수"
 LAB_GA_CROSSOVER: Final = "교차 확률"
 LAB_GA_MUT_RATE: Final = "돌연변이 확률"
@@ -1245,3 +1246,70 @@ RV2_ARGPARSE_TEXT: Final = {
     "unexpected option string: %s": "예상하지 못한 옵션입니다: %s",
 }
 RV2_CLI_COMMAND_METAVAR: Final = "명령"
+
+# ---------------------------------------------------------------------------
+# v1.1 학습 안정성: 정체하면 새로 시작, 예선 (명세: 학습 방법, 부록 A25~A32)
+# 용어: 예선 단계의 학습 방법은 "출전 1…K", 본선의 학습 방법은 "시도 n"(재시작 수 + 1). 내부 번호는 화면에 쓰지 않는다.
+# ---------------------------------------------------------------------------
+# 실험실 설정
+LAB_STABILITY_GROUP: Final = "학습 안정성"
+LAB_RESTART: Final = "정체하면 새로 시작"
+LAB_RESTART_TIP: Final = ("지금 학습 방법이 낸 최고 검증 점수가 아래 학습 시험 횟수 동안 오르지 않으면, 챔피언과 기록은 그대로 두고 "
+                          "학습 방법만 새 시드로 다시 만듭니다. 멈춘 상태에서 바꾸고 「적용」할 수 있고, 켜면 그 뒤 첫 검증부터 셉니다.")
+LAB_RESTART_PATIENCE: Final = "정체 판단 학습 시험"
+LAB_UNIT_TRIALS: Final = " 회"
+LAB_RESTART_FROM: Final = "새로 시작할 곳"
+RESTART_FROM_NAMES: Final = {"fresh": "처음 상태(새 시드)", "champion": "챔피언에서(새 시드)",
+                             "alternate": "번갈아(처음 상태 → 챔피언)"}
+RESTART_FROM_NAMES_SHORT: Final = {"fresh": "처음 상태", "champion": "챔피언"}
+LAB_RESTART_FROM_TIP: Final = ("처음 상태: 몸 초깃값·뇌 0에서 다른 시드로. 챔피언에서: 챔피언 유전자를 출발점으로, 탐색 폭은 처음 값으로. "
+                               "번갈아: 처음 상태와 챔피언을 차례로.")
+LAB_QUALIFY: Final = "예선 출전 수"
+LAB_QUALIFY_OFF: Final = "끔"
+LAB_QUALIFY_TRIALS: Final = "출전마다 학습 시험"
+LAB_QUALIFY_TIP: Final = ("시드만 다른 학습 방법 여러 개를 처음에 하나씩 차례로 짧게 돌려 보고, 검증 점수가 가장 높았던 하나로 "
+                          "계속합니다. 운 나쁜 출발에 오래 갇히지 않게 합니다. 예선 시험도 누적 시험 횟수에 들어갑니다. "
+                          "새 실행을 시작할 때만 정할 수 있습니다.")
+LAB_STABILITY_HINT: Final = "예선 합계 학습 시험 {total:,}회(약 {qgens}세대) · 정체 판단 약 {rgens}세대"
+LAB_STABILITY_HINT_NO_QUALIFY: Final = "정체 판단 약 {rgens}세대"
+LAB_STABILITY_STOP_FIRST: Final = " · 정체 멈춤({stop}세대)이 자동 재시작보다 먼저 옵니다"
+# 실험실 상태 글
+LAB_STATUS_QUALIFY: Final = "예선 출전 {n}/{k} · 출전 시험 {t:,}/{b:,}회"
+LAB_STATUS_ATTEMPT: Final = "시도 {n} · 정체 {stall:,}/{p:,}회"
+LAB_STATUS_ATTEMPT_OFF: Final = "시도 {n} · 자동 재시작 꺼짐"
+# 학습 방법 교체 알림(실험실 상태 글과 명령줄이 함께 씀)
+TRAIN_SWITCH_RESTART: Final = ("{gen}세대: 학습 시험 {stall:,}회 동안 나아지지 않아 {where}에서 새로 시작했습니다(시도 {n}). "
+                               "챔피언은 그대로입니다.")
+TRAIN_SWITCH_QUALIFY_NEXT: Final = "{gen}세대: 예선 출전 {n} 끝(최고 검증 {score}) → 출전 {next}"
+TRAIN_SWITCH_QUALIFY_PICK: Final = "{gen}세대: 예선 끝 → 출전 {winner}(검증 {score})로 계속합니다"
+# 대시보드
+DASH_MARK_TIP_RESTART: Final = "{gen}세대 끝: {where}에서 새로 시작 · 정체 {stall:,}회 · 이 학습 방법 최고 {best}"
+DASH_MARK_TIP_QUALIFY_NEXT: Final = "{gen}세대 끝: 예선 출전 {n} 끝(최고 {best})"
+DASH_MARK_TIP_QUALIFY_PICK: Final = "{gen}세대 끝: 예선 끝, 출전 {winner}로 계속"
+DASH_TREND_LEARNER: Final = "지금 학습 방법 최고(검증)"
+DASH_QUALIFY_LEGEND: Final = "예선"
+# 설정 검사
+TRAIN_RESTART_TOO_SHORT: Final = "정체 판단 학습 시험({value:,}회)은 검증 주기({every:,}회) 이상이어야 합니다."
+TRAIN_QUALIFY_TOO_SHORT: Final = "출전마다 학습 시험({value:,}회)은 검증 주기({every:,}회) 이상이어야 합니다."
+TRAIN_QUALIFY_ENTRANTS: Final = "예선 출전 수는 1~{max}이어야 합니다(1이면 예선 없음). 지금 {value}"
+TRAIN_QUALIFY_OVER_BUDGET: Final = ("예선(출전 {k}개 × 학습 시험 {b:,}회 = {total:,}회)이 최대 시험 횟수({max:,}회) 이상입니다. "
+                                    "예선을 줄이거나 끄세요.")
+TRAIN_ENV_DURING_QUALIFY: Final = "예선 중에는 환경을 바꿀 수 없습니다(지금 출전 {n}/{k}). 예선이 끝난 뒤 바꾸세요."
+TRAIN_RESUME_QUALIFY_FIXED: Final = "이어 할 때는 예선 설정을 바꿀 수 없습니다: {flags}. 새 실행으로 시작하세요."
+# 명령줄
+CLI_HELP_RESTART: Final = "지금 학습 방법의 최고 검증 점수가 이 학습 시험 횟수 동안 오르지 않으면 학습 방법만 새로 시작(새 실행 기본 20000)"
+CLI_HELP_NO_RESTART: Final = "자동 재시작을 끈다"
+CLI_HELP_RESTART_FROM: Final = "새로 시작할 곳: fresh(처음 상태), champion(챔피언에서), alternate(번갈아)"
+CLI_HELP_QUALIFY: Final = "예선 출전 수(1이면 예선 없음, 기본 1)"
+CLI_HELP_QUALIFY_TRIALS: Final = "예선 출전마다 학습 시험 횟수(기본 12000)"
+TRAIN_STABILITY: Final = "자동 재시작: {restart} · 예선: {qualify}"
+TRAIN_STABILITY_RESTART_ON: Final = "학습 시험 {p:,}회 정체 시 {where}에서"
+TRAIN_STABILITY_OFF: Final = "끔"
+TRAIN_STABILITY_QUALIFY_ON: Final = "출전 {k}개 × 학습 시험 {b:,}회"
+TRAIN_PROGRESS_QUALIFY: Final = " · 예선 {n}/{k}"
+TRAIN_PROGRESS_ATTEMPT: Final = " · 시도 {n}"
+TRAIN_FINISHED_RESTARTS: Final = " · 새로 시작 {n}번"
+TRAIN_CONFIG_CHANGED: Final = "설정 변경({gen}세대부터): {changes}"
+# 반복 실행
+CMP_REPEAT_RESTART: Final = "정체하면 새로 시작"
+CMP_REPEAT_QUALIFY_OFF_HINT: Final = "예산이 작아 예선을 껐습니다(예선 {total:,}회가 예산의 절반을 넘음)."
