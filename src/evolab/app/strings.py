@@ -1736,3 +1736,12 @@ STRUCT_NONE: Final = "없음"
 STRUCT_CHAMPION: Final = "{gen}세대 챔피언의 몸"
 INSPECT_ABSENT: Final = "(없음)"
 LAB_GA_NO_STRUCTURE: Final = "이 실행은 구조 뒤집기가 꺼져 있어 유전 알고리즘·담금질이 몸 구조를 거의 바꾸지 못합니다."
+
+# ---------------------------------------------------------------------------
+# v2.1 A' 묶음 (spec/compiled.py): SPEC_EXISTS_REF의 {where}에 넣는 자리 이름
+# ---------------------------------------------------------------------------
+SPEC_EXISTS_WHERE_EVENT: Final = "사건 '{id}'"
+SPEC_EXISTS_WHERE_BLOCK: Final = "점수 블록 '{id}'"
+SPEC_EXISTS_WHERE_FORMULA: Final = "점수 수식"
+SPEC_EXISTS_WHERE_CHECKPOINTS: Final = "체크포인트 '{id}'"
+SPEC_EXISTS_WHERE_TARGET: Final = "목표 센서 '{id}'"
