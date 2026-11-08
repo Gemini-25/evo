@@ -4,9 +4,9 @@
 속성 패널·아래 탭이 쓰는 문서 편집(doc.rename, doc.set_value)으로만 채운다. 저장한 파일이 내장 예제와 내용 해시까지
 같으면, 결정성(같은 파일·시드 → 같은 결과) 때문에 학습도 같다. 짧게 학습해 통계가 같은지도 직접 본다.
 
-v2.0(설계 T41): 점프 게임·글라이더도 같은 방법으로 만든다. v2 부품은 v2 도구로 만든다: 장애물 줄(add_obstacles),
-점프 추진기(add_jump), 공기역학(add_aero), 날개 모양(add_wing), 정해진 움직임(make_moving). 예제 파일이 저장소에 아직
-없으면(묶음 A 전) 설계 원형 파일(scratchpad/v2/final/envs의 jump_B·glider_t120, v2.1 칸 exists를 뺀 것)로 한다.
+v2.0(설계 T41): 점프 게임·글라이더(environments/jump.evoenv, glider.evoenv)도 같은 방법으로 만든다. v2 부품은 v2
+도구로 만든다: 장애물 줄(add_obstacles), 점프 추진기(add_jump), 공기역학(add_aero), 날개 모양(add_wing), 정해진
+움직임(make_moving).
 """
 
 from __future__ import annotations
@@ -28,28 +28,6 @@ from evolab.spec import model as m
 from evolab.spec.io import compile_env, env_hash, load_env, parse_env
 
 SECTIONS = ("generators", "bodies", "joints", "actuators", "sensors", "regions", "checkpoints")
-PROTOTYPES = {"jump.evoenv": "jump_B.evoenv", "glider.evoenv": "glider_t120.evoenv"}
-PROTOTYPE_DIR = Path("/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/v2/final/envs")
-
-
-def _drop_exists(value: Any) -> Any:
-    """원형 파일의 v2.1 칸(물체 exists: null)을 뺀다(v2.0 모델에는 없는 칸)."""
-    if isinstance(value, dict):
-        return {k: _drop_exists(v) for k, v in value.items() if k != "exists"}
-    if isinstance(value, list):
-        return [_drop_exists(v) for v in value]
-    return value
-
-
-def example_text(name: str) -> str:
-    """내장 예제 글. v2 예제가 저장소에 아직 없으면 설계 원형 파일."""
-    path = paths.builtin_env_dir() / name
-    if path.exists() or name not in PROTOTYPES:
-        return path.read_text(encoding="utf-8")
-    proto = PROTOTYPE_DIR / PROTOTYPES[name]
-    if not proto.exists():
-        pytest.skip(f"no {name} yet and no prototype file")
-    return json.dumps(_drop_exists(json.loads(proto.read_text(encoding="utf-8"))), ensure_ascii=False)
 TOP_FIELDS = ("name", "description", "world", "params", "randomize", "agent", "events", "termination", "scoring",
               "brain", "evaluation")
 
@@ -130,7 +108,8 @@ def create_with_tool(doc: EnvDocument, section: str, item: dict[str, Any]) -> tu
 
 
 def rebuild(name: str) -> tuple[EnvDocument, dict[str, int]]:
-    target = json.loads(json.dumps(parse_env(example_text(name)).model_dump(mode="json", by_alias=True)))
+    target = json.loads(json.dumps(parse_env((paths.builtin_env_dir() / name).read_text(encoding="utf-8")).model_dump(
+        mode="json", by_alias=True)))
     doc = EnvDocument()
     doc.new()
     counts = {"tool": 0, "rename": 0, "field": 0}
@@ -176,9 +155,9 @@ def test_rebuild_builtin_example_with_editor_only(qtbot: Any, tmp_path: Path, na
     out = tmp_path / name
     doc.save(out)
     built = load_env(out)
-    original = parse_env(example_text(name))
-    assert env_hash(built.file) == env_hash(original)
-    assert counts["tool"] == sum(len(getattr(original, s)) for s in SECTIONS)
+    original = load_env(paths.builtin_env_dir() / name)
+    assert env_hash(built.file) == env_hash(original.file)
+    assert counts["tool"] == sum(len(getattr(original.file, s)) for s in SECTIONS)
     assert not [i for i in doc.run_check() if i.severity == "error"]
     print(f"\n{name}: tools {counts['tool']}, renames {counts['rename']}, field edits {counts['field']}")
 

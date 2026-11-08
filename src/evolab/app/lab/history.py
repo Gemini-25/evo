@@ -209,6 +209,19 @@ def _finite_float(value: Any) -> float:
     return v
 
 
+def decode_observation(arrays: Mapping[str, Any], generation: int,
+                       layout: GenomeLayout) -> tuple[Observation | None, str]:
+    """관찰 키 → (Observation 또는 None, 이유). runs.observe.decode를 그 실행의 유전자 구조로 부른다.
+
+    구동기 출력이 없는 환경(뇌 없는 글라이더, v2.0 설계 4.8)은 decode가 n_out ≥ 1만 받으므로 행동 묶음(출력 0개라
+    빈 배열)을 빼고 읽는다: 행동 분포는 어차피 비어 있고(DASH_EMPTY_NO_OUTPUTS) 나머지 기록은 그대로 검사한다."""
+    n_out = layout.brain.n_out
+    if n_out == 0:
+        arrays = {k: v for k, v in arrays.items() if k not in (ob.ACT_HIST, ob.ACT_MEAN)}
+        n_out = 1  # 행동 묶음이 없으면 decode는 n_out을 쓰지 않는다
+    return ob.decode(arrays, generation=generation, dim=layout.dim, n_body=layout.n_body, n_out=n_out)
+
+
 def live_entry(generation: int, observation: Mapping[str, Any] | None, population: np.ndarray | None,
                representative: int, layout: GenomeLayout, *, learner: Any = None,
                rep_score: Any = math.nan) -> tuple[GenEntry | None, np.ndarray | None]:
@@ -216,8 +229,7 @@ def live_entry(generation: int, observation: Mapping[str, Any] | None, populatio
     거친다. 관찰이 없으면(관찰을 끈 학습, 요약 실패) 집단의 세대 대표로 대신한다."""
     obs = None
     if observation is not None:
-        obs, _reason = ob.decode(observation, generation=int(generation), dim=layout.dim, n_body=layout.n_body,
-                                 n_out=layout.brain.n_out)
+        obs, _reason = decode_observation(observation, int(generation), layout)
     exact = None
     rep64 = None
     rep = obs.representative if obs is not None else int(representative)
@@ -853,8 +865,7 @@ def load_generation(path: Path, generation: int, row: Mapping[str, Any] | None,
     if got is None:
         return None, "unreadable"
     base, keys = got
-    obs, reason = ob.decode(keys, generation=generation, dim=layout.dim, n_body=layout.n_body,
-                            n_out=layout.brain.n_out)
+    obs, reason = decode_observation(keys, generation, layout)
     kind = "observed"
     if obs is not None and not ob.consistent(obs, row, base.get("score")):
         obs = None

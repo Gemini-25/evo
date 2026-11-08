@@ -42,6 +42,8 @@ from evolab.spec.io import parse_env
 BUILTIN_TITLES = {"lander": S.ED_BUILTIN_LANDER, "track_car": S.ED_BUILTIN_TRACK, "hill_car": S.ED_BUILTIN_HILL,
                   "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER}
 """내장 예제 메뉴 이름(파일 이름 줄기 -> 이름). 여기 없는 파일은 그 파일의 name."""
+
+
 def _builtin_title(path: Path) -> str:
     title = BUILTIN_TITLES.get(path.stem)
     if title is not None:

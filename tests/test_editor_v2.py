@@ -43,7 +43,6 @@ from evolab.world.physics2d.motion import MotionPlan, pose_at
 
 NO = Qt.KeyboardModifier.NoModifier
 LEFT = Qt.MouseButton.LeftButton
-PROTO_ENVS = Path("/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/v2/final/envs")
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +570,39 @@ def test_t40_preview_time_slider_play_and_reset(qtbot: Any) -> None:
     assert not pc.playing
 
 
+def test_preview_trial_switch_draws_another_obstacle_row_and_resets_on_open(qtbot: Any) -> None:
+    """「미리보기 시험 바꾸기」(설계 5.1): 다른 검증 시험의 랜덤 값으로 장애물 줄을 다시 그린다. 문서·해시는 그대로."""
+    from evolab.app.editor.canvas import _preview_episode, preview_trial
+    from evolab.engine import seeds
+
+    doc = example("jump.evoenv")
+    text, digest = dump_env(parse_env(json.dumps(doc.data))), env_hash(doc.spec().file)
+    c = make_canvas(qtbot, doc)
+    bar = PreviewBar(c)
+    qtbot.addWidget(bar)
+    assert preview_trial(0) == seeds.display_trial() and c.preview_trial_index == 0
+    assert bar.trial_button.text() == S.ED_PREVIEW_TRIAL.format(n=1)
+    first = [s.points for s in c.scene().body("obs").row]  # type: ignore[union-attr]
+    c.set_preview_time(3.0)
+    bar.trial_button.click()
+    assert c.preview_trial_index == 1 and bar.trial_button.text() == S.ED_PREVIEW_TRIAL.format(n=2)
+    obs = c.scene().body("obs")
+    assert obs is not None and obs.row is not None
+    assert [s.points for s in obs.row] != first  # 다른 시드의 줄
+    ep = _preview_episode(doc.spec(), 1)  # 런타임이 그 시험에서 만드는 줄과 같다
+    row = next(g for g in ep.geometry().bodies if g.id == "obs")
+    assert [list(s.points) for s in obs.row] == [list(s.points) for s in row.shapes]
+    assert c.preview_time == 3.0  # 시각은 그대로
+    c.grab()
+    assert c.drawn_poses["obs"] == pose_at(row.motion, 3.0)  # type: ignore[arg-type]
+    assert dump_env(parse_env(json.dumps(doc.data))) == text and env_hash(doc.spec().file) == digest
+    assert not doc.undo_stack.count()
+    # 새 파일을 열면 전시 시험으로 돌아간다
+    doc.from_builtin("jump.evoenv")
+    assert c.preview_trial_index == 0 and bar.trial_button.text() == S.ED_PREVIEW_TRIAL.format(n=1)
+    assert [s.points for s in c.scene().body("obs").row] == first  # type: ignore[union-attr]
+
+
 def test_t40_cached_overlay_frame_is_fast(qtbot: Any) -> None:
     """재생 중 한 프레임(정적 그림 이미지 + 움직이는 물체 덧그리기) < 5ms(오프스크린, 1000 x 700)."""
     doc = example("jump.evoenv")
@@ -684,6 +716,20 @@ def test_t43_info_issue_is_blue_and_not_counted(qtbot: Any) -> None:
     view.start_from_builtin("glider.evoenv")
     view.doc.run_check()
     assert view.status.text() == S.ED_STATUS_OK and view.act_play.isEnabled()
+    # 속성 패널의 문제 목록도 안내는 파란 i(검사 결과 탭과 같은 아이콘 표)
+    from evolab.app.editor.properties import PropertyPanel
+    from evolab.spec.compiled import Issue
+
+    panel = PropertyPanel(view.doc)
+    qtbot.addWidget(panel)
+    view.doc.select([("actuators", "air")])
+    where = "actuators[0].span"
+    panel._on_checked([Issue("info", where, "i"), Issue("warning", where, "w"), Issue("error", where, "e")])
+    got = [icon_image(panel.issue_list.item(k).icon()) for k in range(panel.issue_list.count())]
+    want = [icon_image(style.standardIcon(px)) for px in (QStyle.StandardPixmap.SP_MessageBoxInformation,
+                                                         QStyle.StandardPixmap.SP_MessageBoxWarning,
+                                                         QStyle.StandardPixmap.SP_MessageBoxCritical)]
+    assert got == want
     # 캔버스 강조: 안내는 색이 없고 경고를 덮지 않는다(같은 물체에 경고 다음 안내가 와도 경고)
     from evolab.spec.compiled import Issue
 

@@ -408,8 +408,8 @@ def evaluate(
             # 끝난 줄도 계속 계산하되 결과는 쓰지 않는다(끝난 에피소드의 step은 아무 일도 안 한다)
             pass
 
-    failed_result = build_failed_result(spec) if failed else None
-    results = [failed_result if ep is None else ep.result() for ep in built]
+    failed_result = build_failed_result(spec) if failed else None  # 실패 쌍이 모두 같은 결과를 함께 쓴다(읽기만 함)
+    results = [ep.result() if ep is not None else cast(EpisodeResult, failed_result) for ep in built]
     block_ids = [b.id for b in spec.file.scoring.blocks]
     trajectories: list[Trajectory | None] | None = None
     if recorders:

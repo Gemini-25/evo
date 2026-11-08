@@ -41,6 +41,7 @@ from evolab.app.editor.forms import (
     section_info,
     spec_for,
 )
+from evolab.app.editor.tabs import SEVERITY_ICONS
 from evolab.spec.compiled import Issue
 
 
@@ -254,8 +255,7 @@ class PropertyPanel(QWidget):
         self.issue_list.clear()
         style = self.style()
         for issue in mine:
-            icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical if issue.severity == "error"
-                                      else QStyle.StandardPixmap.SP_MessageBoxWarning)
+            icon = style.standardIcon(SEVERITY_ICONS.get(issue.severity, QStyle.StandardPixmap.SP_MessageBoxWarning))
             item = QListWidgetItem(icon, issue.message)
             item.setToolTip(issue.where)
             self.issue_list.addItem(item)

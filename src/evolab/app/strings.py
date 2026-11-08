@@ -246,7 +246,7 @@ SPEC_JOINT_NO_DYNAMIC: Final = "관절 '{id}'의 양쪽 물체가 모두 움직�
 SPEC_AGENT_COLLIDE: Final = "관절 '{id}'의 collide는 효과가 없습니다. 에이전트 물체끼리는 서로 부딪히지 않습니다."
 SPEC_AGENT_SELF_CONTACT: Final = "'{a}'와 '{b}'는 모두 에이전트 물체라 서로 닿지 않습니다. 이 접촉 조건은 늘 거짓입니다."
 SPEC_ACTUATOR_BODY: Final = "구동기는 에이전트의 움직이는 물체(dynamic)에만 달 수 있습니다 ('{ref}')."
-SPEC_KEY_RESERVED: Final = "'{key}' 키는 직접 조종 창 제어용(R 다시 시작, N 새 시드, Space 일시정지)이라 구동기에 쓸 수 없습니다."
+SPEC_KEY_RESERVED: Final = "'{key}' 키는 직접 조종 창 제어용(R 다시 시작, N 새 시드)이라 구동기에 쓸 수 없습니다."
 SPEC_KEY_UNKNOWN: Final = "모르는 키 이름 '{key}'입니다. 예: Up, Down, Left, Right, A~Z, 0~9, Shift, Control."
 
 # ---- 직접 조종: M1 검토 보완 ----
@@ -1019,7 +1019,7 @@ EDP_FIELD_TIPS: Final = {
     "dt": "물리 시간 간격(초). 기본 1/60초.",
     "max_time": "이 시간이 지나면 timeout(시간 초과) 사건으로 끝납니다.",
     "gravity": "중력 가속도 (x, y), m/s².",
-    "keys": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W). R, N, Space는 창 제어용이라 쓸 수 없습니다.",
+    "keys": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W). R, N은 창 제어용이라 쓸 수 없고, Space는 점프 추진기에만 쓸 수 있습니다.",
     "keys_forward": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W).",
     "keys_back": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Down, S).",
     "keys_left": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Left, A).",
@@ -1089,6 +1089,8 @@ EDP_FIELD_TIPS: Final = {
     "ObstacleGen.accel": "초마다 장애물 줄이 이만큼 빨라집니다. 음수면 느려지다 멈춥니다.",
     "ObstacleGen.direction": "장애물 줄을 미는 방향(라디안)입니다. 3.14면 왼쪽(선수 쪽)입니다.",
     "ObstacleGen.friction": "장애물 표면의 마찰입니다.",
+    "Jump.body": "점프 추진기를 다는 에이전트 물체입니다. 이 물체가 땅에 닿아 있을 때 뜁니다.",
+    "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
 }
 EDP_VALUE_NAMES: Final = {
     # 고르기 칸의 값 -> 화면 이름. "칸.값"이 있으면 그것이 먼저다.
@@ -1589,7 +1591,7 @@ VIDEO_NO_MEMORY: Final = "메모리가 모자라 영상을 저장하지 못했�
 # 에디터 칸 이름·도움말·고르기 값은 위 EDP_FIELD_NAMES·EDP_FIELD_TIPS·EDP_VALUE_NAMES에, 검사 심각도 「안내」는
 # EDP_ISSUES_SEVERITY에 더했고, PLAY_HELP는 제자리에서 {pause} 자리로 바꿨다(PLAY_PAUSE_KEYS로 채움).
 # 설계의 PLAY_BUILD_FAILED(몸 조립 실패)는 이미 있는 PLAY_BUILD_FAILED(시드로 환경 조립 실패)와 이름이 겹쳐
-# PLAY_BODY_BUILD_FAILED로 둔다.
+# PLAY_BODY_BUILD_FAILED로 둔다. 설계 6절 목록에 없던 것(구현하며 더함)은 줄 끝에 「# 6절 밖」.
 # ---------------------------------------------------------------------------
 # v2 환경 파일 검사 (spec/compiled.py)
 SPEC_KINEMATIC_AGENT: Final = "에이전트 물체 '{id}'는 정해진 움직임이 될 수 없습니다. 세계 물체만 스스로 움직일 수 있습니다."
@@ -1605,6 +1607,7 @@ SPEC_SHAPE_DENSITY_STATIC: Final = "물체 '{id}'는 움직이지 않는 물체�
 SPEC_OBSTACLES_GAP: Final = "장애물 줄 '{id}'의 간격(초)은 0보다 커야 합니다."
 SPEC_OBSTACLES_START: Final = "장애물 줄 '{id}'의 첫 장애물이 에이전트 시작 위치에 너무 가깝습니다(2m 이상 떨어뜨리세요)."
 SPEC_BRAINLESS: Final = "출력이 없어 뇌 없이 몸만 진화합니다."
+SPEC_REGION_DENSITY: Final = "영역 '{id}'는 물체가 아니라서 모양 밀도를 쓰지 않습니다."  # 6절 밖
 
 # v2 런타임·판정 (world/physics2d, engine/evaluate.py, engine/commands.py, cli.py)
 RT_BUILD_FAILED_END: Final = "조립 실패"
@@ -1613,6 +1616,7 @@ JUDGE_RESULT_NO_SUCCESS: Final = ("판정({gen}세대 챔피언, 판정 시드 {
 CLI_JUDGE_PROGRESS: Final = "진행 거리({block}) 중앙값 {median:.1f}m, 하위 10% {p10:.1f}m"
 BENCH_V2_PARTS: Final = "v2 부품: 움직이는 물체 {movers}개, 공기역학 변 {edges}개, 한 스텝 상한 발동 {clamped}스텝"
 NO_SUCCESS_CELL: Final = "—"
+TRAIN_INITIAL_BODY_FAILED: Final = "처음 몸 수치로는 몸을 만들 수 없습니다. {reason}"  # 6절 밖
 
 # v2 에디터 도구·캔버스 (app/editor/tools.py, palette.py, canvas.py, view.py, forms.py)
 EDC_GROUP_MOTION: Final = "움직임과 공기"
@@ -1642,11 +1646,16 @@ EDP_HIDDEN_NONE: Final = "은닉층 없음"
 ED_PREVIEW_TIME: Final = "미리보기 시각"
 ED_PREVIEW_PLAY: Final = "움직임 미리보기"
 ED_PREVIEW_TIME_TIP: Final = "정해진 움직임 물체가 이 시각에 어디 있는지 봅니다(학습에는 영향 없음). 고치면 0초로 돌아갑니다."
+ED_PREVIEW_TRIAL: Final = "시험 {n}"  # 6절 밖: 「미리보기 시험 바꾸기」 단추(설계 5.1), 누를 때마다 다음 시험
+ED_PREVIEW_TRIAL_TIP: Final = "누를 때마다 다른 시험의 랜덤 값(장애물 줄 등)으로 미리보기를 바꿉니다. 저장과 학습에는 영향이 없습니다."
 ED_VIEW_SAVE: Final = "지금 보기를 기본 보기로"
 ED_VIEW_CLEAR: Final = "기본 보기 지우기"
 ED_VIEW_SAVED: Final = "기본 보기를 저장했습니다. 직접 조종과 실험실도 이 보기로 시작합니다."
 ED_BUILTIN_JUMP: Final = "점프 게임"
 ED_BUILTIN_GLIDER: Final = "글라이더"
+ED_VIEW_MENU: Final = "보기"  # 6절 밖: 보기 메뉴(도구 막대의 펼침 단추) 제목
+EDC_LABEL_JUMP: Final = "점프"  # 6절 밖: 캔버스의 점프 추진기 배지
+EDC_LABEL_OBSTACLE_SEED: Final = "장애물 시드"  # 6절 밖: 장애물 줄 도구가 만드는 랜덤 값 oseed의 이름
 
 # v2 직접 조종 (app/play/window.py)
 PLAY_PAUSE_KEYS: Final = {"both": "Space·Esc", "esc": "Esc"}
@@ -1660,22 +1669,3 @@ LAB_BUILD_FAILED_N: Final = "이 세대에 몸을 만들 수 없는 개체가 {n
 DASH_EMPTY_NO_BRAIN: Final = "이 환경은 뇌가 없습니다. 몸만 진화합니다."
 DASH_EMPTY_NO_OUTPUTS: Final = "구동기 출력이 없습니다."
 DASH_END_BUILD_FAILED: Final = "조립 실패"
-
-# v2.0 묶음 B(에디터)가 더한 문자열 (설계 6절에 없던 것)
-EDC_LABEL_JUMP: Final = "점프"
-EDC_LABEL_OBSTACLE_SEED: Final = "장애물 시드"
-ED_VIEW_MENU: Final = "보기"
-
-# v2.0 묶음 A(런타임·검사)가 더한 문자열 (설계 6절에 없던 것)
-SPEC_REGION_DENSITY: Final = "영역 '{id}'는 물체가 아니라서 모양 밀도를 쓰지 않습니다."
-SELFTEST_CHECK_V2_ENV: Final = "v2 내장 예제 (점프 게임·글라이더, 같은 시드 두 번 시뮬레이션)"
-
-# v2.0 묶음 E(조립 실패)가 더한 문자열 (설계 6절에 없던 것)
-TRAIN_INITIAL_BODY_FAILED: Final = "처음 몸 수치로는 몸을 만들 수 없습니다. {reason}"
-
-# v2.0 묶음 C(보기 화면)가 더한 사전 항목 (설계 6절에 없던 것)
-# 새 구동기 Jump·Aero의 body 칸 도움말: 묶은 exe에는 model.py 설명이 없어 새 칸마다 strings에 둔다(D28·T47).
-EDP_FIELD_TIPS.update({
-    "Jump.body": "점프 추진기를 다는 에이전트 물체입니다. 이 물체가 땅에 닿아 있을 때 뜁니다.",
-    "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
-})

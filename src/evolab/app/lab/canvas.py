@@ -220,6 +220,24 @@ class _Mover:
     """선분."""
 
 
+def _used_rect(image: QImage, rect: tuple[float, float, float, float]) -> tuple[float, float, float, float] | None:
+    """밀도 그림에서 투명하지 않은 칸이 있는 범위 → 세계 좌표 (x0, y0, x1, y1), 둘레에 한 칸 여유(격자 안으로 자름).
+    그림 0행이 세계 y0 쪽(set_density와 같은 규칙). 모두 투명이면 None."""
+    img = image.convertToFormat(QImage.Format.Format_Alpha8)  # 칸마다 알파 한 바이트(바이트 순서와 무관)
+    nx, ny = img.width(), img.height()
+    if nx <= 0 or ny <= 0:
+        return None
+    raw = np.frombuffer(img.constBits(), dtype=np.uint8, count=img.sizeInBytes()).reshape(ny, img.bytesPerLine())
+    rows, cols = np.nonzero(raw[:, :nx])
+    if not len(rows):
+        return None
+    x0, y0, w, h = rect
+    cw, ch = w / nx, h / ny
+    i0, i1 = max(int(cols.min()) - 1, 0), min(int(cols.max()) + 2, nx)
+    j0, j1 = max(int(rows.min()) - 1, 0), min(int(rows.max()) + 2, ny)
+    return (x0 + i0 * cw, y0 + j0 * ch, x0 + i1 * cw, y0 + j1 * ch)
+
+
 def _mover(body: BodyGeom) -> _Mover:
     assert body.motion is not None
     return _Mover(body.id, body.motion, *body_path(body))
@@ -310,6 +328,8 @@ class SpectatorCanvas(QWidget):
         """정적 그림 끝에 그리는 밀도 층(그림, 세계 좌표 사각형)."""
         self._density_fit = False
         """맞춤 카메라가 밀도 층 사각형을 보이게 하는가(개체가 없는 밀도 타일)."""
+        self._density_used: tuple[float, float, float, float] | None = None
+        """밀도 층에서 지나간 칸이 있는 범위(세계 좌표 x0, y0, x1, y1). 없으면 None."""
         self._wheel_needs_ctrl = False
         self._movers: list[_Mover] = []
         """정해진 움직임 세계 물체(정적 그림 캐시 밖, 프레임마다 그 시각의 자세로)."""
@@ -389,6 +409,7 @@ class SpectatorCanvas(QWidget):
         self._targets = np.array(pts, dtype=np.float64).reshape(-1, 2)
         self._density = None  # 다른 세계의 밀도 층은 버린다
         self._density_fit = False
+        self._density_used = None
         self._prepare_static(world)
         self._population = []
         self._overlay = []
@@ -514,10 +535,12 @@ class SpectatorCanvas(QWidget):
         if image is None or rect is None or image.isNull():
             self._density = None
             self._density_fit = False
+            self._density_used = None
         else:
             x0, y0, w, h = (float(v) for v in rect)
             self._density = (image, QRectF(x0, y0, w, h))
             self._density_fit = bool(fit)
+            self._density_used = _used_rect(image, (x0, y0, w, h))
         self._static_key = None
         if self.world is not None:
             self._fit_rect = None
@@ -778,7 +801,14 @@ class SpectatorCanvas(QWidget):
         assert g is not None
         if self._density_fit and self._density is not None:
             r = self._density[1]
-            return (r.left(), r.top(), r.right(), r.bottom())  # 세계 좌표라 top이 y0(작은 쪽)
+            full = (r.left(), r.top(), r.right(), r.bottom())  # 세계 좌표라 top이 y0(작은 쪽)
+            used = self._density_used
+            w, h = max(self.width(), 100), max(self.height(), 100)
+            if used is not None and min(w / max(r.width(), 1e-6), h / max(r.height(), 1e-6)) < SCALE_FIT[0]:
+                # 격자 전체가 가장 작은 배율로도 다 보이지 않는 넓은 세계(글라이더 1,230m): 가운데만 보이면 지나간 칸이
+                # 화면 밖에 남으므로 지나간 칸 범위를 보인다(v1 예제 크기의 격자는 지금처럼 전체)
+                return used
+            return full
         if self._view is not None and self._inside_view():
             self._fit_rect = self._view
             return self._view

@@ -444,17 +444,23 @@ def _repaired_spec(data: dict[str, Any]) -> Any:
     return None
 
 
-def _preview_episode(spec: Any) -> Any:
-    """편집기 미리보기 시험(document.editor_checks와 같은 조건)."""
+def preview_trial(index: int = 0) -> Any:
+    """미리보기 시험 index번: 검증 세트의 index번 시험(0번 = 전시 시험, 실험실 재생과 같은 랜덤 값)."""
     from evolab.engine import seeds
+
+    return seeds.fixed_trials(seeds.TAG_VALIDATION, index + 1)[index]
+
+
+def _preview_episode(spec: Any, trial_index: int = 0) -> Any:
+    """편집기 미리보기 시험(document.editor_checks와 같은 조건). trial_index는 「미리보기 시험 바꾸기」(v2 설계 5.1)."""
     from evolab.policy.genome import layout_for
     from evolab.world.physics2d.episode import Episode, Trial
 
     layout = layout_for(spec)
     body = layout.body_values(layout.initial()[None, :])[0] if layout.n_body else None
-    trial = seeds.display_trial()
+    trial = preview_trial(trial_index)
     if spec.track_set_size:
-        trial = Trial(trial.seed, 0)
+        trial = Trial(trial.seed, trial_index % spec.track_set_size)
     return Episode(spec, body, trial)
 
 
@@ -1043,8 +1049,8 @@ class _SceneBuilder:
         return None
 
 
-def build_scene(doc: EnvDocument) -> Scene:
-    """문서의 지금 내용으로 장면을 만든다. 어떤 내용에서도 예외를 내지 않는다."""
+def build_scene(doc: EnvDocument, trial_index: int = 0) -> Scene:
+    """문서의 지금 내용으로 장면을 만든다. 어떤 내용에서도 예외를 내지 않는다. trial_index: 미리보기 시험 번호."""
     data = doc.data if isinstance(doc.data, dict) else {}
     message = ""
     try:
@@ -1057,7 +1063,7 @@ def build_scene(doc: EnvDocument) -> Scene:
     ep = None
     if spec is not None:
         try:
-            ep = _preview_episode(spec)
+            ep = _preview_episode(spec, trial_index)
         except Exception as exc:  # noqa: BLE001 (EpisodeBuildError 등: 숫자만으로 그린다)
             message = S.EDC_PREVIEW_BUILD_FAILED.format(reason=exc)
             exact = False
@@ -1133,6 +1139,8 @@ class EditorCanvas(QWidget):
     """움직임 미리보기 재생을 시작했다(True)·멈췄다(False)."""
     motion_changed = Signal(bool)
     """장면에 정해진 움직임 물체가 생겼다(True)·없어졌다(False)."""
+    preview_trial_changed = Signal(int)
+    """미리보기 시험 번호가 바뀌었다(「미리보기 시험 바꾸기」)."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1178,6 +1186,8 @@ class EditorCanvas(QWidget):
         self.addAction(self.fit_action)
         # v2: 미리보기 시각, 재생(정적 그림 캐시 + 움직이는 물체 덧그리기), 「전체 보기」 순환
         self.preview_time = 0.0
+        self.preview_trial_index = 0
+        """미리보기 시험 번호(0 = 전시 시험). 「미리보기 시험 바꾸기」가 늘리고 새 파일을 열면 0. 학습과 저장에는 영향 없음."""
         self._playing = False
         self._play_from = 0.0
         self._play_clock = QElapsedTimer()
@@ -1249,6 +1259,7 @@ class EditorCanvas(QWidget):
         if self.doc.undo_stack.count() == 0:
             self._fit_pending = True
             self._fit_mode = ""  # 새 파일: 「전체 보기」 순환을 처음부터(기본 보기 먼저)
+            self.preview_trial_index = 0
             self._dirty = True
             self.update()
 
@@ -1261,7 +1272,7 @@ class EditorCanvas(QWidget):
     def scene(self) -> Scene:
         """지금 문서의 장면(바뀌었으면 다시 만든다)."""
         if self._dirty or self._scene is None:
-            self._scene = build_scene(self.doc)
+            self._scene = build_scene(self.doc, self.preview_trial_index)
             self._dirty = False
             self._badge_cache = None
             self._static_cache = None
@@ -1437,6 +1448,18 @@ class EditorCanvas(QWidget):
             self.preview_time = 0.0
             self.preview_changed.emit(0.0)
             self.update()
+
+    def next_preview_trial(self) -> int:
+        """「미리보기 시험 바꾸기」: 다음 시험의 랜덤 값(장애물 줄 등)으로 미리보기를 다시 만든다(검증 세트를 돎).
+        미리보기 시각과 재생은 그대로 둔다. 새 시험 번호를 돌려준다."""
+        from evolab.engine import seeds
+
+        self.preview_trial_index = (self.preview_trial_index + 1) % seeds.VALIDATION_SET
+        self._dirty = True
+        self._static_cache = None
+        self.preview_trial_changed.emit(self.preview_trial_index)
+        self.update()
+        return self.preview_trial_index
 
     def _on_play_tick(self) -> None:
         if not self._playing:
@@ -2476,13 +2499,22 @@ class PreviewBar(QWidget):
         self.slider.valueChanged.connect(self._on_slider)
         self.time_label = QLabel()
         self.time_label.setMinimumWidth(self.fontMetrics().horizontalAdvance("000.0 / 000.0") + 8)
+        self.trial_button = QToolButton()  # 「미리보기 시험 바꾸기」(설계 5.1): 다른 시험의 장애물 줄 등
+        self.trial_button.setText(S.ED_PREVIEW_TRIAL.format(n=canvas.preview_trial_index + 1))
+        self.trial_button.setToolTip(S.ED_PREVIEW_TRIAL_TIP)
+        self.trial_button.clicked.connect(canvas.next_preview_trial)
         lay.addWidget(self.play_button)
         lay.addWidget(self.title)
         lay.addWidget(self.slider, 1)
         lay.addWidget(self.time_label)
+        lay.addWidget(self.trial_button)
         canvas.preview_changed.connect(self._on_time)
         canvas.playing_changed.connect(self._on_playing)
         canvas.motion_changed.connect(self._on_motion)
+        canvas.preview_trial_changed.connect(
+            lambda n: self.trial_button.setText(S.ED_PREVIEW_TRIAL.format(n=n + 1)))
+        canvas.doc.file_changed.connect(
+            lambda: self.trial_button.setText(S.ED_PREVIEW_TRIAL.format(n=canvas.preview_trial_index + 1)))
         canvas.doc.changed.connect(self._sync_range)
         self._sync_range()
         self._on_time(canvas.preview_time)

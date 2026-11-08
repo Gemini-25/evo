@@ -336,7 +336,7 @@ def judge_command(args: Any) -> int:
         return 3
     success = sum(1 for o in res.outcomes if o == "success")
     ends = ends_text(spec, res.end_events)
-    mean = float(res.scores.mean())
+    mean = judge_mean(res.scores)
     if has_success(spec):
         say(S.JUDGE_RESULT.format(gen=gen, n=len(trials), success=success, rate=100.0 * success / len(trials),
                                   mean=mean, ends=ends))
@@ -357,6 +357,15 @@ def ends_text(spec: Any, end_events: list[str]) -> str:
     for e in end_events:
         counts[labels.get(e, e)] = counts.get(labels.get(e, e), 0) + 1
     return ", ".join(f"{k} {v}" for k, v in counts.items())
+
+
+def judge_mean(scores: np.ndarray) -> float:
+    """판정 평균 점수. 조립 실패 쌍(점수 NaN, v2.0 설계 4.9)은 빼고 평균한다(모두 실패면 NaN). 실패가 없으면 v1과 같은 계산."""
+    s = np.asarray(scores, dtype=np.float64)
+    nan = np.isnan(s)
+    if nan.any() and not nan.all():
+        return float(s[~nan].mean())
+    return float(s.mean())
 
 
 def has_success(spec: Any) -> bool:

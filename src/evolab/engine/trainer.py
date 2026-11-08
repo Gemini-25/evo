@@ -23,8 +23,9 @@
 조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 조립되지 않는 (개체, 시험) 쌍은 평가가 점수 NaN으로 돌려준다(evaluate.py).
 집계 점수는 NaN이 그대로 퍼지고(그 개체 = 실패), 학습 방법은 tell에서 sanitize_scores(유한한 최솟값 − 1)로 바꾼다. 통계,
 세대 대표, 관찰 기록, 화면에 보내는 점수는 같은 규칙으로 바꾼 값(agg_s)이라 실패 개체는 늘 그 세대 꼴찌다. 검증 점수가
-NaN인 후보는 −∞로 보아 챔피언이 될 수 없다. 처음 몸으로도 조립되지 않는 환경은 Trainer를 만들 때(그리고 환경을 바꿀 때)
-거절한다. 실패가 없으면 agg_s는 agg와 비트 단위로 같은 사본이라 결과가 v1.2와 같다.
+NaN인 후보는 −∞로 보아 챔피언이 될 수 없다. 몸 유전자가 있는 환경에서 처음 몸으로도 조립되지 않으면 Trainer를 만들 때
+(그리고 환경을 바꿀 때) 거절한다(check_initial_body). 실패(NaN)가 없으면 agg_s는 agg 그대로의 사본이라 결과가 v1.2와
+비트 단위로 같다.
 """
 
 from __future__ import annotations
@@ -396,11 +397,14 @@ def check_initial_body(spec: EnvSpec, layout: GenomeLayout) -> None:
     """처음 몸 수치(layout.initial())로 전시 시험의 세계를 조립해 본다(설계 4.9). 안 되면 EpisodeBuildError(한국어).
 
     학습 중의 조립 실패는 그 쌍만 실패로 세지만, 처음 몸부터 안 되는 환경은 학습해도 뜻이 없어 시작하지 않는다
-    (실험실 환경 열기와 같은 검사).
+    (실험실 환경 열기와 같은 검사). 몸 유전자가 없는 환경(착륙선·트랙 자동차 등)은 몸 때문에 조립이 안 될 수 없어
+    보지 않는다: v1.2와 같이 시작하고, 시험 세계를 만들 수 없으면 평가가 오류를 올린다(evaluate.py).
     """
     from evolab.app import strings as S
 
-    body = layout.body_values(layout.initial()[None, :])[0] if layout.n_body else None
+    if not layout.n_body:
+        return
+    body = layout.body_values(layout.initial()[None, :])[0]
     try:
         Episode(spec, body, seeds.display_trial())
     except EpisodeBuildError as exc:
@@ -590,8 +594,9 @@ class Trainer:
         scores = res.scores.reshape(pop, T)
         agg = aggregate(scores, self.how)
         self.learner.tell(X, agg)  # 학습 방법이 NaN(조립 실패)을 agg_s와 같은 규칙으로 바꾼다
-        # 통계·세대 대표·관찰·화면 점수: 조립 실패 개체는 유한한 최솟값 − 1. NaN이 없으면 agg와 비트 단위로 같은 사본
-        agg_s = sanitize_scores(agg, pop)
+        # 통계·세대 대표·관찰·화면 점수: 조립 실패 개체는 유한한 최솟값 − 1(sanitize_scores). NaN이 없으면 agg 그대로의
+        # 사본이라 v1.2와 비트 단위로 같다(±무한대 집계도 v1.2처럼 그대로 둔다)
+        agg_s = sanitize_scores(agg, pop) if np.isnan(agg).any() else agg.copy()
         self.last_build_failures = int(np.count_nonzero(np.isnan(res.scores)))
         s.evaluations += pop * T
         cur = s.current

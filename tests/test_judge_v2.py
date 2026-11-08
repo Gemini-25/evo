@@ -184,3 +184,13 @@ def test_bench_prints_the_v2_parts_line(capsys: pytest.CaptureFixture[str]) -> N
     edges = Episode(load_env(GLIDER), None, seeds.display_trial()).aero_edge_count
     assert out[-1] == S.BENCH_V2_PARTS.format(movers=0, edges=edges, clamped=0)
     assert out[-2].startswith(S.BENCH_WORST.split("{")[0])
+
+
+def test_judge_mean_leaves_out_failed_pairs() -> None:
+    """판정 평균은 조립 실패 쌍(점수 NaN)을 빼고 낸다(모두 실패면 NaN). 실패가 없으면 v1과 같은 계산."""
+    scores = np.array([3.0, np.nan, 5.0])
+    assert commands.judge_mean(scores) == 4.0
+    assert math.isnan(commands.judge_mean(np.array([np.nan, np.nan])))
+    plain = np.array([0.1, 0.7, 0.2, 1e300, -3.5])
+    assert commands.judge_mean(plain) == float(plain.mean())
+    assert commands.judge_mean(np.array([np.inf, 1.0])) == np.inf

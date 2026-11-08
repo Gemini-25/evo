@@ -19,7 +19,6 @@ from evolab import paths
 from evolab.app import strings as S
 from evolab.app.lab import canvas as canvas_mod
 from evolab.app.play import window as play_window
-from evolab.app.lab import view as lab_view
 from evolab.app.lab.canvas import COLOR_WORLD_BODY, SpectatorCanvas
 from evolab.app.lab.view import LabView, build_failures, build_scene
 from evolab.engine import seeds
@@ -179,20 +178,20 @@ def test_t49_versus_and_timeline_replays_draw_the_obstacles(qtbot: QtBot, jump32
 def test_t49_default_view_is_the_first_camera_in_fit_and_follow(qtbot: QtBot, jump32: Any) -> None:
     spec, _layout, _X, res = jump32
     box = view_box(spec.file)
-    assert box == (-4.0, -1.0, 16.0, 6.0)
+    assert box == (-3.0, -1.0, 22.0, 6.0)
     c = make_canvas(qtbot, spec)
     ranks, champ = ranks_of(res.scores)
     c.set_population(list(res.trajectories), ranks=ranks, champion=champ)
     c.set_time(0.0)
-    want_scale = min(W / 20.0, H / 7.0)
-    assert c.camera() == ((6.0, 2.5), pytest.approx(want_scale))
+    want_scale = min(W / 25.0, H / 7.0)
+    assert c.camera() == ((9.5, 2.5), pytest.approx(want_scale))
     c.set_follow("champion")
-    assert c.camera() == ((6.0, 2.5), pytest.approx(want_scale))
+    assert c.camera() == ((9.5, 2.5), pytest.approx(want_scale))
     # 기본 보기가 없으면 지금 규칙(배율 30 이하, 상자 가운데가 아님)
     plain = make_canvas(qtbot, spec, view=None)
     plain.set_population(list(res.trajectories), ranks=ranks, champion=champ)
     plain.set_time(0.0)
-    assert plain.camera()[1] <= 30.0 and plain.camera()[0] != (6.0, 2.5)
+    assert plain.camera()[1] <= 30.0 and plain.camera()[0] != (9.5, 2.5)
 
 
 def test_t49_default_view_widens_only_when_agents_leave_the_box(qtbot: QtBot) -> None:
@@ -282,7 +281,7 @@ def test_t51_race_lanes_show_the_obstacles_from_the_default_view(qtbot: QtBot) -
     assert entry_view(entries[0]) == view_box(compile_env(entries[0].env_text).file)
     lane = view.lanes[0]
     c = lane.canvas
-    assert c._view == (-4.0, -1.0, 16.0, 6.0) and [mv.id for mv in c._movers] == ["obs"]
+    assert c._view == (-3.0, -1.0, 22.0, 6.0) and [mv.id for mv in c._movers] == ["obs"]
     obs, local = first_box(c.world)
     t = 2.0  # 첫 장애물이 x = 20 - 6·2 - … ≈ 7.5m: 기본 보기 안
     c.set_time(t)
@@ -353,11 +352,6 @@ def test_t51_scenes_with_different_body_counts_per_individual(qtbot: QtBot, monk
 
 # ---------------------------------------------------------------------------
 # T52: 뇌 없는 환경(글라이더)의 대시보드 빈 상태
-NOUT0_BUG = ("runs/observe.decode가 n_out=0(뇌 없는 환경)을 ValueError로 거부한다(observe.py의 ('n_out', n_out, 1) 검사): "
-             "글라이더의 관찰 기록을 대시보드가 받지도(add_generation) 읽지도(HistoryLoader) 못한다. runs/*는 묶음 C가 "
-             "고칠 수 없는 파일이라 보고함. 고치면 이 표시를 지운다")
-
-
 def test_t52_brainless_glider_brain_and_action_tiles_say_why_they_are_empty(qtbot: QtBot, tmp_path: Path) -> None:
     from test_dashboard_v12 import feed, fun_dashboard
 
@@ -380,7 +374,6 @@ def test_t52_brainless_glider_brain_and_action_tiles_say_why_they_are_empty(qtbo
     assert lander.tile("actions").stack.currentWidget() is not lander.tile("actions").message
 
 
-@pytest.mark.xfail(strict=True, raises=ValueError, reason=NOUT0_BUG)
 def test_t52_glider_generations_reach_the_fun_page(qtbot: QtBot, tmp_path: Path) -> None:
     from test_dashboard_v12 import feed, fun_dashboard
 
@@ -422,7 +415,6 @@ def lab(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         view.shutdown()
 
 
-@pytest.mark.xfail(strict=True, reason=NOUT0_BUG)
 def test_t52_real_glider_run_opens_with_history_empty_tiles_and_default_view(qtbot: QtBot, lab: Any,
                                                                               tmp_path: Path) -> None:
     store = train_small(tmp_path / "runs", GLIDER)
@@ -568,4 +560,41 @@ def test_live_scene_uses_the_default_view(qtbot: QtBot, lab: Any, jump32: Any, m
     assert lab.canvas._view == view_box(spec.file) and [mv.id for mv in lab.canvas._movers] == ["obs"]
     assert lab._build_note == "" and S.LAB_BUILD_FAILED_N.split("{")[0] not in lab.status.text()
     lab.canvas.set_time(0.0)
-    assert lab.canvas.camera()[0] == (6.0, 2.5)
+    x0, y0, x1, y1 = view_box(spec.file)  # type: ignore[misc]
+    assert lab.canvas.camera()[0] == ((x0 + x1) / 2, (y0 + y1) / 2)
+
+
+# ---------------------------------------------------------------------------
+# 궤적 밀도 타일(v1.2 캔버스)의 카메라: 글라이더처럼 넓은 세계
+def test_density_camera_shows_the_visited_cells_of_a_wide_world(qtbot: QtBot) -> None:
+    """격자가 가장 작은 맞춤 배율(SCALE_FIT[0])로도 다 보이지 않는 넓은 세계(글라이더 1,230m)는 격자 가운데만 보이면
+    지나간 칸이 화면 밖에 남는다: 지나간 칸 범위를 보인다. 격자가 다 보이는 세계(착륙선)는 v1.2처럼 격자 전체."""
+    from evolab.app.lab.watch_tiles import density_image
+
+    def camera(path: Path, counts: np.ndarray, frame: tuple[float, float, float, float]) -> tuple[Any, float, int, int]:
+        c = SpectatorCanvas()
+        qtbot.addWidget(c)
+        c.resize(600, 180)  # 대시보드 타일 안의 캔버스 크기(캔버스 최소 크기가 더 크면 그 크기)
+        spec = load_env(path)
+        c.set_scene(Episode(spec, None, seeds.display_trial()).geometry(), None, None)
+        c.set_density(density_image(counts), frame, fit=True)
+        goal = c._camera_goal()
+        assert goal is not None
+        c.grab()
+        return goal[0], goal[1], c.width(), c.height()
+
+    # 글라이더: 128×14칸(9.6m), 지나간 칸은 x 37~130m, y -5~24m 근처
+    counts = np.zeros((14, 128))
+    counts[0, 7:17] = 5
+    counts[2, 4:9] = 40
+    (cx, cy), scale, w, h = camera(GLIDER, counts, (-30.0, -5.0, 128 * 9.6, 14 * 9.6))
+    assert min(w / (128 * 9.6), h / (14 * 9.6)) < canvas_mod.SCALE_FIT[0]  # 격자 전체는 가장 작은 배율로도 안 보임
+    used = (-30.0 + 3 * 9.6, -5.0, -30.0 + 18 * 9.6, -5.0 + 4 * 9.6)  # 지나간 칸 + 둘레 한 칸(격자 안)
+    assert scale == pytest.approx(min(w / (used[2] - used[0]), h / (used[3] - used[1])))
+    assert scale > canvas_mod.SCALE_FIT[0]
+    assert (cx, cy) == pytest.approx(((used[0] + used[2]) / 2, (used[1] + used[3]) / 2))
+    # 착륙선 크기 격자(140×90m)는 지금처럼 격자 전체를 보인다(지나간 칸과 무관)
+    small = np.zeros((18, 28))
+    small[3, 4] = 9
+    (lx, ly), lscale, w, h = camera(LANDER, small, (-70.0, -20.0, 140.0, 90.0))
+    assert (lx, ly) == (0.0, 25.0) and lscale == pytest.approx(min(w / 140.0, h / 90.0))

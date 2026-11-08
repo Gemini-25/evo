@@ -88,6 +88,8 @@ DEFAULT_COLUMNS = 2
 MAX_COLUMNS = 3
 HEATMAP_BINS = 40
 MAX_SERIES = 8  # 범주 색 수. 넘으면 뒤쪽을 '기타'로 묶는다
+BUILD_FAILED_SERIES = "#build_failed"  # 종료 원인 타일의 「조립 실패」 계열 id(사건 id에 '#'은 쓸 수 없어 겹치지 않음)
+BUILD_FAILED_MIN_PERCENT = 1e-6  # end_* 합의 반올림 오차(1e-14% 남짓)는 조립 실패로 보지 않는다
 TILE_MIN_HEIGHT = 230
 AXIS_WIDTH = 66  # 세로축 칸 폭(눈금 글자 + 축 이름). 타일끼리 맞춘다
 SETTINGS_GROUP = "dashboard"
@@ -1223,6 +1225,15 @@ class _EndsTile(_StackTile):
         d = self.dash
         series = self.end_series()
         values = np.vstack([d.col("end_" + e) * 100.0 for e, _ in series]) if series else np.zeros((0, d.table.n))
+        if series and values.shape[1]:
+            # v2.0 조립 실패 쌍은 어느 종료 사건에도 들지 않아 end_* 합이 100%보다 작다: 모자라는 몫을 「조립 실패」로
+            # (새 통계 열 없음). 실패가 없는 실행은 이 계열이 생기지 않아 v1.2 그림 그대로.
+            known = np.isfinite(values).any(axis=0)
+            rest = np.where(known, 100.0 - np.nansum(values, axis=0), 0.0)
+            rest = np.where(rest > BUILD_FAILED_MIN_PERCENT, rest, 0.0)
+            if rest.any():
+                series = [*series, (BUILD_FAILED_SERIES, S.DASH_END_BUILD_FAILED)]
+                values = np.vstack([values, rest[None, :]])
         self.set_stack(series, values, self.x_values(), False)
 
     def entries(self) -> list[_Entry]:

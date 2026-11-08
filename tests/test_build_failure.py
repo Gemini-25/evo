@@ -5,7 +5,8 @@
 최솟값 − 1)이며 챔피언이 될 수 없다. 처음 몸부터 조립되지 않으면 학습을 시작하지 않는다.
 
 T55(실패가 없는 실행은 v1 코드와 비트 동일)는 v1 코드가 만든 실제 실행 자료(tests/data의 v1.0 유전 알고리즘 실행,
-v1.1 CMA-ES 실행, 둘 다 작은 착륙선)를 지금 코드로 처음부터 다시 돌려 통계·챔피언·세대 대표·체크포인트를 비교한다.
+v1.1 CMA-ES 실행, 둘 다 작은 착륙선)를 지금 코드로 처음부터 다시 돌려 통계·챔피언·세대 대표·체크포인트를 비교한다
+(워커 0·2, v1.1 실행은 느린 테스트).
 숫자 비교는 자료를 만든 플랫폼에서만 한다(명세 "정답 해시를 박지 않음", 기존 v1.0·v1.1 자료와 같은 규칙).
 
 꼬일 수 있는 모양 두 가지(모두 시험 환경, 저장소 예제는 바꾸지 않음):
@@ -29,6 +30,7 @@ import pytest
 
 from evolab import cli, paths
 from evolab.app import strings as S
+from evolab.app.lab.history import decode_observation
 from evolab.engine import observe as observing
 from evolab.engine import seeds
 from evolab.engine import trainer as trainer_mod
@@ -48,6 +50,7 @@ from evolab.engine.trainer import TrainConfig, Trainer, TrainerChangeError, aggr
 from evolab.learners.base import sanitize_scores
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.runs import observe as obs_fmt
+from evolab.runs.bundle import compare_stats, export_bundle, reproduce
 from evolab.runs.store import RunStore
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.io import compile_env, env_hash
@@ -152,7 +155,7 @@ def lander_batch() -> tuple[str, EnvSpec, GenomeLayout, np.ndarray, list[tuple[i
 
 
 def test_t54_failed_pairs_are_nan_failure_with_zero_steps() -> None:
-    text, spec, layout, X, pairs, failed = lander_batch()
+    _text, spec, layout, X, pairs, failed = lander_batch()
     for i, (g, t) in enumerate(pairs):
         assert builds(spec, layout, X[g], t) == (i not in failed)
     frame, _ = observing.world_frame(spec, "v", pairs[0][1])
@@ -212,7 +215,7 @@ def test_environment_errors_still_stop_the_evaluation() -> None:
     """처음 몸으로도 그 시험을 조립할 수 없으면 몸이 아니라 환경의 문제다: v1.2처럼 오류(워커 풀에서는 PoolError)."""
     from evolab.engine.pool import PoolError
 
-    text, spec, layout, X, pairs, failed = lander_batch()
+    _text, _spec, layout, X, pairs, _failed = lander_batch()
     broken = twist_lander(shift=-2.0)  # 처음 몸(twist 0.5)도 꼬임. 배치는 같다
     bspec = compile_env(broken)
     with pytest.raises(EpisodeBuildError) as exc:
@@ -228,6 +231,12 @@ def test_environment_errors_still_stop_the_evaluation() -> None:
     llayout = layout_for(lspec)
     with pytest.raises(EpisodeBuildError):
         evaluate(lspec, llayout, np.zeros((2, llayout.dim)), [(0, pairs[0][1]), (1, pairs[1][1])])
+    # 몸 유전자가 없는 환경은 학습기가 처음 몸을 미리 보지 않는다: v1.2처럼 시작하고 첫 세대 평가가 오류를 올린다
+    # (워커 0은 그 프로세스 안이라 EpisodeBuildError 그대로)
+    with WorkerPool(0) as pool:
+        t = Trainer(json.dumps(d, ensure_ascii=False), TrainConfig(popsize=4, trials=2), pool)
+        with pytest.raises(EpisodeBuildError):
+            t.step()
 
 
 def test_t54_failures_are_the_same_in_any_worker() -> None:
@@ -326,10 +335,9 @@ def test_t54_training_runs_to_the_end_and_failed_genomes_never_win(env: str, met
             disk, line = arrays[obs_fmt.SCORES], store.read_stats()[-1]
             assert float(line["score_best"]) == float(disk.max()) and line["scores"] == obs_fmt.scores_text(disk)
             assert float(disk[g.representative]) == float(rep["score"])
-            if t.layout.brain.n_out:  # runs.observe.decode는 출력 0개(뇌 없는 환경)를 받지 않는다(보고서 참조)
-                dec, reason = obs_fmt.decode(arrays, dim=t.layout.dim, n_body=t.layout.n_body,
-                                             n_out=t.layout.brain.n_out, generation=g.generation)
-                assert reason == "" and obs_fmt.consistent(dec, line, rep["score"])
+            # 화면이 읽는 길 그대로(뇌 없는 환경은 행동 묶음을 빼고 읽음: history.decode_observation)
+            dec, reason = decode_observation(arrays, g.generation, t.layout)
+            assert reason == "" and dec is not None and obs_fmt.consistent(dec, line, rep["score"])
         t.finish()
     assert failures > 0  # 이 설정에서 실제로 조립 실패가 생긴다(테스트가 헛돌지 않게)
     champ = t.state.champion
@@ -362,6 +370,9 @@ def test_t54_run_with_failures_is_deterministic_across_workers_and_resume(tmp_pa
         for g in a.champion_generations("champion"):
             mine, first = s.load_champion(g, "champion"), a.load_champion(g, "champion")
             assert mine["genome"].tobytes() == first["genome"].tobytes()
+    # 재현 묶음도 같은 통계(조립 실패가 있는 세대 포함)
+    again = RunStore.open(reproduce(export_bundle(a.root, tmp_path / "a.zip"), tmp_path / "다시", workers=0))
+    assert compare_stats(a.read_stats(), again.read_stats()) is None and len(again.read_stats()) == len(rows[0])
 
 
 class _ScriptedValidation:
@@ -402,6 +413,32 @@ def test_t54_nan_validation_candidate_cannot_become_champion() -> None:
         assert t.state.champion.genome is not None
         # 학습 방법 기록에 NaN이 남지 않는다(체크포인트 검사가 NaN을 거절함)
         t.load_state_dict(pickle.loads(pickle.dumps(t.state_dict())))
+
+
+class _InfiniteFirstPair:
+    """학습 시험의 첫 쌍 점수만 +무한대로 바꾸는 평가기(NaN 없음)."""
+
+    def __init__(self, pool: WorkerPool) -> None:
+        self.pool = pool
+
+    def evaluate(self, env_version: str, env_text: str, layout: Any, genomes: np.ndarray,
+                 pairs: list[tuple[int, Trial]], record: list[bool] | None = None) -> EvalResult:
+        res = self.pool.evaluate(env_version, env_text, layout, genomes, pairs, record=record)
+        res.scores[0] = math.inf
+        return res
+
+
+def test_scores_without_nan_are_used_as_they_are() -> None:
+    """NaN(조립 실패)이 없으면 통계·세대 대표·화면 점수는 집계 점수 그대로다(v1.2와 같음, ±무한대도 바꾸지 않는다)."""
+    config = TrainConfig(method="cmaes", run_seed=3, popsize=4, trials=2, validate_every=10**6, checkpoint_every=0,
+                         aggregate="mean")
+    with WorkerPool(0) as pool:
+        t = Trainer(LANDER_TEXT, config, _InfiniteFirstPair(pool))  # 조립 실패가 없는 환경
+        row = t.step()
+    g = t.last_generation
+    assert g is not None and g.scores[0] == math.inf and g.representative == 0
+    assert row["score_best"] == math.inf and t.last_build_failures == 0
+    assert np.isfinite(g.scores[1:]).all()
 
 
 def test_t54_initial_body_that_fails_refuses_to_start(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -512,11 +549,13 @@ def test_t55_v10_ga_run_recomputed_from_scratch_is_bit_identical(workers: int, t
     same_as_fixture(old, new, t.layout, [2, 4])
 
 
-@pytest.mark.parametrize("workers", [pytest.param(0, marks=pytest.mark.slow), 2])
+@pytest.mark.slow
+@pytest.mark.parametrize("workers", [0, 2])
 def test_t55_v11_cmaes_run_recomputed_from_scratch_is_bit_identical(workers: int, tmp_path: Path) -> None:
     """v1.1 실행(재시작 한 번)을 같은 순서(6세대에서 멈춤 → 12세대까지 이어 감)로 처음부터 다시 돌린다.
 
-    워커 0은 느린 테스트(빠른 묶음에서는 tests/test_v11_fixture.py가 워커 0으로 7~12세대 통계를 다시 계산한다)."""
+    느린 테스트: 빠른 묶음에서는 위 v1.0 실행(워커 0·2, 통계·챔피언·세대 대표·체크포인트)과 tests/test_v11_fixture.py
+    (워커 0으로 이 실행의 7~12세대 통계와 재현 묶음을 다시 계산)가 같은 것을 본다."""
     old = fixture_store(tmp_path, "v11_run_restart")
     info = old.read_run_info()
     text = old.env_text(info["env_versions"][0]["id"])
@@ -541,7 +580,7 @@ def test_t55_v11_cmaes_run_recomputed_from_scratch_is_bit_identical(workers: int
 def test_t56_spectator_canvas_skips_a_failed_individual(qtbot: Any) -> None:
     from evolab.app.lab.canvas import SpectatorCanvas
 
-    text, spec, layout, X, pairs, failed = lander_batch()
+    _text, spec, layout, X, pairs, _failed = lander_batch()
     trial = pairs[0][1]
     first = [(i, trial) for i in range(4)]
     res = evaluate(spec, layout, X, first, record=[True] * 4)
@@ -572,7 +611,7 @@ def test_t56_spectator_canvas_skips_a_failed_individual(qtbot: Any) -> None:
 def test_t56_build_scene_gives_a_failed_individual_an_empty_shape() -> None:
     from evolab.app.lab.view import build_scene
 
-    text, spec, layout, X, pairs, failed = lander_batch()
+    _text, spec, layout, X, pairs, _failed = lander_batch()
     trial = pairs[0][1]
     for order in ([0, 1, 2, 3], [1, 0, 3, 2], [1, 3]):  # 첫 개체가 실패해도, 모두 실패해도
         world, agents = build_scene(spec, layout, X[order], trial)
@@ -589,7 +628,7 @@ def test_t56_replay_and_race_report_a_failed_body_without_crashing(qtbot: Any) -
     from evolab.app.race.model import RaceEntry
     from evolab.app.race.view import RaceView
 
-    text, spec, layout, X, pairs, failed = lander_batch()
+    text, spec, layout, X, pairs, _failed = lander_batch()
     trial = pairs[0][1]
     with pytest.raises(EpisodeBuildError):  # 재생은 지금 길(EpisodeBuildError)로 알린다
         replay(spec, layout, X[1], trial)
@@ -604,6 +643,30 @@ def test_t56_replay_and_race_report_a_failed_body_without_crashing(qtbot: Any) -
     view.set_race(entries)
     view.set_course(1)
     qtbot.waitUntil(lambda: view.ready or bool(view.failure), timeout=30000)
-    notes = [view.failure or ""] + [lane.status.text() for lane in view.lanes if hasattr(lane, "status")]
-    shown = " ".join(notes)
-    assert S.PLAY_BODY_BUILD_FAILED in shown or S.RT_DEGENERATE_SHAPE.format(body="hull") in shown
+    # 경주는 조립할 수 없는 칸이 있으면 준비를 그만두고 「이 몸은 만들 수 없습니다」와 까닭을 보인다(묶음 C, race/view.py)
+    assert not view.ready
+    assert view.failure == S.RACE_FAILED.format(
+        reason=S.PLAY_BODY_BUILD_FAILED + " " + S.RT_DEGENERATE_SHAPE.format(body="hull"))
+    view.grab()
+
+
+def test_dashboard_end_tile_draws_the_missing_share_as_build_failed(qtbot: Any, tmp_path: Path) -> None:
+    """설계 4.9: 조립 실패 쌍은 어느 종료 사건에도 들지 않아 end_* 합이 1보다 작다. 종료 원인 타일은 모자라는 몫을
+    「조립 실패」로 쌓는다(새 통계 열 없음). 실패가 없는 실행은 그 계열이 없다(v1.2 그림 그대로)."""
+    from test_dashboard import END_EVENTS, curve_xy, make_dashboard, synthetic_rows
+
+    dash = make_dashboard(qtbot, tmp_path)
+    rows = synthetic_rows(10)
+    dash.set_rows(rows)
+    ends = dash.tile("ends")
+    assert [name for _, name in ends._series] == [label for _, label in END_EVENTS]
+    assert S.DASH_END_BUILD_FAILED not in ends.legend.text()
+    for r in rows[5:]:  # 5세대부터 시험의 10%가 조립 실패
+        for eid, _ in END_EVENTS:
+            r[f"end_{eid}"] *= 0.9
+    dash.set_rows(rows)
+    assert ends._series[-1][1] == S.DASH_END_BUILD_FAILED and len(ends._series) == len(END_EVENTS) + 1
+    assert S.DASH_END_BUILD_FAILED in ends.legend.text()
+    share = ends._values[-1]
+    assert np.allclose(share[:5], 0.0) and np.allclose(share[5:], 10.0)
+    assert np.allclose(curve_xy(ends._pos[-1])[1], 100.0)  # 쌓은 맨 위는 늘 100%

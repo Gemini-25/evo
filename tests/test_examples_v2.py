@@ -35,7 +35,7 @@ def test_examples_compile_without_warnings() -> None:
     assert len(jump.inputs) == 11 and jump.outputs == ["jump"] and layout_for(jump).dim == 209
     assert layout_for(glider).dim == 8 and jump.file.evaluation.trials == 5 and glider.file.evaluation.trials == 3
     assert "Space" in jump.file.actuators[0].keys
-    assert jump.file.editor["view"] == [-4.0, -1.0, 16.0, 6.0] and glider.file.editor["view"] == [-4.0, -2.0, 6.0, 24.0]
+    assert jump.file.editor["view"] == [-3.0, -1.0, 22.0, 6.0] and glider.file.editor["view"] == [-4.0, -2.0, 6.0, 24.0]
 
 
 def test_jump_game_is_solvable_with_full_information() -> None:

@@ -241,8 +241,8 @@ def test_play_camera_starts_at_the_default_view_and_follows_the_glider(qtbot: Qt
     w = make_window(qtbot, JUMP)
     w.resize(1280, 760)
     w.canvas.set_world(w.episode.geometry(), w.episode.snapshot(), "runner", w.view)
-    assert w.view == view_box(w.spec.file) == (-4.0, -1.0, 16.0, 6.0)
-    box_center = (6.0, 2.5)
+    assert w.view == view_box(w.spec.file) == (-3.0, -1.0, 22.0, 6.0)
+    box_center = (9.5, 2.5)
     assert w.canvas.center == box_center
     step(w, [1.0], 20)  # 뛰어도(최고 1.9m) 상자 안이라 카메라가 그대로
     w.canvas.set_frame(w.episode.snapshot(), w._hud())
