@@ -3,6 +3,10 @@
 사용자 데이터(환경 파일, 실행 기록)는 문서 폴더 아래에 두고, 위치는 화면에서 Qt의
 QStandardPaths로 정한다(OneDrive로 옮겨진 문서 폴더도 따라가기 위해서). 이 모듈은 Qt 없이도
 쓰는 프로그램 내부 폴더(로그, 캐시)만 다룬다.
+
+(v3 설계 D5) 환경 변수 EVOLAB_DATA_DIR(데이터 폴더)와 EVOLAB_STATE_DIR(설정·로그 폴더)가 있으면 그 폴더를 먼저 쓴다.
+자체 점검·설치 점검·테스트가 사용자의 문서 폴더와 settings.ini를 건드리지 않게 하려는 것이다. 환경 변수라서 spawn 자식
+(학습 프로세스, 워커)도 그대로 물려받는다.
 """
 
 from __future__ import annotations
@@ -13,9 +17,25 @@ from pathlib import Path
 
 APP_DIR_NAME = "evolab"
 
+DATA_DIR_ENV = "EVOLAB_DATA_DIR"
+"""이 환경 변수가 있으면 데이터 폴더(환경 파일, 실행 기록, 직접 조종 기록)로 쓴다. 설정에서 바꾼 폴더(paths.ini)보다 먼저다."""
+STATE_DIR_ENV = "EVOLAB_STATE_DIR"
+"""이 환경 변수가 있으면 설정·로그 폴더(settings.ini, paths.ini, logs)로 쓴다."""
+
+
+def _env_dir(name: str) -> Path | None:
+    """환경 변수로 준 폴더(비었거나 없으면 None). 상대 경로는 지금 작업 폴더 기준의 절대 경로로 바꾼다."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    return Path(value).expanduser().absolute()
+
 
 def user_state_dir() -> Path:
-    """로그와 캐시를 두는 사용자별 폴더. 문서 폴더가 아니다."""
+    """로그와 캐시를 두는 사용자별 폴더. 문서 폴더가 아니다. EVOLAB_STATE_DIR가 있으면 그 폴더."""
+    override = _env_dir(STATE_DIR_ENV)
+    if override is not None:
+        return override
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"
@@ -111,7 +131,13 @@ def set_custom_data_dir(folder: Path | None) -> None:
 
 
 def data_dir() -> Path:
-    """사용자 데이터 폴더: 기본은 문서\\진화실험실, 설정에서 바꿀 수 있다(명세: 저장, 기록, 내보내기)."""
+    """사용자 데이터 폴더: 기본은 문서\\진화실험실, 설정에서 바꿀 수 있다(명세: 저장, 기록, 내보내기).
+
+    EVOLAB_DATA_DIR가 있으면 설정과 상관없이 그 폴더다(v3 설계 D5).
+    """
+    override = _env_dir(DATA_DIR_ENV)
+    if override is not None:
+        return override
     from evolab.app import strings as S
 
     return custom_data_dir() or documents_dir() / S.DATA_DIR_NAME
@@ -132,7 +158,13 @@ def records_dir() -> Path:
 
 
 def default_records_dir() -> Path:
-    """데이터 폴더를 바꾸기 전 기본 위치의 기록 폴더(문서\\진화실험실\\records). 예전 기록을 계속 읽기 위해 둔다."""
+    """데이터 폴더를 바꾸기 전 기본 위치의 기록 폴더(문서\\진화실험실\\records). 예전 기록을 계속 읽기 위해 둔다.
+
+    EVOLAB_DATA_DIR가 있으면 그 폴더의 records(문서 폴더를 읽지 않는다).
+    """
+    override = _env_dir(DATA_DIR_ENV)
+    if override is not None:
+        return override / "records"
     from evolab.app import strings as S
 
     return documents_dir() / S.DATA_DIR_NAME / "records"
