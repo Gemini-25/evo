@@ -9,6 +9,9 @@
 
 모든 편집은 EnvDocument를 거친다(되돌리기·실시간 검사). 도구 하나의 동작은 되돌리기 한 단계다.
 수식 칸('='로 시작)은 끌기·회전으로 덮어쓰지 않는다(그 칸만 건너뛴다).
+
+v2.0 「움직임과 공기」 묶음(설계 5.1, 7.3): 길 그리기(make_moving, 점은 세계 좌표), 장애물 줄(add_obstacles),
+점프 추진기(add_jump, 방향은 세계 좌표), 날개(add_wing, 앞전·뒷전은 물체 좌표), 공기역학(add_aero).
 """
 
 from __future__ import annotations
@@ -42,12 +45,13 @@ TOOL_GROUPS: list[tuple[str, list[str]]] = [
     ("terrain", ["terrain_line", "terrain_auto", "hills_auto", "track_draw", "track_auto"]),
     ("joints", ["joint_pivot", "joint_rot_spring", "joint_weld", "joint_spring"]),
     ("actuators", ["thruster", "fuel_tank", "vehicle", "motor"]),
+    ("motion", ["path", "obstacles", "jump", "wing", "aero"]),
     ("sensors", ["sensor_rays", "sensor_body_state", "sensor_contact", "sensor_target", "sensor_joint_angle",
                  "sensor_fuel", "sensor_time"]),
     ("regions", ["region_goal", "region_hazard", "region_pad", "checkpoints", "spawn"]),
 ]
 TOOL_IDS: list[str] = [t for _, ids in TOOL_GROUPS for t in ids]
-INSTANT_TOOLS: frozenset[str] = frozenset({"terrain_auto", "hills_auto", "track_auto", "sensor_time"})
+INSTANT_TOOLS: frozenset[str] = frozenset({"terrain_auto", "hills_auto", "track_auto", "sensor_time", "obstacles"})
 """고르면 바로 부품을 더하고 선택 도구로 돌아가는 도구."""
 
 TOOL_LABELS: dict[str, str] = {
@@ -80,6 +84,11 @@ TOOL_LABELS: dict[str, str] = {
     "region_pad": S.EDC_TOOL_REGION_PAD,
     "checkpoints": S.EDC_TOOL_CHECKPOINTS,
     "spawn": S.EDC_TOOL_SPAWN,
+    "path": S.EDC_TOOL_PATH,
+    "obstacles": S.EDC_TOOL_OBSTACLES,
+    "jump": S.EDC_TOOL_JUMP,
+    "wing": S.EDC_TOOL_WING,
+    "aero": S.EDC_TOOL_AERO,
 }
 
 TOOL_HINTS: dict[str, str] = {
@@ -108,6 +117,11 @@ TOOL_HINTS: dict[str, str] = {
     "region_pad": S.EDC_HINT_REGION,
     "checkpoints": S.EDC_HINT_CHECKPOINTS,
     "spawn": S.EDC_HINT_SPAWN,
+    "path": S.EDC_HINT_PATH,
+    "obstacles": S.EDC_HINT_OBSTACLES,
+    "jump": S.EDC_HINT_JUMP,
+    "wing": S.EDC_HINT_WING,
+    "aero": S.EDC_HINT_AERO,
 }
 
 # ---------------------------------------------------------------------------
@@ -144,6 +158,26 @@ VEHICLE_KEYS = {"keys_forward": ["Up", "W"], "keys_back": ["Down", "S"], "keys_l
 ANGLE_SNAP = math.pi / 12
 """격자 맞춤이 켜져 있으면 각도를 15도 단위로 맞춘다."""
 MAX_POLY_POINTS = 64
+MAX_PATH_POINTS = 256
+"""움직임 길의 점 수 상한(모델 PathMotion.points와 같다)."""
+PATH_MOTION: dict[str, Any] = {"speed": 1.0, "mode": "pingpong"}
+"""길 그리기로 만드는 움직임의 기본값(설계 5.1: 속력 1, 왕복)."""
+WAVE_MOTION: dict[str, Any] = {"period": 2.0}
+OBSTACLE_SEED_ID = "oseed"
+OBSTACLES: dict[str, Any] = {
+    "seed": f"=r.{OBSTACLE_SEED_ID}", "count": 40, "x": 20.0, "y": 0.0, "gap": [1.0, 2.4], "width": [0.5, 1.5],
+    "height": [0.4, 1.3], "air_chance": 0.35, "air_y": [1.25, 1.5], "air_height": [0.4, 0.8], "speed": 6.0,
+    "accel": 0.25,
+}
+"""장애물 줄 도구의 기본값: 내장 점프 게임과 같은 값(설계 4.4 B 판)."""
+OBSTACLE_SEED: dict[str, Any] = {"dist": "int", "low": 0.0, "high": 1e9}
+JUMP: dict[str, Any] = {"speed": 6.0, "cooldown": 0.25}
+JUMP_KEYS = ["Up", "W", "Space"]
+JUMP_GROUND_TAGS = ("ground", TERRAIN_TAG)
+"""점프 추진기의 땅 기본값: 이 태그를 가진 세계 쪽 모양이 있으면 그것(앞의 것이 먼저), 없으면 tag.ground."""
+WING_THICK = 0.04
+WING_CHORD = 1.0
+"""끌지 않고 누르기만 하면 만드는 날개 시위(m)."""
 
 JOINT_KINDS = {"joint_pivot": "pivot", "joint_rot_spring": "rot_spring", "joint_weld": "weld",
                "joint_spring": "spring"}
@@ -289,6 +323,8 @@ def world_tags(doc: EnvDocument) -> list[str]:
             add(["wall"])
         elif kind == "hills":
             add(["terrain"])
+        elif kind == "obstacles":
+            add(["obstacle", "air"])
     for b in doc.items("bodies"):
         if b.get("owner", "agent") == "world":
             add(b.get("tags") or [])
@@ -636,8 +672,23 @@ def add_vehicle(doc: EnvDocument, body: str) -> Ref:
 # ---------------------------------------------------------------------------
 
 
+def generator_bodies(doc: EnvDocument) -> list[str]:
+    """생성기가 만드는 물체 id(spec.symbols.generator_bodies와 같은 규칙): 지형·언덕 <id>, 트랙 <id>.walls, 장애물 줄 <id>."""
+    out: list[str] = []
+    for g in doc.items("generators"):
+        gid, kind = g.get("id"), g.get("kind")
+        if not isinstance(gid, str):
+            continue
+        if kind in ("heightmap", "hills", "obstacles"):
+            out.append(gid)
+        elif kind == "track":
+            out.append(f"{gid}.walls")
+    return out
+
+
 def _need_body(doc: EnvDocument, body: str) -> None:
-    if body_data(doc, body) is None:
+    """센서를 달 물체: 문서 물체 또는 생성기 물체(v2: 장애물 줄의 속도를 재는 몸 상태 센서)."""
+    if body_data(doc, body) is None and body not in generator_bodies(doc):
         raise ToolError(S.EDC_ERR_NO_BODY)
 
 
@@ -654,11 +705,15 @@ def add_rays(doc: EnvDocument, body: str, origin: Point, center: float = 0.0, *,
 
 
 def add_body_state(doc: EnvDocument, body: str, fields: list[str] | None = None, frame: str | None = None) -> Ref:
-    """몸 상태. 기본: 차량 구동기가 달린 물체면 앞뒤·옆 속도(물체 좌표), 아니면 속도·각도·각속도(세계 좌표)."""
+    """몸 상태. 기본: 차량 구동기가 달린 물체면 앞뒤·옆 속도(물체 좌표), 생성기 물체(v2 장애물 줄)면 속도(세계 좌표),
+    아니면 속도·각도·각속도(세계 좌표)."""
     _need_body(doc, body)
     car = any(a.get("kind") == "vehicle" and a.get("body") == body for a in doc.items("actuators"))
     if fields is None:
-        fields = ["v_fwd", "v_lat"] if car else ["vx", "vy", "angle", "omega"]
+        if body_data(doc, body) is None:  # 생성기 물체(장애물 줄): 돌지 않으므로 속도만
+            fields = ["vx", "vy"]
+        else:
+            fields = ["v_fwd", "v_lat"] if car else ["vx", "vy", "angle", "omega"]
     item = {"kind": "body_state", "id": "st", "label": S.EDC_LABEL_BODY_STATE, "body": body, "fields": fields,
             "frame": frame or ("body" if car else "world")}
     return doc.add("sensors", item, S.EDC_UNDO_ADD_SENSOR)
@@ -752,6 +807,141 @@ def set_spawn(doc: EnvDocument, x: float | None = None, y: float | None = None, 
 
         doc.edit(S.EDC_UNDO_SPAWN, mutate, merge_key)
     return skipped
+
+
+# ---------------------------------------------------------------------------
+# 조작 함수: 움직임과 공기 (v2.0, 설계 5.1)
+# ---------------------------------------------------------------------------
+
+
+def _numeric_vec(value: Any) -> Point | None:
+    """두 칸이 모두 숫자인 Vec2면 (x, y), 아니면 None."""
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(is_number(v) for v in value):
+        return (float(value[0]), float(value[1]))
+    return None
+
+
+def make_moving(doc: EnvDocument, body: str, points: list[Point], kind: str = "path") -> Ref:
+    """세계 물체를 정해진 움직임 물체로: type = kinematic, motion = 길(path) 또는 흔들기(wave). 되돌리기 한 단계.
+
+    points는 세계 좌표다. path: 물체 자리(pos)에서 출발해 points를 차례로 지나는 길(파일에는 pos 기준 상대 좌표,
+    첫 점 (0, 0)). 이미 길 움직임이 있으면 점만 바꾸고 속력·방식 같은 다른 칸은 둔다(없으면 속력 1, 왕복).
+    wave: 마지막 점 - pos를 흔들림 폭으로(점이 없으면 위아래 1m), 주기 2초.
+    """
+    if kind not in ("path", "wave"):
+        raise ValueError(kind)
+    b = body_data(doc, body)
+    if b is None:
+        raise ToolError(S.EDC_ERR_NO_BODY)
+    if b.get("owner", "agent") != "world":
+        raise ToolError(S.EDC_PATH_WORLD_ONLY)
+    origin = _numeric_vec(b.get("pos", [0.0, 0.0]))
+    if origin is None:
+        raise ToolError(S.EDC_LOCKED_FORMULA)
+    rel: list[Point] = [(0.0, 0.0)]
+    for p in points:
+        q = (clean(p[0] - origin[0]), clean(p[1] - origin[1]))
+        if math.dist(rel[-1], q) > 1e-9:
+            rel.append(q)
+    old = b.get("motion") if isinstance(b.get("motion"), dict) else None
+    motion: dict[str, Any]
+    if kind == "path":
+        if len(rel) < 2:
+            raise ToolError(S.EDC_ERR_LINE_FEW)
+        if len(rel) > MAX_PATH_POINTS:
+            raise ToolError(S.EDC_PATH_TOO_MANY)
+        motion = dict(old) if old is not None and old.get("kind") == "path" else {"kind": "path", **PATH_MOTION}
+        motion["points"] = [_vec_list(q) for q in rel]
+    else:
+        amp = rel[-1] if len(rel) > 1 else (0.0, 1.0)
+        motion = dict(old) if old is not None and old.get("kind") == "wave" else {"kind": "wave", **WAVE_MOTION}
+        motion["amplitude"] = _vec_list(amp)
+    path = doc.item_path(("bodies", body))
+    assert path is not None
+    apply_changes(doc, S.EDC_UNDO_MAKE_MOVING, [((*path, "type"), "kinematic"), ((*path, "motion"), motion)])
+    ref = ("bodies", body)
+    doc.select([ref])
+    return ref
+
+
+def add_obstacles(doc: EnvDocument) -> Ref:
+    """장애물 줄: 생성기 obstacles(내장 점프 게임과 같은 값). 시드에 쓸 랜덤 값 oseed가 없으면 함께 더한다(한 단계).
+
+    oseed라는 id를 다른 부품이 쓰고 있으면 시드 랜덤 값은 새 id(oseed_1 ...)로 만들고 생성기 시드가 그것을 가리킨다.
+    """
+    item: dict[str, Any] = {"kind": "obstacles", "id": "obs", "label": S.EDC_TOOL_OBSTACLES, **copy.deepcopy(OBSTACLES)}
+    have_seed = any(r.get("id") == OBSTACLE_SEED_ID for r in doc.items("randomize"))
+    seed_id = None if have_seed else doc.unique_id(OBSTACLE_SEED_ID)
+    if seed_id is not None:
+        item["seed"] = f"=r.{seed_id}"
+
+    def extra(d: dict[str, Any], _gid: str) -> None:
+        if seed_id is not None:
+            _list(d, "randomize").append({"id": seed_id, "label": S.EDC_LABEL_OBSTACLE_SEED, **OBSTACLE_SEED})
+
+    return _insert(doc, "generators", item, S.EDC_UNDO_ADD_GENERATOR, extra)
+
+
+def _need_agent_part_body(doc: EnvDocument, body: str) -> None:
+    """점프·공기역학·날개는 에이전트의 움직이는 물체에만."""
+    if body_data(doc, body) is None:
+        raise ToolError(S.EDC_ERR_NO_BODY)
+    if not _agent_dynamic(doc, body):
+        raise ToolError(S.EDC_ACTUATOR_AGENT_ONLY)
+
+
+def jump_ground(doc: EnvDocument) -> list[str]:
+    """점프 추진기의 땅 기본값: 세계 쪽에 ground(없으면 terrain) 태그가 있으면 그 태그, 둘 다 없으면 tag.ground."""
+    tags = world_tags(doc)
+    for t in JUMP_GROUND_TAGS:
+        if t in tags:
+            return [f"tag.{t}"]
+    return ["tag.ground"]
+
+
+def add_jump(doc: EnvDocument, body: str, angle: float = math.pi / 2) -> Ref:
+    """점프 추진기: 뛰는 방향 angle(세계 좌표, 라디안), 속도 6m/s, 냉각 0.25초, 키 ↑·W·Space(다른 구동기가 쓰는 키는 뺌)."""
+    _need_agent_part_body(doc, body)
+    used = _used_keys(doc)
+    item: dict[str, Any] = {"kind": "jump", "id": "jump", "label": S.EDC_LABEL_JUMP, "body": body, **JUMP,
+                            "dir": float(angle), "ground": jump_ground(doc),
+                            "keys": [k for k in JUMP_KEYS if k not in used]}
+    return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
+
+
+def add_aero(doc: EnvDocument, body: str) -> Ref:
+    """공기역학: 물체 테두리가 공기를 받는다(모든 칸 기본값: 공기 밀도 1.2, 폭 1m, 가로세로비 6 ...)."""
+    _need_agent_part_body(doc, body)
+    item = {"kind": "aero", "id": "air", "label": S.EDC_TOOL_AERO, "body": body}
+    return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
+
+
+def wing_shape(le: Point, te: Point) -> dict[str, Any]:
+    """앞전 le에서 뒷전 te까지(물체 좌표) 날개 모양: 시위 = 길이, 붙임각 = 뒷전에서 앞전 쪽 방향, 두께 0.04."""
+    chord = math.dist(le, te)
+    if chord <= 1e-9:
+        raise ToolError(S.EDC_ERR_LINE_FEW)
+    angle = math.atan2(le[1] - te[1], le[0] - te[0])
+    return {"kind": "wing", "le": _vec_list(le), "chord": clean(chord), "angle": clean(angle), "thick": WING_THICK}
+
+
+def add_wing(doc: EnvDocument, body: str, le: Point, te: Point) -> Ref:
+    """에이전트 물체에 날개 모양을 더한다(le, te는 그 물체 좌표). 되돌리기 한 단계. 그 물체의 Ref."""
+    _need_agent_part_body(doc, body)
+    shape = wing_shape(le, te)
+    path = doc.item_path(("bodies", body))
+    assert path is not None
+
+    def mutate(d: dict[str, Any]) -> None:
+        b = get_path(d, path)
+        if not isinstance(b.get("shapes"), list):
+            b["shapes"] = []
+        b["shapes"].append(copy.deepcopy(shape))
+
+    doc.edit(S.EDC_UNDO_ADD_WING, mutate)
+    ref = ("bodies", body)
+    doc.select([ref])
+    return ref
 
 
 # ---------------------------------------------------------------------------
@@ -1332,13 +1522,15 @@ class ThrusterTool(Tool):
 
 
 class _BodyClickTool(Tool):
-    """물체 하나를 누르면 부품을 더하는 도구."""
+    """물체 하나를 누르면 부품을 더하는 도구. generated_ok면 생성기 물체(장애물 줄 등)도 누를 수 있다."""
 
     agent_only = False
+    generated_ok = False
 
     def press(self, e: CanvasEvent) -> None:
         body = self.canvas.pick_body(e.world)
-        if body is None or body.ref[0] != "bodies":
+        if body is None or (body.ref[0] != "bodies" and not (self.generated_ok
+                                                              and body.id in generator_bodies(self.doc))):
             self.canvas.message(S.EDC_ERR_CLICK_AGENT_BODY if self.agent_only else S.EDC_ERR_CLICK_BODY)
             return
         local = self.canvas.snap(to_local(body.pose, e.world), e)
@@ -1383,6 +1575,8 @@ class RaysTool(_BodyClickTool):
 
 class BodyStateTool(_BodyClickTool):
     tool_id = "sensor_body_state"
+    generated_ok = True
+    """v2: 장애물 줄을 누르면 그 속도를 재는 몸 상태 센서(점프 게임의 장애물 속도 센서)."""
 
     def commit(self, body: str, local: Point, e: CanvasEvent) -> Any:
         return add_body_state(self.doc, body)
@@ -1672,17 +1866,314 @@ class SpawnTool(Tool):
             p.drawLine(c, c + QPointF(30 * math.cos(self.angle), -30 * math.sin(self.angle)))
 
 
+# ---- 움직임과 공기 (v2.0) ----
+
+
+def wing_outline(le: Point, chord: float, angle: float, thick: float, camber: float) -> list[Point]:
+    """날개 모양 꼭짓점 넷(앞전, 위, 뒷전, 아래; 물체 좌표): 런타임과 같은 geometry.wing_points."""
+    return [(float(x), float(y)) for x, y in geo.wing_points(le, chord, angle, thick, camber)]
+
+
+class PathTool(Tool):
+    """길 그리기: 세계 물체를 누른 뒤 지날 점을 차례로 누른다(격자 맞춤). 두 번 누르기나 Enter로 끝, Backspace로 마지막
+    점 지우기, Esc로 취소. 끝내면 그 물체가 정해진 움직임(길, 왕복)이 된다(make_moving)."""
+
+    tool_id = "path"
+
+    def __init__(self, canvas: EditorCanvas) -> None:
+        super().__init__(canvas)
+        self.body: tuple[str, Point] | None = None
+        """(물체 id, 길이 시작하는 세계 점 = 물체의 시작 자리)"""
+        self.points: list[Point] = []
+        self.hover: Point | None = None
+
+    def start_with(self, body_id: str) -> bool:
+        """이 물체의 길을 그리기 시작한다(속성 패널의 「캔버스에서 길 그리기」). 세계 물체가 아니면 안내만."""
+        self.cancel()
+        b = body_data(self.doc, body_id)
+        shown = self.canvas.scene().body(body_id)
+        if b is None or shown is None:
+            self.canvas.message(S.EDC_ERR_NO_BODY)
+            return False
+        if b.get("owner", "agent") != "world":
+            self.canvas.message(S.EDC_PATH_WORLD_ONLY)
+            return False
+        self.body = (body_id, self._origin(b, shown.pose))
+        self.canvas.message(self.hint(), transient=False)
+        self.canvas.update()
+        return True
+
+    @staticmethod
+    def _origin(b: dict[str, Any], pose: Pose) -> Point:
+        """길이 시작하는 점: 파일의 pos(숫자일 때). 아니면 미리보기 자세."""
+        pos = _numeric_vec(b.get("pos", [0.0, 0.0]))
+        return pos if pos is not None else (pose[0], pose[1])
+
+    def press(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            hit = self.canvas.pick_body(e.world)
+            if hit is None:
+                self.canvas.message(S.EDC_ERR_CLICK_BODY)
+                return
+            b = body_data(self.doc, hit.id) if hit.ref[0] == "bodies" else None
+            if b is None or b.get("owner", "agent") != "world":
+                self.canvas.message(S.EDC_PATH_WORLD_ONLY)
+                return
+            self.body = (hit.id, self._origin(b, hit.pose))
+            self.points = []
+            self.canvas.update()
+            return
+        q = self.canvas.snap(e.world, e)
+        prev = self.points[-1] if self.points else self.body[1]
+        if math.dist(prev, q) <= 1e-9:
+            return
+        if len(self.points) + 1 >= MAX_PATH_POINTS:
+            self.canvas.message(S.EDC_PATH_TOO_MANY)
+            return
+        self.points.append(q)
+        self.canvas.update()
+
+    def move(self, e: CanvasEvent) -> None:
+        if self.body is not None:
+            self.hover = self.canvas.snap(e.world, e)
+            self.canvas.update()
+
+    def double_click(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            self.press(e)
+            return
+        self.press(e)
+        if self.points:
+            self.finish()
+
+    def key(self, event: QKeyEvent) -> bool:
+        if self.body is None:
+            return False
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.finish()
+            return True
+        if event.key() == Qt.Key.Key_Backspace and self.points:
+            self.points.pop()
+            self.canvas.update()
+            return True
+        return False
+
+    def finish(self) -> None:
+        if self.body is None:
+            return
+        if not self.points:
+            self.canvas.message(S.EDC_ERR_LINE_FEW)
+            return
+        bid, pts = self.body[0], list(self.points)
+        if self.run(lambda: make_moving(self.doc, bid, pts)) is not None:
+            self.body = None
+            self.points = []
+            self.hover = None
+        self.canvas.update()
+
+    def busy(self) -> bool:
+        return self.body is not None
+
+    def cancel(self) -> None:
+        self.body = None
+        self.points = []
+        self.hover = None
+        self.canvas.update()
+
+    def overlay(self, p: QPainter) -> None:
+        if self.body is None:
+            return
+        c = self.canvas
+        pts = [self.body[1], *self.points] + ([self.hover] if self.hover is not None else [])
+        poly = QPolygonF([c.world_to_screen(*q) for q in pts])
+        p.setPen(_draft_pen(1.5, dash=True))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolyline(poly)
+        p.setPen(_draft_pen())
+        p.drawEllipse(poly[0], 5.0, 5.0)
+        p.setBrush(QBrush(COLOR_DRAFT))
+        for i in range(1, len(self.points) + 1):
+            p.drawEllipse(poly[i], 3.0, 3.0)
+
+
+def _agent_part_pick(tool: Tool, e: CanvasEvent) -> Any:
+    """점프·날개 도구가 누른 에이전트 물체(장면 물체). 아니면 안내를 띄우고 None."""
+    body = tool.canvas.pick_body(e.world)
+    if body is None or body.ref[0] != "bodies":
+        tool.canvas.message(S.EDC_ERR_CLICK_AGENT_BODY)
+        return None
+    if not _agent_dynamic(tool.doc, body.id):
+        tool.canvas.message(S.EDC_ACTUATOR_AGENT_ONLY)
+        return None
+    return body
+
+
+class JumpTool(Tool):
+    """점프 추진기: 에이전트 물체를 누르면 위쪽, 끌면 끈 방향(격자 맞춤이면 15도 단위, 세계 좌표)으로 뛴다."""
+
+    tool_id = "jump"
+    ARROW_PX = 40.0
+
+    def __init__(self, canvas: EditorCanvas) -> None:
+        super().__init__(canvas)
+        self.body: tuple[str, Point] | None = None
+        """(물체 id, 화살표를 그릴 세계 점 = 물체 자리)"""
+        self.press_world: Point = (0.0, 0.0)
+        self.angle = math.pi / 2
+        self.start = QPointF()
+        self.dragged = False
+
+    def press(self, e: CanvasEvent) -> None:
+        body = _agent_part_pick(self, e)
+        if body is None:
+            return
+        self.body = (body.id, (body.pose[0], body.pose[1]))
+        self.press_world = e.world
+        self.angle = math.pi / 2
+        self.start = e.screen
+        self.dragged = False
+
+    def move(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            return
+        if (e.screen - self.start).manhattanLength() >= 6:
+            self.dragged = True
+        if self.dragged:
+            a = math.atan2(e.world[1] - self.press_world[1], e.world[0] - self.press_world[0])
+            self.angle = self.canvas.snap_dir(a, e)
+        self.canvas.update()
+
+    def release(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            return
+        self.move(e)
+        bid, angle = self.body[0], self.angle
+        self.body = None
+        self.run(lambda: add_jump(self.doc, bid, angle))
+        self.canvas.update()
+
+    def double_click(self, e: CanvasEvent) -> None:
+        pass
+
+    def busy(self) -> bool:
+        return self.body is not None
+
+    def cancel(self) -> None:
+        self.body = None
+        self.canvas.update()
+
+    def overlay(self, p: QPainter) -> None:
+        if self.body is None:
+            return
+        base = self.canvas.world_to_screen(*self.body[1])
+        tip = base + QPointF(self.ARROW_PX * math.cos(self.angle), -self.ARROW_PX * math.sin(self.angle))
+        p.setPen(_draft_pen(2.0))
+        p.drawLine(base, tip)
+        ang = math.atan2(tip.y() - base.y(), tip.x() - base.x())
+        for side in (-1, 1):
+            a2 = ang + math.pi + side * 0.5
+            p.drawLine(tip, tip + QPointF(8 * math.cos(a2), 8 * math.sin(a2)))
+
+
+class WingTool(Tool):
+    """날개: 에이전트 물체 위에서 앞전부터 뒷전까지 끈다(그냥 누르면 시위 1m, 뒷전이 물체 왼쪽)."""
+
+    tool_id = "wing"
+
+    def __init__(self, canvas: EditorCanvas) -> None:
+        super().__init__(canvas)
+        self.body: tuple[str, Pose] | None = None
+        self.le: Point = (0.0, 0.0)
+        self.te: Point = (0.0, 0.0)
+        self.start = QPointF()
+        self.dragged = False
+
+    def press(self, e: CanvasEvent) -> None:
+        body = _agent_part_pick(self, e)
+        if body is None:
+            return
+        self.body = (body.id, body.pose)
+        self.le = self.canvas.snap(to_local(body.pose, e.world), e)
+        self.te = self.le
+        self.start = e.screen
+        self.dragged = False
+
+    def move(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            return
+        if (e.screen - self.start).manhattanLength() >= 4:
+            self.dragged = True
+        self.te = self.canvas.snap(to_local(self.body[1], e.world), e)
+        self.canvas.update()
+
+    def _ends(self) -> tuple[Point, Point]:
+        if not self.dragged or math.dist(self.le, self.te) <= 1e-9:
+            return self.le, (clean(self.le[0] - WING_CHORD), self.le[1])
+        return self.le, self.te
+
+    def release(self, e: CanvasEvent) -> None:
+        if self.body is None:
+            return
+        self.move(e)
+        bid = self.body[0]
+        le, te = self._ends()
+        self.body = None
+        self.run(lambda: add_wing(self.doc, bid, le, te))
+        self.canvas.update()
+
+    def double_click(self, e: CanvasEvent) -> None:
+        pass
+
+    def busy(self) -> bool:
+        return self.body is not None
+
+    def cancel(self) -> None:
+        self.body = None
+        self.canvas.update()
+
+    def overlay(self, p: QPainter) -> None:
+        if self.body is None or not self.dragged:
+            return
+        le, te = self._ends()
+        chord = math.dist(le, te)
+        angle = math.atan2(le[1] - te[1], le[0] - te[0])
+        pts = wing_outline(le, chord, angle, WING_THICK, 0.0)
+        p.setPen(_draft_pen())
+        p.setBrush(QBrush(COLOR_DRAFT_FILL))
+        p.drawPolygon(_poly_screen(self.canvas, self.body[1], pts))
+        p.setBrush(QBrush(COLOR_DRAFT))
+        p.drawEllipse(self.canvas.world_to_screen(*to_world(self.body[1], le)), 3.0, 3.0)
+
+
+class AeroTool(_BodyClickTool):
+    tool_id = "aero"
+    agent_only = True
+
+    def commit(self, body: str, local: Point, e: CanvasEvent) -> Any:
+        return add_aero(self.doc, body)
+
+
 # ---- 선택·이동·회전 ----
 
 
 _MOVABLE = ("bodies", "regions", "checkpoints")
 """끌어서 함께 옮기는 부품 구역(pos 또는 선 끝점)."""
+_DRAG_KINDS = {"body": "move", "region": "move", "cp_line": "move", "rotate": "rotate", "spawn": "spawn",
+               "spawn_dir": "spawn_dir", "cp_end": "cp_end", "joint": "joint", "thruster": "thruster",
+               "thruster_tip": "thruster_tip", "ray": "ray", "path_pt": "path_pt"}
+"""누른 부분 -> 끌기 종류(path_pt: 정해진 움직임 길의 점 손잡이)."""
+
+
+def _path_points(item: dict[str, Any] | None) -> list[Any] | None:
+    mo = item.get("motion") if isinstance(item, dict) else None
+    pts = mo.get("points") if isinstance(mo, dict) and mo.get("kind") == "path" else None
+    return pts if isinstance(pts, list) else None
 
 
 @dataclass
 class _Drag:
     kind: str
-    """move, band, rotate, spawn, spawn_dir, cp_end, joint, thruster, thruster_tip, ray"""
+    """move, band, rotate, spawn, spawn_dir, cp_end, joint, thruster, thruster_tip, ray, path_pt"""
     pick: Pick | None
     start_world: Point
     start_screen: QPointF
@@ -1734,10 +2225,7 @@ class SelectTool(Tool):
                     doc.select([*sel, hit.ref])
             elif hit.ref not in sel:
                 doc.select([hit.ref])
-        kinds = {"body": "move", "region": "move", "cp_line": "move", "rotate": "rotate", "spawn": "spawn",
-                 "spawn_dir": "spawn_dir", "cp_end": "cp_end", "joint": "joint", "thruster": "thruster",
-                 "thruster_tip": "thruster_tip", "ray": "ray"}
-        kind = kinds.get(hit.part)
+        kind = _DRAG_KINDS.get(hit.part)
         if kind is None:
             self.drag = None
             return
@@ -1781,6 +2269,9 @@ class SelectTool(Tool):
             return is_formula(item.get("dir", 0.0))
         if kind == "ray":
             return vec_locked(item.get("origin", [0.0, 0.0]))
+        if kind == "path_pt":
+            pts = _path_points(item)
+            return pts is None or not 0 <= hit.index < len(pts) or vec_locked(pts[hit.index])
         return True
 
     def move(self, e: CanvasEvent) -> None:
@@ -1834,9 +2325,7 @@ class SelectTool(Tool):
         cursor = Qt.CursorShape.ArrowCursor
         tip = ""
         if hit is not None:
-            kind = {"body": "move", "region": "move", "cp_line": "move", "rotate": "rotate", "spawn": "spawn",
-                    "spawn_dir": "spawn_dir", "cp_end": "cp_end", "joint": "joint", "thruster": "thruster",
-                    "thruster_tip": "thruster_tip", "ray": "ray"}.get(hit.part)
+            kind = _DRAG_KINDS.get(hit.part)
             if kind is None:
                 cursor = Qt.CursorShape.PointingHandCursor
             elif self._locked(kind, hit):
@@ -2005,6 +2494,19 @@ class SelectTool(Tool):
         if moved:
             apply_changes(self.doc, S.EDC_UNDO_MOVE, [((*path, name), new)], d.key)
 
+    def _drag_path_pt(self, d: _Drag, e: CanvasEvent) -> None:
+        """길의 점 하나를 끈다(점은 물체 pos 기준, 세계 축)."""
+        assert d.pick is not None and d.pick.ref is not None
+        path = self.doc.item_path(d.pick.ref)
+        if path is None:
+            return
+        pts = copy.deepcopy(_path_points(get_path(d.base, path)))
+        if pts is None or not 0 <= d.pick.index < len(pts):
+            return
+        pts[d.pick.index], moved = shifted_vec(pts[d.pick.index], self._world_delta(d, e), self._snapper(e))
+        if moved:
+            apply_changes(self.doc, S.EDC_UNDO_MOVE, [((*path, "motion", "points"), pts)], d.key)
+
     def _drag_thruster_tip(self, d: _Drag, e: CanvasEvent) -> None:
         assert d.pick is not None and d.pick.ref is not None
         path = self.doc.item_path(d.pick.ref)
@@ -2065,6 +2567,8 @@ def run_instant(tool_id: str, canvas: EditorCanvas) -> Ref | None:
             return add_generated_track(doc)
         if tool_id == "sensor_time":
             return add_time_left(doc)
+        if tool_id == "obstacles":
+            return add_obstacles(doc)
     except ToolError as exc:
         canvas.message(str(exc))
     return None
@@ -2083,6 +2587,7 @@ def make_tool(tool_id: str, canvas: EditorCanvas) -> Tool:
         "sensor_joint_angle": JointAngleTool, "sensor_fuel": FuelSensorTool, "checkpoints": CheckpointTool,
         "motor": MotorTool,
         "spawn": SpawnTool,
+        "path": PathTool, "jump": JumpTool, "wing": WingTool, "aero": AeroTool,
     }
     cls = classes.get(tool_id)
     if cls is None:

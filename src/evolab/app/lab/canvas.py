@@ -9,6 +9,13 @@
   대부분의 프레임에서 카메라가 멈춰 있다.
 - v1.2: 정적 그림 끝에 궤적 밀도 층(set_density, 대시보드 궤적 밀도 타일)을 그릴 수 있다. 정적 그림에 들어가므로
   프레임마다 드는 비용이 없다. 대시보드 안의 작은 캔버스는 Ctrl+휠일 때만 확대한다(set_wheel_needs_ctrl).
+- v2.0(설계 5.3, D7): 정해진 움직임 세계 물체(BodyGeom.motion, 장애물 줄 등)는 궤적에 없고 집단 전체가 같은 움직임을
+  보므로, 정적 그림 캐시에서 빼고 따로 한 층으로 두었다가 프레임마다 그 시각의 자세(motion.pose_at)로 한 번만 그린다.
+  시각은 보여 주는 프레임의 시각(프레임 간격으로 내림)이라 개체와 장애물이 시뮬레이션한 그대로 맞물려 보인다.
+  관전·타임라인·1세대 vs 지금·클릭 검사·궤적 밀도 타일·경주 칸·GIF가 모두 이 캔버스다.
+- v2.0 기본 보기(D25): set_scene(view=...)로 환경의 editor.view를 주면 처음 카메라가 그 상자다. 맞춤 모드는 모든 개체와
+  목표가 상자 안에 있는 동안 상자를 그대로 보이고, 벗어나면 상자와 필요한 범위를 합친 범위로 넓힌다. 챔피언 따라가기는
+  상자 배율로 상자를 보다가 따라갈 물체가 보이는 범위의 가장자리를 넘을 때만 옮긴다(직접 조종 화면과 같은 규칙).
 """
 
 from __future__ import annotations
@@ -53,9 +60,14 @@ from evolab.app.play.window import (
     COLOR_TERRAIN_FILL,
     COLOR_TERRAIN_LINE,
     COLOR_WORLD_BODY,
+    VIEW_SCALE,
+    body_path,
+    view_camera,
 )
 from evolab.engine.evaluate import Trajectory
+from evolab.spec.editor_meta import ViewBox
 from evolab.world.physics2d.episode import BodyGeom, ShapeGeom, WorldGeometry
+from evolab.world.physics2d.motion import MotionPlan, pose_at
 
 TOP_FRACTION = 0.10
 """상위 몇 %를 진하게 그릴지."""
@@ -196,6 +208,23 @@ def _shape_key(body: BodyGeom) -> tuple:
     )
 
 
+@dataclass
+class _Mover:
+    """정해진 움직임 세계 물체 하나(물체 좌표 모양과 움직임)."""
+
+    id: str
+    motion: MotionPlan
+    fill: QPainterPath
+    """다각형·원."""
+    lines: QPainterPath
+    """선분."""
+
+
+def _mover(body: BodyGeom) -> _Mover:
+    assert body.motion is not None
+    return _Mover(body.id, body.motion, *body_path(body))
+
+
 def _build_shape(body: BodyGeom) -> _Shape:
     path = QPainterPath()
     path.setFillRule(Qt.FillRule.WindingFill)
@@ -282,6 +311,14 @@ class SpectatorCanvas(QWidget):
         self._density_fit = False
         """맞춤 카메라가 밀도 층 사각형을 보이게 하는가(개체가 없는 밀도 타일)."""
         self._wheel_needs_ctrl = False
+        self._movers: list[_Mover] = []
+        """정해진 움직임 세계 물체(정적 그림 캐시 밖, 프레임마다 그 시각의 자세로)."""
+        self.mover_poses: list[tuple[float, float, float]] = []
+        """마지막으로 그린 정해진 움직임 물체의 자세(_movers 순서). 테스트가 읽는다."""
+        self.mover_time = 0.0
+        """마지막으로 그린 정해진 움직임 물체의 시각(보여 주는 프레임의 시각)."""
+        self._view: ViewBox | None = None
+        """기본 보기(editor.view): 처음 카메라. None이면 지금 규칙."""
 
         self._population: list[_Agent] = []
         self._overlay: list[_Agent] = []
@@ -329,6 +366,7 @@ class SpectatorCanvas(QWidget):
 
     def set_scene(
         self, world: WorldGeometry, agents: list[list[BodyGeom]] | None = None, channels: list[str] | None = None,
+        view: ViewBox | None = None,
     ) -> None:
         """시험 하나의 세계(정적 물체, 영역, 추진기)를 정한다. 집단과 겹쳐 보기는 비운다(다른 세계의 궤적이라).
 
@@ -336,8 +374,10 @@ class SpectatorCanvas(QWidget):
         다를 수 있다. None이면 모두 world의 움직이는 물체 모양을 쓴다.
         channels: Trajectory.outputs 열 순서의 구동기 채널 이름(Episode.actuator_channels()). None이면
         world.thrusters에 처음 나오는 채널 순서로 본다(추진기만 있는 환경에서 맞는 추정).
+        view: 환경의 기본 보기 (x0, y0, x1, y1)(spec.editor_meta.view_box). 있으면 처음 카메라가 그 상자다.
         """
         self.world = world
+        self._view = view
         self._scene_agents = [list(a) for a in agents] if agents is not None else None
         self._default_bodies = [b for b in world.bodies if b.moving]
         if channels is None:
@@ -606,8 +646,12 @@ class SpectatorCanvas(QWidget):
         fill = QPainterPath()
         fill.setFillRule(Qt.FillRule.WindingFill)
         bottom = g.bounds[1] - 50.0
+        self._movers = []
         for b in g.bodies:
             if b.moving:
+                continue
+            if b.motion is not None:  # 정해진 움직임: 정적 그림 캐시에 넣지 않고 프레임마다 그 시각의 자세로
+                self._movers.append(_mover(b))
                 continue
             x0, y0, a0 = b.pose
             c, s = math.cos(a0), math.sin(a0)
@@ -691,6 +735,10 @@ class SpectatorCanvas(QWidget):
         w, h = max(self.width(), 100), max(self.height(), 100)
         mx, my = FIT_MARGIN
         slot = self._follow_slot() if self.follow == "champion" else None
+        if slot is not None and self._view is not None and not self._density_fit:
+            # 기본 보기: 직접 조종 화면과 같은 규칙(상자 배율로 상자를 보다가 가장자리를 넘을 때만 옮김)
+            x, y = self._poses[self._offsets[slot], :2]
+            return view_camera(self._view, (float(x), float(y)), w, h, self._zoom)
         if slot is not None:
             # 직접 조종 화면과 같은 카메라: 따라갈 물체와 목표 영역이 함께 보이게
             x, y = self._poses[self._offsets[slot], :2]
@@ -703,16 +751,37 @@ class SpectatorCanvas(QWidget):
         rect = self._fit_target()
         x0, y0, x1, y1 = rect
         fit = min(w / max(x1 - x0, 1e-6), h / max(y1 - y0, 1e-6))
-        scale = min(SCALE_FIT[1], max(SCALE_FIT[0], fit)) * self._zoom
+        # 기본 보기가 있으면 사용자가 고른 상자 크기 그대로(상자를 합친 범위도 같은 배율 범위라 넓어질 때 튀지 않음)
+        lo, hi = VIEW_SCALE if self._view is not None else SCALE_FIT
+        scale = min(hi, max(lo, fit)) * self._zoom
         return ((x0 + x1) / 2.0, (y0 + y1) / 2.0), scale
 
+    def _inside_view(self) -> bool:
+        """모든 개체(모양 반지름까지)와 패드·목표가 기본 보기 상자 안에 있는가."""
+        assert self._view is not None
+        x0, y0, x1, y1 = self._view
+        t = self._targets
+        if len(t) and not ((t[:, 0] >= x0).all() and (t[:, 0] <= x1).all()
+                           and (t[:, 1] >= y0).all() and (t[:, 1] <= y1).all()):
+            return False
+        if not len(self._poses):
+            return True
+        P, r = self._poses, self._radii
+        return bool(((P[:, 0] - r) >= x0).all() and ((P[:, 0] + r) <= x1).all()
+                    and ((P[:, 1] - r) >= y0).all() and ((P[:, 1] + r) <= y1).all())
+
     def _fit_target(self) -> tuple[float, float, float, float]:
-        """모든 개체(지금 자세)와 패드·목표가 들어오는 범위. 범위를 벗어나거나 많이 줄 때만 옮긴다."""
+        """모든 개체(지금 자세)와 패드·목표가 들어오는 범위. 범위를 벗어나거나 많이 줄 때만 옮긴다.
+
+        기본 보기가 있으면 모두 그 상자 안에 있는 동안 상자 그대로, 벗어나면 상자와 필요한 범위를 합친 범위."""
         g = self.world
         assert g is not None
         if self._density_fit and self._density is not None:
             r = self._density[1]
             return (r.left(), r.top(), r.right(), r.bottom())  # 세계 좌표라 top이 y0(작은 쪽)
+        if self._view is not None and self._inside_view():
+            self._fit_rect = self._view
+            return self._view
         mx, my = FIT_MARGIN
         bx0, by0, bx1, by1 = g.bounds
         pts = [self._targets]
@@ -730,6 +799,9 @@ class SpectatorCanvas(QWidget):
             )
             if need[2] <= need[0] or need[3] <= need[1]:  # 모두 세계 밖(있을 수 없지만): 그대로 둔다
                 need = (lo[0] - mx, lo[1] - my, hi[0] + mx, hi[1] + my)
+        if self._view is not None:  # 상자를 벗어난 개체가 있다: 상자와 합친 범위
+            vx0, vy0, vx1, vy1 = self._view
+            need = (min(need[0], vx0), min(need[1], vy0), max(need[2], vx1), max(need[3], vy1))
         r = self._fit_rect
         nw, nh = need[2] - need[0], need[3] - need[1]
         if r is not None:
@@ -779,6 +851,8 @@ class SpectatorCanvas(QWidget):
         s, ox, oy = self._base()
         base = QTransform(s, 0.0, 0.0, -s, ox, oy)
         self._paint_static(p, base, s, ox, oy)
+        if self._movers:
+            self._draw_movers(p, base)
         if self._agents:
             mats, visible = self._body_transforms(s, ox, oy)
             self._draw_agents(p, mats, visible)
@@ -866,6 +940,39 @@ class SpectatorCanvas(QWidget):
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             p.drawImage(rect, image)
             p.restore()
+
+    def frame_time(self) -> float:
+        """정해진 움직임 물체를 그릴 시각: 보여 주는 프레임의 시각(지금 시각을 개체 프레임 간격으로 내림). 개체가 없으면
+        지금 시각. 개체는 프레임 사이를 잇지 않고 그 시각 이하의 마지막 프레임을 보이므로, 장애물도 같은 시각에 두어야
+        시뮬레이션에서처럼 맞물린다(16m/s 장애물이면 프레임 간격 1/30초에 0.5m 차이)."""
+        if not len(self._step_t):
+            return self._t
+        step = float(self._step_t.min())
+        return math.floor(self._t / step + TIME_EPS) * step
+
+    def _draw_movers(self, p: QPainter, base: QTransform) -> None:
+        """정해진 움직임 세계 물체 층: 그 시각의 자세(pose_at)로 한 번씩(집단 전체가 같은 움직임을 본다)."""
+        t = self.frame_time()
+        poses = [pose_at(mv.motion, t) for mv in self._movers]
+        self.mover_poses = poses
+        self.mover_time = t
+        fill_pen = _pen(COLOR_TERRAIN_LINE, 1.0)
+        line_pen = _pen(COLOR_WORLD_BODY, 2.0)
+        brush = QBrush(COLOR_WORLD_BODY)
+        for mv, (x, y, ang) in zip(self._movers, poses, strict=True):
+            m = QTransform()
+            m.translate(x, y)
+            m.rotateRadians(ang)
+            p.setTransform(m * base)
+            if not mv.fill.isEmpty():
+                p.setPen(fill_pen)
+                p.setBrush(brush)
+                p.drawPath(mv.fill)
+            if not mv.lines.isEmpty():
+                p.setPen(line_pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(mv.lines)
+        p.resetTransform()
 
     def _body_transforms(self, s: float, ox: float, oy: float) -> tuple[list[list[float]], list[bool]]:
         """물체마다 물체 좌표 -> 화면 변환 (m11, m12, m21, m22, dx, dy)과 화면에 걸치는지."""

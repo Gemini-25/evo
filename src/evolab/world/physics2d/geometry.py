@@ -41,6 +41,34 @@ def radial_points(radii: Sequence[float], angle: float = 0.0) -> list[Point]:
     return [(r * math.cos(angle + TAU * i / n), r * math.sin(angle + TAU * i / n)) for i, r in enumerate(radii)]
 
 
+WING_MIN_CHORD = 0.01
+"""날개 모양 시위의 하한(m). 수식이 0 이하를 내도 모양이 꼬이지 않게 자른다(검사는 숫자 칸의 0 이하를 오류로 낸다)."""
+WING_MAX_CHORD = 1e4
+WING_MIN_THICK = 0.005
+"""날개 두께(시위 비율)의 하한. 0보다 크면 위 꼭짓점이 늘 아래 꼭짓점보다 법선 쪽 멀리 있어 단순 다각형이다."""
+WING_MAX_THICK = 1.0
+WING_MAX_CAMBER = 1.0
+
+
+def wing_points(le: Point, chord: float, angle: float, thick: float, camber: float) -> list[Point]:
+    """날개 모양(v2 설계 4.6)의 꼭짓점 넷: 앞전, 위, 뒷전, 아래(반시계).
+
+    뒷전 = le - chord x (cos a, sin a). 시위 가운데 mid에서 법선 n = (-sin a, cos a) 쪽으로 위 = mid + chord x (camber +
+    thick / 2) x n, 아래 = mid + chord x (camber - thick / 2) x n. chord는 [0.01, 1e4], thick은 [0.005, 1], camber는 [-1, 1]로
+    자른다. thick > 0이라 어떤 값에서도 꼬이지 않는다(휨이 커서 위·아래가 같은 쪽이면 오목한 화살촉 꼴이지만 여전히 단순).
+    런타임(Episode)과 에디터 그림이 같은 함수를 쓴다.
+    """
+    lx, ly = float(le[0]), float(le[1])
+    c = min(max(float(chord), WING_MIN_CHORD), WING_MAX_CHORD) if chord == chord else WING_MIN_CHORD
+    th = min(max(float(thick), WING_MIN_THICK), WING_MAX_THICK) if thick == thick else WING_MIN_THICK
+    k = min(max(float(camber), -WING_MAX_CAMBER), WING_MAX_CAMBER) if camber == camber else 0.0
+    ca, sa = math.cos(angle), math.sin(angle)
+    mx, my = lx - 0.5 * c * ca, ly - 0.5 * c * sa
+    nx, ny = -sa, ca
+    up, lo = c * (k + 0.5 * th), c * (k - 0.5 * th)
+    return [(lx, ly), (mx + up * nx, my + up * ny), (lx - c * ca, ly - c * sa), (mx + lo * nx, my + lo * ny)]
+
+
 def signed_area(points: Sequence[Point]) -> float:
     a = 0.0
     n = len(points)

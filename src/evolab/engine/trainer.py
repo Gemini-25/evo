@@ -19,6 +19,12 @@
 챔피언, 세대 대표 유전자, 체크포인트의 학습 상태는 관찰을 켜도 끄도 비트 단위로 같다(pycma 객체 피클 안의 벽시계
 타이머는 원래 실행마다 다르다). 요약이 실패해도(코드 결함) 학습은 이어지고 그 세대 대표는 관찰 키 없이 써진다
 (observe_problem에 남김: 세계 범위만 못 만든 실패와 요약 실패를 따로, 무거운 쪽으로 한 번씩).
+
+조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 조립되지 않는 (개체, 시험) 쌍은 평가가 점수 NaN으로 돌려준다(evaluate.py).
+집계 점수는 NaN이 그대로 퍼지고(그 개체 = 실패), 학습 방법은 tell에서 sanitize_scores(유한한 최솟값 − 1)로 바꾼다. 통계,
+세대 대표, 관찰 기록, 화면에 보내는 점수는 같은 규칙으로 바꾼 값(agg_s)이라 실패 개체는 늘 그 세대 꼴찌다. 검증 점수가
+NaN인 후보는 −∞로 보아 챔피언이 될 수 없다. 처음 몸으로도 조립되지 않는 환경은 Trainer를 만들 때(그리고 환경을 바꿀 때)
+거절한다. 실패가 없으면 agg_s는 agg와 비트 단위로 같은 사본이라 결과가 v1.2와 같다.
 """
 
 from __future__ import annotations
@@ -35,11 +41,11 @@ import numpy as np
 from evolab.engine import observe as observing
 from evolab.engine import seeds
 from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, EvalResult
-from evolab.learners.base import Learner
+from evolab.learners.base import Learner, sanitize_scores
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.io import compile_env, env_hash
-from evolab.world.physics2d.episode import Trial
+from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
 
 CHECKPOINT_FORMAT = 2
 """2(v1.1): 학습 방법 기록(current), 만든 학습 방법 수, 자동 재시작 수, 예선 상태, 보관 출전자를 더했다."""
@@ -74,6 +80,8 @@ class Evaluator(Protocol):
     관찰 기록(v1.2): 클래스 속성 `observes`가 참인 평가기만 학습 평가에서 observe=(쌍마다 코드 0·1·2)와
     frame=(격자 틀 (x0, y0, 칸 크기, nx, ny) 또는 None)을 받고 EvalResult.observations를 채운다. 표시가 없는 평가기는
     키워드를 받지 않는다(그래도 유전자·점수·결과·몸 수치는 기록된다).
+
+    점수 NaN은 조립 실패 쌍이다(v2.0, evaluate.BUILD_FAILED_EVENT). 학습기는 그 개체를 꼴찌로 센다.
     """
 
     def evaluate(
@@ -367,13 +375,36 @@ def qualify_budget_problem(config: TrainConfig) -> str | None:
 
 
 def aggregate(scores: np.ndarray, how: str) -> np.ndarray:
-    """(개체, 시험) -> (개체,). 하위 25%는 아래쪽 ceil(시험 수 x 0.25)개의 평균."""
+    """(개체, 시험) -> (개체,). 하위 25%는 아래쪽 ceil(시험 수 x 0.25)개의 평균.
+
+    시험 하나라도 NaN(조립 실패)이면 그 개체의 집계도 NaN이다(평균·최솟값은 원래 그렇고, 하위 25%는 정렬이 NaN을 뒤로
+    보내 빠뜨리므로 따로 NaN으로 둔다). NaN이 없으면 v1.2와 같은 계산이다.
+    """
     if how == "mean":
         return scores.mean(axis=1)
     if how == "min":
         return scores.min(axis=1)
     k = max(1, math.ceil(scores.shape[1] * 0.25))
-    return np.sort(scores, axis=1, kind="stable")[:, :k].mean(axis=1)
+    out = np.sort(scores, axis=1, kind="stable")[:, :k].mean(axis=1)
+    failed = np.isnan(scores).any(axis=1)
+    if failed.any():
+        out[failed] = np.nan
+    return out
+
+
+def check_initial_body(spec: EnvSpec, layout: GenomeLayout) -> None:
+    """처음 몸 수치(layout.initial())로 전시 시험의 세계를 조립해 본다(설계 4.9). 안 되면 EpisodeBuildError(한국어).
+
+    학습 중의 조립 실패는 그 쌍만 실패로 세지만, 처음 몸부터 안 되는 환경은 학습해도 뜻이 없어 시작하지 않는다
+    (실험실 환경 열기와 같은 검사).
+    """
+    from evolab.app import strings as S
+
+    body = layout.body_values(layout.initial()[None, :])[0] if layout.n_body else None
+    try:
+        Episode(spec, body, seeds.display_trial())
+    except EpisodeBuildError as exc:
+        raise EpisodeBuildError(S.TRAIN_INITIAL_BODY_FAILED.format(reason=str(exc).strip())) from exc
 
 
 def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x0: np.ndarray | None = None) -> Learner:
@@ -453,6 +484,7 @@ class Trainer:
         self.store = store
         self.clock = clock
         self.layout = layout_for(self.spec)
+        check_initial_body(self.spec, self.layout)
         self.trials = trials_for(self.spec, config)
         self.how = config.aggregate or self.spec.file.evaluation.aggregate
         self.learner = make_learner(config, self.layout)
@@ -471,6 +503,8 @@ class Trainer:
         (_observe_failed). 학습은 그대로 이어진다(D9)."""
         self._observe_level = 0
         """observe_problem의 종류(0 없음, OBSERVE_FAILED_FRAME, OBSERVE_FAILED_SUMMARY)."""
+        self.last_build_failures = 0
+        """마지막 세대 학습 시험 중 조립 실패(점수 NaN) 쌍 수(v2.0). 저장하지 않는다(통계 end_* 합의 모자라는 몫과 같은 뜻)."""
         self._header: list[str] | None = None
         if store is not None:
             self._header = store.stats_columns() if hasattr(store, "stats_columns") else None
@@ -555,11 +589,14 @@ class Trainer:
         pop, T = X.shape[0], len(trials)
         scores = res.scores.reshape(pop, T)
         agg = aggregate(scores, self.how)
-        self.learner.tell(X, agg)
+        self.learner.tell(X, agg)  # 학습 방법이 NaN(조립 실패)을 agg_s와 같은 규칙으로 바꾼다
+        # 통계·세대 대표·관찰·화면 점수: 조립 실패 개체는 유한한 최솟값 − 1. NaN이 없으면 agg와 비트 단위로 같은 사본
+        agg_s = sanitize_scores(agg, pop)
+        self.last_build_failures = int(np.count_nonzero(np.isnan(res.scores)))
         s.evaluations += pop * T
         cur = s.current
         cur.trials += pop * T
-        rep = int(np.argmax(agg))  # 동점이면 앞쪽(결정적)
+        rep = int(np.argmax(agg_s))  # 동점이면 앞쪽(결정적)
         # 기록용 세대 번호는 '끝낸 세대 수'(1부터): 통계 줄, 챔피언 파일, 체크포인트가 같은 번호를 쓴다.
         s.generation = gen + 1
         label = s.generation
@@ -571,14 +608,14 @@ class Trainer:
         closing = s.qualifying and cur.trials >= c.qualify_trials
         if cur.trials // c.validate_every > cur.validations or closing:
             cur.validations = cur.trials // c.validate_every
-            validated = self._validate(X, agg)
+            validated = self._validate(X, agg_s)
         gen_time = self.clock() - t0
         s.elapsed += gen_time
 
         # 학습 방법 교체는 여기서 판단만 하고(통계 줄에 남김), 통계·대표를 쓴 뒤 체크포인트 전에 적용한다:
         # 어느 체크포인트도 '바꿔야 하는데 아직 안 바꾼' 상태가 아니다.
         switch = self._decide()
-        row = self._stats_row(label, X, agg, res, rep, validated, gen_time, switch)
+        row = self._stats_row(label, X, agg_s, res, rep, validated, gen_time, switch)
         workers = max(1, int(getattr(self.evaluator, "workers", 1) or 1))
         row["worker_utilization"] = min(1.0, busy / (workers * eval_wall)) if eval_wall > 0 else 0.0
         row = self._fit_columns(row)
@@ -590,17 +627,17 @@ class Trainer:
         if self.observe:
             # 이미 계산된 X, agg, res와 교체 전 학습 방법 번호·예선 상태만 읽는다(통계 줄과 같은 시점)
             try:
-                obs = observing.summarize(generation=label, X=X, agg=agg, res=res, trials_per=T, representative=rep,
+                obs = observing.summarize(generation=label, X=X, agg=agg_s, res=res, trials_per=T, representative=rep,
                                           learner=cur.index, qualifying=s.qualifying, layout=self.layout,
                                           end_ids=self.end_ids, trial0=trials[0], frame=frame, world_key=world_key)
             except Exception as exc:  # 파생 자료의 결함이 학습을 멈추지 않게(D9): 이 세대 대표는 관찰 없이 쓴다
                 self._observe_failed(exc, OBSERVE_FAILED_SUMMARY)
         self.last_observation = obs
-        self.last_generation = Generation(label, X, agg, rep, trials[0], traj, self.env_version,
+        self.last_generation = Generation(label, X, agg_s, rep, trials[0], traj, self.env_version,
                                           s.champion.generation != champion_before, obs)
         if self.store is not None:
             self.store.append_stats(row)
-            self.store.save_champion(label, "representative", X[rep], score=float(agg[rep]),
+            self.store.save_champion(label, "representative", X[rep], score=float(agg_s[rep]),
                                      env_version=self.env_version, **(obs or {}))
         self._apply_switch(switch)
         self.in_step = False
@@ -623,7 +660,11 @@ class Trainer:
         self.observe_problem = text.format(reason=str(exc).strip() or type(exc).__name__)
 
     def _validate(self, X: np.ndarray, agg: np.ndarray) -> float:
-        """후보를 검증 세트로 평가해 챔피언을 고른다. 이번 검증의 최고 점수를 돌려준다."""
+        """후보를 검증 세트로 평가해 챔피언을 고른다. 이번 검증의 최고 점수를 돌려준다.
+
+        agg는 NaN이 없는 집계 점수(agg_s). 검증 시험에서 하나라도 조립되지 않은(평균이 NaN인) 후보는 −∞로 보아 챔피언이
+        될 수 없다(모든 후보가 그러면 이번 검증의 최고 점수는 −∞이고 아무것도 바뀌지 않는다).
+        """
         s = self.state
         k = min(self.config.validation_candidates, X.shape[0])
         top = np.argsort(-agg, kind="stable")[:k]
@@ -633,6 +674,9 @@ class Trainer:
         res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, cands, pairs)
         s.validation_evaluations += len(pairs)
         val = res.scores.reshape(cands.shape[0], len(trials)).mean(axis=1)
+        failed = np.isnan(val)
+        if failed.any():  # 조립 실패 후보(NaN이 없으면 v1.2와 같은 배열 그대로)
+            val[failed] = -math.inf
         best = int(np.argmax(val))
         v = float(val[best])
         cur = s.current
@@ -850,6 +894,10 @@ class Trainer:
         layout = layout_for(spec)
         if layout.signature() != self.layout.signature():
             raise TrainerChangeError(S.TRAIN_ENV_LAYOUT_CHANGED)
+        try:
+            check_initial_body(spec, layout)  # 처음 몸부터 조립되지 않는 환경으로는 바꾸지 않는다(시작할 때와 같은 검사)
+        except EpisodeBuildError as exc:
+            raise TrainerChangeError(str(exc)) from exc
         if [b.id for b in spec.file.scoring.blocks] != self.block_ids or [t.event for t in spec.terminations] != self.end_ids:
             raise TrainerChangeError(S.TRAIN_ENV_COLUMNS_CHANGED)
         if (spec.file.scoring.formula is None) != self.weighted_blocks:

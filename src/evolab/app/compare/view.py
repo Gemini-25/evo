@@ -199,6 +199,31 @@ def env_target(run: Path) -> float | None:
     return None
 
 
+_SUCCESS_CACHE: dict[tuple[str, str], bool] = {}
+"""(실행 폴더, 마지막 환경 버전 id) → 그 환경에 성공 판정이 있는가. 환경 글은 버전마다 바뀌지 않는다."""
+
+
+def env_has_success(run: Path) -> bool:
+    """실행의 마지막 환경 버전 종료 목록에 결과가 success인 줄이 있는가(v2.0 설계 D21). 없으면 표의 성공률 칸은 「—」.
+    읽을 수 없는 실행은 True(지금처럼 숫자를 보인다)."""
+    try:
+        store = RunStore(Path(run))
+        versions = store.read_run_info().get("env_versions") or []
+        if not versions:
+            return True
+        vid = str(versions[-1]["id"])
+        key = (str(run), vid)
+        hit = _SUCCESS_CACHE.get(key)
+        if hit is None:
+            from evolab.spec.io import parse_env
+
+            env = parse_env(store.env_text(vid))
+            hit = _SUCCESS_CACHE[key] = any(t.outcome == "success" for t in env.termination)
+        return hit
+    except Exception:  # 읽을 수 없는 실행은 지금처럼(성공률 숫자)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # 통계 읽기
 @dataclass
@@ -440,6 +465,8 @@ class TableRow:
     is_group: bool
     paths: list[Path]
     errors: list[str] = field(default_factory=list)
+    has_success: bool = True
+    """실행(묶음은 하나라도)의 환경에 성공 판정이 있는가. 없으면 성공률 칸은 「—」(v2.0 설계 D21)."""
 
 
 def table_row(name: str, color: str, entries: Sequence[RunEntry], datas: Sequence[RunData], target: float,
@@ -466,6 +493,7 @@ def table_row(name: str, color: str, entries: Sequence[RunEntry], datas: Sequenc
         is_group=is_group,
         paths=[e.path for e in entries],
         errors=[f"{e.summary.name}: {d.error}" for e, d in zip(entries, datas, strict=True) if d.error],
+        has_success=not entries or any(env_has_success(e.path) for e in entries),
     )
 
 
@@ -524,6 +552,8 @@ def row_texts(r: TableRow) -> list[str]:
         final = fmt_value(r.final)
         target = format_count(r.to_target)
         success = format_percent(r.success)
+    if not r.has_success:  # 성공 판정이 없는 환경(글라이더): 0%가 실패처럼 보이지 않게
+        success = S.NO_SUCCESS_CELL
     return [r.name, r.method, format_seeds(r.seeds), final, target, format_duration(r.elapsed), success]
 
 
@@ -540,7 +570,7 @@ def row_csv(r: TableRow, target: float) -> list[str]:
         r.name, r.method, seeds, str(r.runs),
         _csv_number(r.final), _csv_number(r.final_std), _csv_number(target),
         _csv_number(r.to_target), str(r.reached), _csv_number(r.elapsed),
-        _csv_number(r.success), _csv_number(r.success_std),
+        _csv_number(r.success) if r.has_success else "", _csv_number(r.success_std) if r.has_success else "",
     ]
 
 

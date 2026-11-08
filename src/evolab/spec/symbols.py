@@ -30,7 +30,12 @@ RESERVED: frozenset[str] = frozenset(
 )
 
 # 직접 조종 키 이름(Qt 키 이름에서 Key_를 뺀 것). R, N, Space는 직접 조종 창 제어용이라 구동기에 쓸 수 없다.
+# v2.0부터 Space는 점프 추진기에만 쓸 수 있다(직접 조종 창의 Esc는 늘 일시정지, Space는 환경이 쓰지 않을 때만 일시정지).
 CONTROL_KEYS: frozenset[str] = frozenset({"R", "N", "Space"})
+JUMP_ONLY_KEYS: frozenset[str] = frozenset({"Space"})
+"""점프 추진기(jump)의 keys에만 쓸 수 있는 키(v2 설계 D12)."""
+RESERVED_KEYS: frozenset[str] = CONTROL_KEYS - JUMP_ONLY_KEYS
+"""어떤 구동기에도 쓸 수 없는 직접 조종 창 제어 키(R 다시 시작, N 새 시드)."""
 KEY_NAMES: frozenset[str] = frozenset(
     {chr(c) for c in range(ord("A"), ord("Z") + 1)}
     | {str(d) for d in range(10)}
@@ -89,6 +94,8 @@ def generator_values(gen: m.Generator) -> list[str]:
         return [f"{gen.id}.start.x", f"{gen.id}.start.y", f"{gen.id}.start.angle", f"{gen.id}.length"]
     if isinstance(gen, m.HillGen):
         return [f"{gen.id}.x_min", f"{gen.id}.x_max"]
+    if isinstance(gen, m.ObstacleGen):
+        return [f"{gen.id}.speed", f"{gen.id}.accel", f"{gen.id}.length"]
     return []
 
 
@@ -101,6 +108,8 @@ def generator_bodies(gen: m.Generator) -> dict[str, list[str]]:
         return {f"{gen.id}.walls": ["wall"]}
     if isinstance(gen, m.HillGen):
         return {gen.id: ["terrain"]}
+    if isinstance(gen, m.ObstacleGen):
+        return {gen.id: ["obstacle", "air"]}
     return {}
 
 
@@ -227,7 +236,16 @@ def actuator_channels(env: m.EnvFile) -> list[Channel]:
             out += [Channel(f"{a.id}.throttle", a.id, -1.0, 1.0), Channel(f"{a.id}.steer", a.id, -1.0, 1.0)]
         elif isinstance(a, m.Motor):
             out.append(Channel(a.id, a.id, -1.0, 1.0))
+        elif isinstance(a, m.Jump):
+            out.append(Channel(a.id, a.id, 0.0, 1.0))
     return out
+
+
+def key_allowed(actuator: m.Actuator, key: str) -> bool:
+    """이 구동기의 직접 조종 키로 쓸 수 있는가. Space는 점프 추진기에만, R·N은 어디에도 못 쓴다. 모르는 키 이름은 False."""
+    if key in JUMP_ONLY_KEYS:
+        return isinstance(actuator, m.Jump)
+    return key in KEY_NAMES
 
 
 def brain_inputs(env: m.EnvFile) -> list[str]:

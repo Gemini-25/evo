@@ -135,6 +135,9 @@ class EnvDocument(QObject):
     """실시간 검사 결과(list[Issue]). 바뀐 뒤 잠깐 기다렸다가 한 번 한다."""
     file_changed = Signal()
     """경로나 저장 상태가 바뀌었다(창 제목용)."""
+    tool_request = Signal(str, object)
+    """화면 부품(속성 패널의 「캔버스에서 길 그리기」 같은 단추)이 캔버스 도구를 켜 달라고 한다: (도구 id, 부품 Ref).
+    문서 내용은 바꾸지 않는다. 캔버스가 받는다."""
 
     def __init__(self, data: dict[str, Any] | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -558,7 +561,13 @@ def editor_checks(env: m.EnvFile, spec: EnvSpec | None) -> list[Issue]:
 
 
 def _overlap_checks(env: m.EnvFile, spec: EnvSpec) -> list[Issue]:
-    """미리보기 시험으로 세계를 만들어, 시작 자세에서 서로 부딪히는 물체 쌍을 찾는다(관절로 이은 쌍과 에이전트끼리 제외)."""
+    """미리보기 시험으로 세계를 만들어, 시작 자세에서 서로 부딪히는 물체 쌍을 찾는다(관절로 이은 쌍과 에이전트끼리 제외).
+
+    v2: 정해진 움직임(kinematic) 물체와 움직이지 않는 물체(kinematic·static)의 쌍은 뺀다. 물리 엔진에서 둘 다 질량이
+    무한이라 서로 부딪히지 않는다(설계 D26). 장애물 줄(생성기 물체)도 kinematic이라 같다.
+    """
+    import pymunk
+
     from evolab.engine import seeds
     from evolab.policy.genome import layout_for
     from evolab.world.physics2d.episode import Episode, EpisodeBuildError
@@ -578,6 +587,7 @@ def _overlap_checks(env: m.EnvFile, spec: EnvSpec) -> list[Issue]:
     index = {b.id: i for i, b in enumerate(env.bodies)}
     seen: set[frozenset[str]] = set()
     out: list[Issue] = []
+    kinematic, dynamic = pymunk.Body.KINEMATIC, pymunk.Body.DYNAMIC
     for shape, (bid, _tags) in ep._shape_info.items():
         for hit in ep.space.shape_query(shape):
             other = ep._shape_info.get(hit.shape)
@@ -585,6 +595,9 @@ def _overlap_checks(env: m.EnvFile, spec: EnvSpec) -> list[Issue]:
                 continue
             pair = frozenset((bid, other[0]))
             if len(pair) < 2 or pair in seen or pair in joined:
+                continue
+            types = (shape.body.body_type, hit.shape.body.body_type)
+            if kinematic in types and dynamic not in types:
                 continue
             if hit.contact_point_set.points and min(p.distance for p in hit.contact_point_set.points) < -0.05:
                 seen.add(pair)

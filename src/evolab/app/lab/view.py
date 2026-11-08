@@ -79,6 +79,7 @@ from evolab.engine.trainer import (
 )
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec.compiled import EnvFileError, EnvSpec
+from evolab.spec.editor_meta import view_box
 from evolab.spec.io import compile_env, env_hash
 from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
 
@@ -158,6 +159,10 @@ def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, tri
     버린 Episode는 순환 참조라 참조 수로는 풀리지 않으므로 바로 젊은 세대만 수집한다(1ms 안팎). 그러면 만드는 중인
     Episode가 늙은 세대로 넘어가지 않아 전체 수집이 일어나지 않는다(개체 256개: 화면 멈춤 최대 50ms → 10ms 아래).
     세계 모양은 첫 개체 것이다. cancel()이 참이 되면 다음 개체 전에 SceneCancelled로 그만둔다.
+
+    v2.0 개체 조립 실패(설계 4.9): 그 몸 수치로 조립할 수 없는 개체(EpisodeBuildError)는 빈 모양 목록([])으로 둔다(그
+    개체의 궤적은 프레임이 없어 그리지 않는다). 세계 모양은 조립된 첫 개체 것이고, 모두 실패하면 처음 몸으로 만든다.
+    빈 목록의 수는 build_failures로 센다.
     """
     if not layout.n_body:
         return Episode(spec, None, trial).geometry(), None
@@ -167,14 +172,25 @@ def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, tri
     for i in range(len(population)):
         if cancel is not None and cancel():
             raise SceneCancelled
-        ep = Episode(spec, body[i], trial)
+        try:
+            ep = Episode(spec, body[i], trial)
+        except EpisodeBuildError:
+            agents.append([])
+            continue
         geometry = ep.geometry()
         if world is None:
             world = geometry
         agents.append(agent_geoms(geometry, ep.moving_bodies))
         del ep, geometry  # 다음 개체를 만들기 전에 놓는다(위 설명)
         gc.collect(1)
+    if world is None:  # 모든 개체를 조립할 수 없다(학습기는 처음 몸이 조립되는 것을 시작할 때 확인한다)
+        world = Episode(spec, layout.body_values(layout.initial()[None, :])[0], trial).geometry()
     return world, agents
+
+
+def build_failures(agents: Sequence[Sequence[Any]] | None) -> int:
+    """build_scene이 조립하지 못한 개체 수(빈 모양 목록). 몸 유전자가 없는 환경(None)은 0."""
+    return 0 if agents is None else sum(1 for a in agents if not a)
 
 
 class _SceneThread(QThread):
@@ -342,6 +358,8 @@ class LabView(QWidget):
         """학습이 끝난(finished) 까닭 줄. 끝난 상태에서 설정을 적용해 상태 글을 다시 만들 때도 붙인다."""
         self._session_note = ""
         """상태 글 끝줄: 학습을 멈추지 않는 학습 프로세스 알림(관찰 기록 실패, TRAIN_OBSERVE_FAILED_ONWARD). 실행이 바뀌면 지움."""
+        self._build_note = ""
+        """상태 글 끝줄: 관전 중인 세대에 조립할 수 없는 개체가 있으면 LAB_BUILD_FAILED_N(v2.0 설계 4.9). 실행이 바뀌면 지움."""
 
         # 재생 상태
         self.view_mode = "live"  # live(관전), fast(고속 챔피언), replay(타임라인·겹쳐 보기)
@@ -352,6 +370,8 @@ class LabView(QWidget):
         self.loop_overlay = False
         self._threads: list[QThread] = []
         self._replay_tag = 0
+        self._replay_view: tuple[float, float, float, float] | None = None
+        """지금 재생(타임라인·겹쳐 보기·고속 챔피언) 환경의 기본 보기(editor.view)."""
         self._still_seq = 0
         """_show_still_scene_soon의 꼬리표(새로 미룰 때마다 늘어남: 늦은 앞 요청은 그리지 않음)."""
         self._replay_label = ""
@@ -513,7 +533,7 @@ class LabView(QWidget):
         self.env_label.setWordWrap(True)
         self.env_combo = QComboBox()
         self.env_combo.addItem(S.LAB_ENV_BUILTIN, None)
-        for p in sorted(paths.builtin_env_dir().glob("*.evoenv")):
+        for p in paths.builtin_envs():  # 정해진 순서(착륙선, 트랙, 언덕차, 점프 게임, 글라이더), 그 밖은 이름순
             self.env_combo.addItem(self._env_title(p), str(p))
         self.env_combo.activated.connect(self._env_combo_chosen)
         btn_open = QPushButton(S.LAB_ENV_OPEN)
@@ -816,7 +836,7 @@ class LabView(QWidget):
             return
         g = self.layout.initial()[None, :]
         ep = Episode(self.spec, self.layout.body_values(g)[0] if self.layout.n_body else None, seeds.display_trial())
-        self.canvas.set_scene(ep.geometry(), None, channels=list(ep.actuator_channels()))
+        self.canvas.set_scene(ep.geometry(), None, channels=list(ep.actuator_channels()), view=view_box(self.spec.file))
         self.canvas.set_population([])
         self.canvas.set_overlay([])
         self.canvas.set_time(0.0)
@@ -1065,6 +1085,7 @@ class LabView(QWidget):
         self.rows = []
         self._session_note = ""
         self._map_notice = ""
+        self._build_note = ""
         self.last_notice = ""
         self.events = []
         self.champion = None
@@ -1266,7 +1287,7 @@ class LabView(QWidget):
     def _update_status(self) -> None:
         if not self.rows:
             text = S.LAB_STATE_NAMES.get(self.state, self.state)
-            for note in (self._session_note, self._map_notice):
+            for note in (self._session_note, self._map_notice, self._build_note):
                 if note:
                     text += "\n" + note
             self.status.setText(text)
@@ -1291,6 +1312,8 @@ class LabView(QWidget):
             text += "\n" + self._session_note
         if self._map_notice:
             text += "\n" + self._map_notice
+        if self._build_note:
+            text += "\n" + self._build_note
         self.status.setText(text)
 
     def _learner_status(self, row: Mapping[str, Any]) -> str | None:
@@ -1400,11 +1423,26 @@ class LabView(QWidget):
         else:
             seed, track = msg["trial"]
             spec = self.spec_for(msg.get("env_version"), int(msg["generation"]))
-            geometry, agents = self._scene_for(spec, msg["population"], Trial(int(seed), track))
+            try:
+                geometry, agents = self._scene_for(spec, msg["population"], Trial(int(seed), track))
+            except EpisodeBuildError as exc:
+                # 이 시험의 세계를 만들 수 없다(랜덤 값으로 모양이 틀어짐): 이 세대는 건너뛴다(학습이 기다리며 멈추지 않게)
+                self.status.setText(self.status.text() + "\n" + S.RVL_SCENE_FAILED.format(reason=exc))
+                self.client.send({"type": "played", "generation": int(msg["generation"])})
+                self.playing = None
+                QTimer.singleShot(0, self, self._play_next)
+                return
         scores = np.asarray(msg["scores"])
         ranks = np.empty(len(scores), dtype=np.int64)
         ranks[np.argsort(-scores, kind="stable")] = np.arange(len(scores))
-        self.canvas.set_scene(geometry, agents, channels=list(spec.actuator_channels))
+        failed = build_failures(agents)
+        note = S.LAB_BUILD_FAILED_N.format(n=failed) if failed else ""
+        if note != self._build_note:  # 조립 실패 개체가 있는 세대: 상태 줄에 한 번(없는 세대가 오면 지움)
+            self._build_note = note
+            self._update_status()
+            if self.state == "finished" and self._stopped_line:
+                self.status.setText(self.status.text() + "\n" + self._stopped_line)
+        self.canvas.set_scene(geometry, agents, channels=list(spec.actuator_channels), view=view_box(spec.file))
         self.canvas.set_population(list(msg["trajectories"]), ranks=ranks, champion=int(msg["representative"]))
         self.canvas.set_overlay([])
         if self._brain_play is not None and self._brain_play.get("inspect"):
@@ -1532,6 +1570,7 @@ class LabView(QWidget):
 
     def _run_replays(self, tag: Any, jobs: list[ReplayJob]) -> None:
         self._replay_tag += 1
+        self._replay_view = view_box(jobs[-1][0].file) if jobs else None  # 이 재생의 기본 보기(_replay_done이 씀)
         self._notice("")  # 앞 재생의 알림(지도 점 재생은 이 뒤에 다시 정한다)
         brain, self._next_brain = self._next_brain, None
         if brain is not None and jobs:  # 마지막 개체가 뇌 원천 ① 후보(겹쳐 보기는 "지금" 쪽)
@@ -1552,7 +1591,10 @@ class LabView(QWidget):
         if seq != self._replay_tag:
             return  # 더 새로운 요청이 있다
         if isinstance(result, Exception):
-            QMessageBox.warning(self, S.LAB_ERROR_TITLE, str(result))
+            text = str(result)
+            if isinstance(result, EpisodeBuildError):  # 그 몸 수치로 조립할 수 없는 개체(설계 4.9)
+                text = S.PLAY_BODY_BUILD_FAILED + "\n" + text
+            QMessageBox.warning(self, S.LAB_ERROR_TITLE, text)
             return
         self._adopt_play_brain(seq, result[-1], inspect=kind == "inspect")
         if kind == "inspect":
@@ -1567,7 +1609,7 @@ class LabView(QWidget):
                 self._start_clock()
             return
         reps: list[Replay] = result
-        self.canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels)
+        self.canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels, view=self._replay_view)
         self.canvas.set_population([])
         colors = [COLOR_OLD, COLOR_NOW] if len(reps) > 1 else [COLOR_NOW]
         self._last_video = (list(zip(reps, colors, info, strict=True)), self._replay_label)

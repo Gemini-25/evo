@@ -65,7 +65,9 @@ from evolab.app.race.model import (
 )
 from evolab.engine.replay import Replay, replay
 from evolab.policy.genome import layout_for
-from evolab.world.physics2d.episode import Trial
+from evolab.spec.compiled import EnvFileError
+from evolab.spec.editor_meta import ViewBox, view_box
+from evolab.world.physics2d.episode import EpisodeBuildError, Trial
 
 FAST_MS = 16
 """처음 프레임 간격(약 60fps)."""
@@ -84,6 +86,15 @@ LANE_MIN_SIZE = (160, 120)
 PAINT_LOG_MAX = 20000
 WARN_MARK = "⚠ "
 DOT = "●"
+
+
+def entry_view(entry: RaceEntry) -> ViewBox | None:
+    """칸 환경의 기본 보기(editor.view): 칸 캔버스의 처음 카메라(v2.0 설계 D25). 환경 글은 준비 스레드가 이미 컴파일해
+    두었으므로(compile_cached) 다시 컴파일하지 않는다. 읽을 수 없으면 None(지금 카메라 규칙)."""
+    try:
+        return view_box(compile_cached(entry.env_text).file)
+    except (EnvFileError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +218,7 @@ class _Lane(QFrame):
             self.canvas.set_overlay([])
             self.duration = 0.0
             return
-        self.canvas.set_scene(rep.geometry, None, channels=rep.channels)
+        self.canvas.set_scene(rep.geometry, None, channels=rep.channels, view=entry_view(self.entry))
         self.canvas.set_population([])
         # 이름은 칸 제목에 있으므로 캔버스 범례는 그리지 않는다(빈 이름)
         self.canvas.set_overlay([(rep.trajectory, rep.agent, QColor(self.entry.color), "")])
@@ -564,7 +575,10 @@ class RaceView(QWidget):
             return  # 더 새로운 준비가 있다
         self._cancel = None
         if isinstance(result, Exception):
-            self.failure = S.RACE_FAILED.format(reason=str(result).strip() or type(result).__name__)
+            reason = str(result).strip() or type(result).__name__
+            if isinstance(result, EpisodeBuildError):  # 그 몸 수치로 조립할 수 없는 칸(v2.0 설계 4.9)
+                reason = S.PLAY_BODY_BUILD_FAILED + " " + reason
+            self.failure = S.RACE_FAILED.format(reason=reason)
             for lane in self.lanes:
                 lane.set_status("")
             self._update_band()
@@ -574,7 +588,8 @@ class RaceView(QWidget):
         for lane, rep in zip(self.lanes, reps, strict=True):
             lane.set_replay(rep)
         if self.overlay_allowed() and reps:
-            self.overlay_canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels)
+            self.overlay_canvas.set_scene(reps[0].geometry, None, channels=reps[0].channels,
+                                          view=entry_view(self.entries[0]))
             self.overlay_canvas.set_population([])
             self.overlay_canvas.set_overlay([(r.trajectory, r.agent, QColor(e.color), e.label)
                                              for r, e in zip(reps, self.entries, strict=True)])

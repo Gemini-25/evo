@@ -429,7 +429,7 @@ class RepeatDialog(QDialog):
         self._methods: list[str] = []
 
         self.env_combo = QComboBox()
-        for p in sorted(paths.builtin_env_dir().glob("*.evoenv")):
+        for p in paths.builtin_envs():  # 정해진 순서(실험실 환경 목록·에디터 예제 메뉴와 같음), 그 밖은 이름순
             self.env_combo.addItem(S.CMP_REPEAT_ENV_BUILTIN.format(name=env_title(p)), str(p))
         self.env_combo.currentIndexChanged.connect(self._env_chosen)
         self.env_open = QPushButton(S.CMP_REPEAT_ENV_OPEN)

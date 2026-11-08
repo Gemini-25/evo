@@ -322,24 +322,57 @@ def _check_builtin_env() -> str:
     return f"{path.name}: inputs={len(spec.inputs)}, outputs={len(spec.outputs)}, checksum={_checksum(np.frombuffer(a[1]))}"
 
 
+REQUIRED_EXAMPLES: tuple[str, ...] = ("lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv")
+"""자체 점검이 있어야 한다고 보는 내장 예제(v2.0: 점프 게임, 글라이더 추가)."""
+
+
 def _check_bundle_files() -> str:
-    """내장 예제 3개(착륙선, 트랙 자동차, 언덕차)를 모두 컴파일하고, exe면 아이콘과 라이선스 고지가 있는지 본다."""
+    """내장 예제(착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더)를 모두 컴파일하고, v2 예제를 같은 시드로 두 번 돌려
+    같은지 보고(_check_v2_examples), exe면 아이콘과 라이선스 고지가 있는지 본다."""
     import sys
 
     from evolab.spec.io import load_env
 
-    names = sorted(p.name for p in paths.builtin_env_dir().glob("*.evoenv"))
+    names = [p.name for p in paths.builtin_envs()]
     for name in names:
         load_env(paths.builtin_env_dir() / name)
-    need = {"lander.evoenv", "track_car.evoenv", "hill_car.evoenv"}
+    need = set(REQUIRED_EXAMPLES)
     if not need <= set(names):
         raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=", ".join(sorted(need - set(names)))))
-    parts = [f"examples={','.join(names)}"]
+    parts = [f"examples={','.join(names)}", _check_v2_examples()]
     if getattr(sys, "frozen", False):
         for what in (paths.icon_path(), paths.bundle_dir("licenses") / "THIRD_PARTY_NOTICES.txt"):
             if not what.is_file():
                 raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=what))
         parts.append("icon, licenses ok")
+    return "; ".join(parts)
+
+
+def _check_v2_examples() -> str:
+    """v2 내장 예제를 같은 시드로 두 번 돌려 같은지 본다: 점프 게임(정해진 움직임 장애물 줄, 점프 추진기)과
+    글라이더(공기역학, 날개 모양, 모양별 밀도, 뇌 없음). exe 안에서도 v2 부품이 결정적인지 확인한다."""
+    from evolab.spec.io import load_env
+    from evolab.world.physics2d.episode import Episode, Trial
+
+    parts = []
+    for name, steps in (("jump.evoenv", 600), ("glider.evoenv", 600)):
+        path = paths.builtin_env_dir() / name
+        spec = load_env(path)
+
+        def run() -> tuple[float, int, bytes]:
+            ep = Episode(spec, None, Trial(12345))
+            n_out = len(spec.outputs)
+            for k in range(steps):
+                if ep.done:
+                    break
+                ep.step([1.0 if k % 50 < 3 else 0.0] * n_out)  # 점프 게임: 가끔 뛴다. 글라이더: 출력 없음
+            obs = ep.observe()
+            return ep.result().score, ep.steps, ep.snapshot().poses.tobytes() + obs.tobytes()
+
+        a, b = run(), run()
+        if a != b:
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"{name} replay"))
+        parts.append(f"{name}: steps={a[1]}, checksum={_checksum(np.frombuffer(a[2], dtype=np.uint8))}")
     return "; ".join(parts)
 
 

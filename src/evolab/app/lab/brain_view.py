@@ -657,6 +657,9 @@ class BrainTile(_WatchTile):
         if meta is None:
             self._empty()
             return
+        if meta.layout.brain.n_out == 0:  # 뇌 없는 환경(글라이더): 몸 수치만 진화한다(v2.0 설계 D20)
+            self._empty(S.DASH_EMPTY_NO_BRAIN)
+            return
         src: BrainSource | None = self.dash.brain_source
         notes: list[str] = []
         if src is not None and src.genome.shape == (meta.dim,):
@@ -714,12 +717,12 @@ class BrainTile(_WatchTile):
         self.stack.setCurrentWidget(self.brain)
         self.set_notes(notes)
 
-    def _empty(self) -> None:
+    def _empty(self, text: str = S.BRAIN_EMPTY) -> None:
         self.source_kind = self.source_generation = None
         self._title_parts = None
         self._title = ""
         self.brain.clear_network()
-        self.show_message(S.BRAIN_EMPTY, [self.loading_note()])
+        self.show_message(text, [] if text != S.BRAIN_EMPTY else [self.loading_note()])
         self.update_legend()
 
     def _set_title_time(self, t: float, *, force: bool = False) -> None:

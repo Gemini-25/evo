@@ -929,6 +929,9 @@ class ActionsTile(_WatchTile):
             self.image.clear()
             self.mean_line.setData([], [])
             self.summary = ""
+            if meta is not None and meta.n_out == 0:  # 구동기 출력이 없는 환경(뇌 없는 글라이더, v2.0 설계 5.4)
+                self.show_message(S.DASH_EMPTY_NO_OUTPUTS, [])
+                return
             # 기록은 있는데 행동 기록이 하나도 없으면(v1.2 전 실행, 관찰하지 않는 평가기) 그렇다고 알린다
             self.show_message(S.ACT_NONE if meta is not None and len(self.history) else S.ACT_EMPTY)
             return

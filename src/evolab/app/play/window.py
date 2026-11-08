@@ -2,12 +2,22 @@
 
 학습 워커와 같은 런타임(Episode)을 화면 프로세스 안에서 직접 쓴다(명세의 예외). 사람이 몰아 본 결과와
 학습 중 시험 결과가 같은 규칙을 따른다.
+
+v2.0(설계 5.2, D12·D49):
+- Esc는 늘 일시정지. Space는 환경이 Space를 쓰지 않을 때만 일시정지(점프 추진기의 키로 쓰면 점프).
+- 정해진 움직임 세계 물체(장애물 줄 등)는 궤적에 없으므로 그 시각의 자세(motion.pose_at)로 그린다. 정적 물체의
+  다각형·원 모양(점프 게임의 땅)도 그린다. 점프한 스텝(실제 출력 1)에는 물체 아래에 짧은 먼지 표시.
+- HUD에 점프 추진기마다 「점프 준비됨 / 공중」(Episode.jump_ready). 출력이 없는 환경(글라이더)은 조종 키 대신
+  「조종할 것이 없는 환경」 안내.
+- 기본 보기(editor.view)가 있으면 카메라가 그 상자에서 시작하고, 따라갈 물체가 보이는 범위의 가장자리를 넘을 때만
+  움직인다(배율은 그대로). 없으면 지금 규칙(따라갈 물체와 목표 영역).
 """
 
 from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,12 +55,29 @@ from evolab.app import strings as S
 from evolab.app.play.record import PlayRecord, align_record, new_record
 from evolab.spec import model as m
 from evolab.spec.compiled import EnvSpec
+from evolab.spec.editor_meta import ViewBox, view_box
 from evolab.spec.io import env_hash
-from evolab.world.physics2d.episode import Episode, EpisodeBuildError, EpisodeResult, FrameState, Trial, WorldGeometry
+from evolab.world.physics2d.episode import (
+    BodyGeom,
+    Episode,
+    EpisodeBuildError,
+    EpisodeResult,
+    FrameState,
+    Trial,
+    WorldGeometry,
+)
+from evolab.world.physics2d.motion import MotionPlan, pose_at
 
 TICK_MS = 16
 MAX_STEPS_PER_TICK = 5
 TABLE_EVERY_TICKS = 4
+DUST_SECONDS = 0.35
+"""점프 먼지 표시가 남는 시간(초, 시뮬레이션 시각 기준)."""
+DUST_PUFFS = 6
+VIEW_EDGE = 0.2
+"""기본 보기 카메라: 따라갈 물체가 보이는 범위의 가장자리에서 이 비율(반폭·반높이 기준) 안쪽을 넘으면 따라간다."""
+VIEW_SCALE = (1.0, 400.0)
+"""기본 보기 카메라 배율 범위(px/m)."""
 
 COLOR_BG = QColor("#0b0e14")
 COLOR_TERRAIN_FILL = QColor("#2a2f3a")
@@ -125,7 +152,65 @@ def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
             name = a.label or a.id
             add(i, a.keys_pos, S.PLAY_KEY_CCW.format(name=name), 1.0)
             add(i, a.keys_neg, S.PLAY_KEY_CW.format(name=name), -1.0)
+        elif isinstance(a, m.Jump) and a.keys:
+            add(i, a.keys, a.label or a.id, 1.0)  # 누르고 있는 동안 출력 1: 착지할 때마다 다시 뛴다
     return out
+
+
+def uses_space(bindings: list[KeyBinding]) -> bool:
+    """조종 키에 Space가 있는가(점프 추진기만 쓸 수 있다). 그러면 Space는 일시정지가 아니라 조종 키다(D12)."""
+    space = qt_key("Space")
+    return any(space in kb.keys for kb in bindings)
+
+
+def view_camera(box: ViewBox, follow: tuple[float, float] | None, width: float, height: float,
+                zoom: float = 1.0) -> tuple[tuple[float, float], float]:
+    """기본 보기 카메라 (중심, 배율 px/m): 상자가 화면에 들어오는 배율로 상자 가운데를 보다가, 따라갈 점이 보이는
+    범위의 가장자리(VIEW_EDGE 안쪽)를 넘으면 넘은 만큼만 옮긴다. 따라갈 점만의 함수라 시각을 되돌려도 같다."""
+    x0, y0, x1, y1 = box
+    w, h = max(float(width), 100.0), max(float(height), 100.0)
+    fit = min(w / (x1 - x0), h / (y1 - y0))
+    scale = min(VIEW_SCALE[1], max(VIEW_SCALE[0], fit * zoom))
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    if follow is not None and all(math.isfinite(v) for v in follow):
+        px, py = follow
+        hw = (1.0 - VIEW_EDGE) * w / (2.0 * scale)
+        hh = (1.0 - VIEW_EDGE) * h / (2.0 * scale)
+        if px > cx + hw:
+            cx = px - hw
+        elif px < cx - hw:
+            cx = px + hw
+        if py > cy + hh:
+            cy = py - hh
+        elif py < cy - hh:
+            cy = py + hh
+    return (cx, cy), scale
+
+
+def body_path(body: BodyGeom) -> tuple[QPainterPath, QPainterPath]:
+    """물체 좌표의 (채울 모양: 다각형·원, 선분) 경로."""
+    fill = QPainterPath()
+    fill.setFillRule(Qt.FillRule.WindingFill)
+    lines = QPainterPath()
+    for s in body.shapes:
+        if s.kind == "poly" and len(s.points) >= 3:
+            fill.addPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in s.points]))
+            fill.closeSubpath()
+        elif s.kind == "circle" and s.points:
+            fill.addEllipse(QPointF(float(s.points[0][0]), float(s.points[0][1])), float(s.radius), float(s.radius))
+        elif s.kind == "segment" and len(s.points) >= 2:
+            lines.moveTo(float(s.points[0][0]), float(s.points[0][1]))
+            lines.lineTo(float(s.points[1][0]), float(s.points[1][1]))
+    return fill, lines
+
+
+@dataclass
+class _Mover:
+    """정해진 움직임 세계 물체 하나: 움직임과 물체 좌표 모양."""
+
+    motion: MotionPlan
+    fill: QPainterPath
+    lines: QPainterPath
 
 
 class PlayCanvas(QWidget):
@@ -143,29 +228,49 @@ class PlayCanvas(QWidget):
         self.scale = 22.0
         self.zoom = 1.0
         self.center = (0.0, 0.0)
+        self.view_box: ViewBox | None = None
+        """기본 보기(editor.view). 있으면 카메라가 이 상자에서 시작한다(view_camera)."""
         self._targets: list[tuple[float, float]] = []
         self.hud = ""
         self._terrain_path: QPainterPath | None = None
         self._terrain_fill: QPainterPath | None = None
+        self._static_fill: QPainterPath | None = None
+        """정적 물체의 다각형·원 모양(세계 좌표)."""
         self._pad_lines: list[tuple[QPointF, QPointF]] = []
+        self._movers: list[_Mover] = []
+        self.mover_poses: list[tuple[float, float, float]] = []
+        """마지막으로 그린 정해진 움직임 물체의 자세(그린 순서). 테스트가 읽는다."""
+        self.dust: list[tuple[float, float, float]] = []
+        """점프 먼지: (뛴 시각, x, 물체 아랫면 y). 창이 넣고, DUST_SECONDS가 지나면 그리지 않는다."""
         self.on_key_press = None
         self.on_key_release = None
         self.on_focus_lost = None
 
-    def set_world(self, geometry: WorldGeometry, frame: FrameState, follow: str | None) -> None:
+    def set_world(self, geometry: WorldGeometry, frame: FrameState, follow: str | None,
+                  view: ViewBox | None = None) -> None:
         self.geometry_ = geometry
         self.frame = frame
+        self.view_box = view
+        self.dust = []
         moving = [b for b in geometry.bodies if b.moving]
         ids = [b.id for b in moving]
         self.follow_index = ids.index(follow) if follow in ids else 0
         self._targets = [pt for r in geometry.regions if r.kind in ("pad", "goal") for pt in r.points]
         self._prepare_static()
-        if frame.poses.shape[0]:
+        if frame.poses.shape[0] or view is not None:
             self.center, self.scale = self._camera_goal(frame)
         self.update()
 
+    def _follow_point(self, frame: FrameState) -> tuple[float, float] | None:
+        if not frame.poses.shape[0]:
+            return None
+        x, y, _ = frame.poses[min(self.follow_index, frame.poses.shape[0] - 1)]
+        return float(x), float(y)
+
     def _camera_goal(self, frame: FrameState) -> tuple[tuple[float, float], float]:
-        """따라갈 물체와 목표 영역이 함께 들어오는 중심과 배율(px/m)."""
+        """따라갈 물체와 목표 영역이 함께 들어오는 중심과 배율(px/m). 기본 보기가 있으면 view_camera."""
+        if self.view_box is not None:
+            return view_camera(self.view_box, self._follow_point(frame), self.width(), self.height(), self.zoom)
         x, y, _ = frame.poses[self.follow_index]
         xs = [float(x)] + [p[0] for p in self._targets]
         ys = [float(y)] + [p[1] for p in self._targets]
@@ -178,7 +283,10 @@ class PlayCanvas(QWidget):
     def set_frame(self, frame: FrameState, hud: str) -> None:
         self.frame = frame
         self.hud = hud
-        if frame.poses.shape[0]:
+        if self.view_box is not None:
+            # 기본 보기: 따라갈 점이 가장자리를 넘을 때만 넘은 만큼 옮기므로 부드럽게 따라가려고 늦추지 않는다
+            self.center, self.scale = self._camera_goal(frame)
+        elif frame.poses.shape[0]:
             (gx, gy), gs = self._camera_goal(frame)
             cx, cy = self.center
             self.center = (cx + (gx - cx) * 0.15, cy + (gy - cy) * 0.15)
@@ -190,10 +298,19 @@ class PlayCanvas(QWidget):
         assert g is not None
         path = QPainterPath()
         fill = QPainterPath()
+        solid = QPainterPath()
+        solid.setFillRule(Qt.FillRule.WindingFill)
+        self._movers = []
         bottom = g.bounds[1] - 50.0
         for b in g.bodies:
             if b.moving:
                 continue
+            if b.motion is not None:  # 정해진 움직임: 프레임마다 그 시각의 자세로 그린다
+                self._movers.append(_Mover(b.motion, *body_path(b)))
+                continue
+            shapes_fill, _ = body_path(b)
+            if not shapes_fill.isEmpty():
+                solid.addPath(QTransform().translate(b.pose[0], b.pose[1]).rotateRadians(b.pose[2]).map(shapes_fill))
             segs = [s for s in b.shapes if s.kind == "segment"]
             if not segs:
                 continue
@@ -212,6 +329,7 @@ class PlayCanvas(QWidget):
             fill.addPolygon(poly)
         self._terrain_path = path
         self._terrain_fill = fill
+        self._static_fill = solid
         self._pad_lines = []
         for r in g.regions:
             if r.kind == "pad" and len(r.points) >= 2:
@@ -252,9 +370,15 @@ class PlayCanvas(QWidget):
             p.setPen(pen(COLOR_TERRAIN_LINE, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(self._terrain_path)
+        if self._static_fill is not None and not self._static_fill.isEmpty():
+            p.setPen(pen(COLOR_TERRAIN_LINE, 1.0))
+            p.setBrush(QBrush(COLOR_WORLD_BODY))
+            p.drawPath(self._static_fill)
         p.setPen(pen(COLOR_PAD, 4.0))
         for a, b in self._pad_lines:
             p.drawLine(a, b)
+        self._draw_movers(p, pen, f.time)
+        self._draw_dust(p, f.time)
 
         moving = [b for b in g.bodies if b.moving]
         poses = f.poses
@@ -303,6 +427,43 @@ class PlayCanvas(QWidget):
         p.drawText(12, 22, self.hud)
         p.end()
 
+    def _draw_movers(self, p: QPainter, pen: Callable[[QColor, float], QPen], t: float) -> None:
+        """정해진 움직임 세계 물체를 시각 t의 자세(pose_at)로. 런타임이 그 스텝에 놓은 자리와 같다(설계 D7)."""
+        poses: list[tuple[float, float, float]] = []
+        for mv in self._movers:
+            x, y, ang = pose_at(mv.motion, t)
+            poses.append((x, y, ang))
+            p.save()
+            p.translate(x, y)
+            p.rotate(math.degrees(ang))
+            if not mv.fill.isEmpty():
+                p.setPen(pen(COLOR_TERRAIN_LINE, 1.0))
+                p.setBrush(QBrush(COLOR_WORLD_BODY))
+                p.drawPath(mv.fill)
+            if not mv.lines.isEmpty():
+                p.setPen(pen(COLOR_WORLD_BODY, 2.0))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(mv.lines)
+            p.restore()
+        self.mover_poses = poses
+
+    def _draw_dust(self, p: QPainter, t: float) -> None:
+        """점프한 자리의 먼지: 물체 아랫면에서 양옆으로 퍼지며 옅어지는 작은 원들."""
+        live = [d for d in self.dust if 0.0 <= t - d[0] < DUST_SECONDS]
+        if len(live) != len(self.dust):
+            self.dust = live
+        p.setPen(Qt.PenStyle.NoPen)
+        for t0, x, y in live:
+            age = (t - t0) / DUST_SECONDS
+            color = QColor(COLOR_TERRAIN_LINE)
+            color.setAlpha(round(200 * (1.0 - age)))
+            p.setBrush(QBrush(color))
+            spread = 0.15 + 0.55 * age
+            r = 0.05 + 0.07 * age
+            for k in range(DUST_PUFFS):
+                u = (k / (DUST_PUFFS - 1)) * 2.0 - 1.0
+                p.drawEllipse(QPointF(x + u * spread, y + r * (1.0 - abs(u))), r, r)
+
     def _output_index(self, channel: str) -> int | None:
         names = getattr(self, "channel_names", None)
         if not names:
@@ -340,7 +501,7 @@ class PlayCanvas(QWidget):
 
 
 class PlayWindow(QWidget):
-    """직접 조종 창. R 다시 시작, N 새 시드, Space 일시정지."""
+    """직접 조종 창. R 다시 시작, N 새 시드, Esc 일시정지(환경이 Space를 쓰지 않으면 Space도)."""
 
     def __init__(self, spec: EnvSpec, seed: int | None = None) -> None:
         super().__init__()
@@ -348,6 +509,14 @@ class PlayWindow(QWidget):
         self.setWindowTitle(S.PLAY_TITLE.format(name=spec.file.name))
         self.resize(1280, 760)
         self.bindings = key_bindings(spec)
+        self.space_pauses = not uses_space(self.bindings)
+        """Space가 일시정지인가(점프 추진기가 Space를 쓰면 Space는 조종 키, 일시정지는 Esc만)."""
+        self.view = view_box(spec.file)
+        self.jumps: list[tuple[str, str, str]] = [
+            (a.id, a.label or a.id, a.body) for a in spec.file.actuators
+            if isinstance(a, m.Jump) and a.id in spec.actuator_channels
+        ]
+        """점프 추진기 (채널 = 구동기 id, 이름, 물체 id): HUD와 먼지 표시."""
         self.pressed: set[int] = set()
         self.paused = False
         self.replaying: PlayRecord | None = None
@@ -382,12 +551,9 @@ class PlayWindow(QWidget):
             b.clicked.connect(slot)
             return b
 
-        keys_help = "\n".join(
-            S.PLAY_KEY_LINE.format(keys=" / ".join(kb.key_names), label=kb.label) for kb in self.bindings
-        )
-        # v2.0 0단계: PLAY_HELP에 {pause} 자리가 생김. 지금은 Space만 일시정지(Esc·점프 게임 규칙은 묶음 C).
-        help_label = QLabel(S.PLAY_HELP.format(keys=keys_help, pause="Space"))
+        help_label = QLabel(self.help_text())
         help_label.setWordWrap(True)
+        self.help_label = help_label
 
         side = QVBoxLayout()
         side.addWidget(self.status)
@@ -426,15 +592,34 @@ class PlayWindow(QWidget):
         self._start_episode(seed if seed is not None else random.SystemRandom().randrange(1 << 31), None)
         self.timer.start()
 
+    def help_text(self) -> str:
+        """도움말 글: 조종 키(출력이 없는 환경은 「조종할 것이 없는 환경」)와 창 제어 키. 일시정지 키는 Esc, 환경이 Space를
+        쓰지 않으면 Space·Esc."""
+        if not self.spec.outputs:
+            keys = S.PLAY_WATCH_ONLY
+        else:
+            keys = "\n".join(
+                S.PLAY_KEY_LINE.format(keys=" / ".join(kb.key_names), label=kb.label) for kb in self.bindings
+            )
+        pause = S.PLAY_PAUSE_KEYS["both" if self.space_pauses else "esc"]
+        return S.PLAY_HELP.format(keys=keys, pause=pause)
+
     # ---- 진행 ----
     def start(self, seed: int, replaying: PlayRecord | None = None) -> bool:
         """새 에피소드. 이 시드로 조립할 수 없으면 알리고 지금 상태를 그대로 둔다."""
         try:
             self._start_episode(seed, replaying)
         except EpisodeBuildError as exc:
-            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, S.PLAY_BUILD_FAILED.format(seed=seed, reason=exc))
+            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, self.build_failed_text(seed, exc))
             return False
         return True
+
+    def build_failed_text(self, seed: int, exc: EpisodeBuildError) -> str:
+        """조립 실패 알림. 에이전트 물체의 모양·질량이 잘못되어 실패했으면 「이 몸은 만들 수 없습니다」를 앞에 붙인다."""
+        text = S.PLAY_BUILD_FAILED.format(seed=seed, reason=exc)
+        agents = [b.id for b in self.spec.file.bodies if b.owner == "agent"]
+        body_errors = {f.format(body=b) for b in agents for f in (S.RT_DEGENERATE_SHAPE, S.RT_BAD_MASS)}
+        return S.PLAY_BODY_BUILD_FAILED + "\n" + text if str(exc) in body_errors else text
 
     def _start_episode(self, seed: int, replaying: PlayRecord | None) -> None:
         episode = Episode(self.spec, None, Trial(seed))  # 실패하면 아무 상태도 바꾸지 않는다
@@ -448,7 +633,9 @@ class PlayWindow(QWidget):
         geom = self.episode.geometry()
         agent = next((b.id for b in self.spec.file.bodies if b.owner == "agent"), None)
         self.canvas.channel_names = self.episode.actuator_channels()
-        self.canvas.set_world(geom, self.episode.snapshot(), agent)
+        self._jump_index = [(self.canvas.channel_names.index(ch), self.episode.bodies[body])
+                            for ch, _label, body in self.jumps if body in self.episode.bodies]
+        self.canvas.set_world(geom, self.episode.snapshot(), agent, self.view)
         self.seed_label.setText(S.PLAY_SEED.format(seed=seed))
         self._fill_tables(force=True)
         self.clock.start()
@@ -488,6 +675,8 @@ class PlayWindow(QWidget):
                 self.record.actions.append(list(action))
                 ep.step(action)
                 self._steps_since_clock += 1
+                if self._jump_index:
+                    self._note_jumps(ep)
                 if ep.done:
                     self._finish()
                     break
@@ -497,6 +686,14 @@ class PlayWindow(QWidget):
         self._tick_count += 1
         self.canvas.set_frame(ep.snapshot(), self._hud())
         self._fill_tables(force=False)
+
+    def _note_jumps(self, ep: Episode) -> None:
+        """이 스텝에 뛴 점프 추진기(실제 출력 1)마다 물체 아랫면에 먼지 표시를 남긴다."""
+        applied = ep.applied_outputs
+        for k, body in self._jump_index:
+            if applied[k] == 1.0:
+                bottom = min((sh.bb.bottom for sh in body.shapes), default=float(body.position.y))
+                self.canvas.dust.append((ep.time, float(body.position.x), float(bottom)))
 
     def _finish(self) -> None:
         assert self.episode is not None and self.record is not None
@@ -524,6 +721,9 @@ class PlayWindow(QWidget):
             v = ep.bodies[agent.id].velocity
             speed = math.hypot(v.x, v.y)
         text = S.PLAY_HUD.format(t=ep.time, max=self.spec.file.world.max_time, speed=speed)
+        if self.jumps:
+            states = [(label, S.PLAY_JUMP_READY if ep.jump_ready(ch) else S.PLAY_JUMP_AIR) for ch, label, _ in self.jumps]
+            text += "  " + (states[0][1] if len(states) == 1 else " · ".join(f"{a} {b}" for a, b in states))
         if self.paused:
             text += "  " + S.PLAY_PAUSED
         if self.replaying is not None:
@@ -578,7 +778,7 @@ class PlayWindow(QWidget):
         if key == int(Qt.Key.Key_N.value):
             self.new_seed()
             return True
-        if key == int(Qt.Key.Key_Space.value):
+        if key == int(Qt.Key.Key_Escape.value) or (key == int(Qt.Key.Key_Space.value) and self.space_pauses):
             self.paused = not self.paused
             return True
         self.pressed.add(key)

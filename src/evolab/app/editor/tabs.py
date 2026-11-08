@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -61,6 +62,7 @@ from evolab.app.editor.forms import (
     model_for,
     new_item,
     path_to_where,
+    problems,
     spec_for,
     type_info,
     watch_focus,
@@ -96,7 +98,7 @@ class IssueLine(QLabel):
         self.update_issues(list(doc.issues))
 
     def update_issues(self, issues: list[Issue]) -> None:
-        mine = [i for i in issues if i.where in self.wheres]
+        mine = [i for i in problems(issues) if i.where in self.wheres]
         self.setText(_issue_text(mine))
         self.setVisible(bool(mine))
 
@@ -281,7 +283,7 @@ class RecordTable(QWidget):
         self._update_buttons()
 
     def apply_issues(self, issues: list[Issue] | None = None) -> None:
-        issues = list(self.doc.issues if issues is None else issues)
+        issues = problems(list(self.doc.issues if issues is None else issues))
         mine = issues_at(issues, self.path)
         for r, row in enumerate(self.cells):
             for w in row:
@@ -780,7 +782,7 @@ class ChannelList(QWidget):
         self._update_buttons()
 
     def apply_issues(self, issues: list[Issue]) -> None:
-        mine = issues_at(issues, self.path)
+        mine = issues_at(problems(issues), self.path)
         self.message.setText(_issue_text(mine) if mine else ("" if self.channels() is not None
                                                              else S.EDP_BRAIN_NO_CHANNELS))
 
@@ -835,6 +837,10 @@ class BrainTab(QWidget):
         self.form = ModelForm(doc, ("brain",), m.Brain, only=("hidden", "activation"))
         self.count_label = QLabel()
         self.count_label.setWordWrap(True)
+        self.none_label = QLabel(S.EDP_BRAIN_NONE)
+        """뇌가 없는 환경(입력·출력이 모두 없음) 안내(v2, 글라이더)."""
+        self.none_label.setWordWrap(True)
+        self.none_label.hide()
         self.param_count: int | None = None
         """뇌 파라미터 수(가중치 + 편향). 검사 오류가 있으면 None."""
         self.genome_dim: int | None = None
@@ -844,6 +850,7 @@ class BrainTab(QWidget):
         nl.setContentsMargins(6, 4, 6, 4)
         nl.addWidget(self.form)
         nl.addWidget(self.count_label)
+        nl.addWidget(self.none_label)
         nl.addStretch(1)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -859,6 +866,9 @@ class BrainTab(QWidget):
     def update_count(self) -> None:
         from evolab.policy.genome import layout_for
 
+        hidden = self.form.field("hidden")
+        if hidden is not None and isinstance(hidden.editor, QLineEdit):
+            hidden.editor.setPlaceholderText(S.EDP_HIDDEN_NONE)  # 비우면 은닉층 없음(입력이 바로 출력으로)
         spec = self.doc.spec() if not any(i.severity == "error" for i in self.doc.issues) else None
         layout = None
         if spec is not None:
@@ -866,6 +876,7 @@ class BrainTab(QWidget):
                 layout = layout_for(spec)
             except ValueError:
                 layout = None
+        self.none_label.setVisible(layout is not None and layout.brain.n_in == 0 and layout.brain.n_out == 0)
         if layout is None:
             self.param_count = self.genome_dim = None
             self.count_label.setText(S.EDP_BRAIN_PARAMS_NONE)
@@ -892,6 +903,14 @@ class ParamsTab(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(note)
         lay.addWidget(self.table, 1)
+
+
+SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+"""검사 결과 탭의 줄 순서: 오류, 경고, 안내."""
+SEVERITY_ICONS = {"error": QStyle.StandardPixmap.SP_MessageBoxCritical,
+                  "warning": QStyle.StandardPixmap.SP_MessageBoxWarning,
+                  "info": QStyle.StandardPixmap.SP_MessageBoxInformation}
+"""오류 빨강, 경고 노랑, 안내(v2) 파란 「i」."""
 
 
 class IssuesTab(QWidget):
@@ -936,10 +955,9 @@ class IssuesTab(QWidget):
     def fill(self, issues: list[Issue]) -> None:
         self.tree.clear()
         style = self.style()
-        order = sorted(issues, key=lambda i: (i.severity != "error",))
+        order = sorted(issues, key=lambda i: SEVERITY_ORDER.get(i.severity, 1))
         for issue in order:
-            icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical if issue.severity == "error"
-                                      else QStyle.StandardPixmap.SP_MessageBoxWarning)
+            icon = style.standardIcon(SEVERITY_ICONS.get(issue.severity, QStyle.StandardPixmap.SP_MessageBoxWarning))
             item = QTreeWidgetItem([S.EDP_ISSUES_SEVERITY.get(issue.severity, issue.severity),
                                     self.where_text(issue.where), issue.message])
             item.setIcon(0, icon)
@@ -993,12 +1011,15 @@ class BottomTabs(QTabWidget):
     def _update_issue_title(self, issues: list[Issue]) -> None:
         i = self.indexOf(self.issues_tab)
         errors = sum(1 for x in issues if x.severity == "error")
-        self.setTabText(i, S.EDP_TAB_ISSUES_COUNT.format(n=len(issues)) if issues else S.EDP_TAB_ISSUES)
+        count = len(problems(issues))  # 안내(info)는 오류·경고 개수에 넣지 않는다
+        self.setTabText(i, S.EDP_TAB_ISSUES_COUNT.format(n=count) if count else S.EDP_TAB_ISSUES)
         style = self.style()
         if errors:
             self.setTabIcon(i, style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical))
-        elif issues:
+        elif count:
             self.setTabIcon(i, style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning))
+        elif issues:
+            self.setTabIcon(i, style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         else:
             self.setTabIcon(i, style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
 

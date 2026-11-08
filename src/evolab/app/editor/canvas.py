@@ -7,6 +7,10 @@
 - 문서가 바뀌면 미리보기를 다시 만든다(그리기는 100ms 모아서, 도구가 자세를 물으면 바로).
 - 카메라는 y가 위로. 휠로 커서 둘레 확대·축소, 가운데 단추나 Space + 끌기로 이동, fit()으로 전체 보기.
 - 격자 맞춤(snap_enabled, snap_step 기본 0.5m). Alt를 누르고 끌면 맞추지 않는다.
+- (v2) 정해진 움직임 물체(kinematic 세계 물체, 장애물 줄)는 시작 자세에 길 점선을 함께 그린다. 미리보기 시각
+  (preview_time, 아래 PreviewBar의 슬라이더·▶)을 옮기면 그 시각의 자세(motion.pose_at)로 그린다. 재생 중에는 움직이지
+  않는 그림을 이미지로 한 번 그려 두고 움직이는 물체만 덧그린다. 문서가 바뀌면 멈추고 0초로 돌아간다.
+- (v2) 기본 보기(editor.view, 해시 밖): 「전체 보기」는 기본 보기가 있으면 그 상자로, 한 번 더 누르면 장면 전체로.
 """
 
 from __future__ import annotations
@@ -17,13 +21,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
     QFont,
     QFontMetricsF,
+    QImage,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
@@ -35,7 +40,7 @@ from PySide6.QtGui import (
     QShowEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QSlider, QToolButton, QWidget
 
 from evolab.app import strings as S
 from evolab.app.editor import tools as T
@@ -52,8 +57,10 @@ from evolab.app.play.window import (
     COLOR_TERRAIN_LINE,
     COLOR_WORLD_BODY,
 )
+from evolab.spec.editor_meta import editor_view_box, with_view_box
 from evolab.world.physics2d import geometry as geo
 from evolab.world.physics2d.episode import ShapeGeom
+from evolab.world.physics2d.motion import MotionPlan, pose_at
 
 Point = tuple[float, float]
 Pose = tuple[float, float, float]
@@ -68,6 +75,15 @@ SCALE_RANGE = (0.5, 2000.0)
 BADGE_MIN_BODY_PX = 16.0
 """화면에서 이보다 작은 물체에는 센서·구동기 표지를 그리지 않는다(전체 보기에서 겹치지 않게)."""
 DEFAULT_SNAP_STEP = 0.5
+PREVIEW_FPS = 30
+"""움직임 미리보기 재생 중 다시 그리는 횟수(초당)."""
+PREVIEW_STEP = 0.01
+"""미리보기 시각 슬라이더 한 칸(초)."""
+ROW_WINDOW_S = 15.0
+"""장애물 줄은 이 시간(초) 안에 선수 자리(x = 0)에 닿을 장애물만 그린다(나머지는 「→ 장애물 n개」)."""
+DEFAULT_MAX_TIME = 20.0
+MODE_SYMBOLS = {"once": "\u2192", "loop": "\u21bb", "pingpong": "\u2194"}
+"""길 방식 기호: 한 번(→), 돌기(↻), 왕복(↔)."""
 
 COLOR_GRID = QColor(255, 255, 255, 12)
 COLOR_GRID_MAJOR = QColor(255, 255, 255, 28)
@@ -88,6 +104,10 @@ COLOR_BADGE_SENSOR = QColor(94, 129, 172, 230)
 COLOR_BADGE_ACTUATOR = QColor(208, 135, 112, 230)
 COLOR_BADGE_TEXT = QColor("#eceff4")
 COLOR_LABEL = QColor(229, 233, 240, 150)
+COLOR_PATH = QColor(255, 209, 102, 120)
+"""움직임 길 점선: 선택 색의 옅은 판(설계 5.7)."""
+COLOR_GHOST = QColor(255, 255, 255, 40)
+COLOR_WIND = QColor(136, 192, 208, 150)
 REGION_FILL = {
     "goal": QColor(61, 220, 132, 45),
     "pad": QColor(61, 220, 132, 45),
@@ -112,8 +132,10 @@ BADGE_TEXT = {
     "fuel_tank": S.EDC_BADGE_TANK,
     "vehicle": S.EDC_BADGE_VEHICLE,
     "motor": S.EDC_BADGE_MOTOR,
+    "jump": S.EDC_LABEL_JUMP,
+    "aero": S.EDC_TOOL_AERO,
 }
-ACTUATOR_BADGES = frozenset({"fuel_tank", "vehicle", "motor"})
+ACTUATOR_BADGES = frozenset({"fuel_tank", "vehicle", "motor", "jump", "aero"})
 
 
 # ---------------------------------------------------------------------------
@@ -144,30 +166,45 @@ class BodyItem:
     place_by: str | None = None
     placeholder: bool = False
     """모양을 계산할 수 없어 자리 표시만 그린다."""
+    kinematic: bool = False
+    """정해진 움직임 물체(v2): 세계 물체 type kinematic, 또는 장애물 줄."""
+    motion: MotionPlan | None = None
+    """정해진 움직임. 시각 t의 자세 = pose_at(motion, t)."""
+    path_count: int = 0
+    """motion이 길이면 파일의 점 수(끌 손잡이 수. loop의 닫는 구간은 세지 않는다)."""
+    row: list[ShapeGeom] | None = None
+    """장애물 줄이면 모든 장애물 모양(shapes는 처음 ROW_WINDOW_S초 안에 닿는 것만)."""
+    row_hidden: int = 0
+    """장애물 줄에서 shapes에 안 넣은(나중에 오는) 장애물 수."""
+    wing_les: list[Point] = field(default_factory=list)
+    """날개 모양의 앞전(물체 좌표)."""
     polys: list[list[Point]] = field(default_factory=list)
     circles: list[tuple[Point, float]] = field(default_factory=list)
     segments: list[tuple[Point, Point, float]] = field(default_factory=list)
     bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
     def finish(self) -> BodyItem:
-        x, y, a = self.pose
-        self.polys, self.circles, self.segments = [], [], []
+        if self.row is not None and self.motion is not None:
+            self.shapes, self.row_hidden = row_window(self.row, self.motion, 0.0)
+        self.polys, self.circles, self.segments = shapes_at(self.shapes, self.pose)
+        x, y, _a = self.pose
         pts: list[Point] = [(x, y)]
-        for s in self.shapes:
-            if s.kind == "poly":
-                poly = [geo.transform(p, (x, y), a) for p in s.points]
-                self.polys.append(poly)
-                pts += poly
-            elif s.kind == "circle":
-                c = geo.transform(s.points[0], (x, y), a)
-                self.circles.append((c, s.radius))
-                pts += [(c[0] - s.radius, c[1] - s.radius), (c[0] + s.radius, c[1] + s.radius)]
-            elif s.kind == "segment":
-                p0, p1 = geo.transform(s.points[0], (x, y), a), geo.transform(s.points[1], (x, y), a)
-                self.segments.append((p0, p1, s.radius))
-                pts += [p0, p1]
+        for poly in self.polys:
+            pts += poly
+        for c, r in self.circles:
+            pts += [(c[0] - r, c[1] - r), (c[0] + r, c[1] + r)]
+        for p0, p1, _r in self.segments:
+            pts += [p0, p1]
         self.bbox = _bbox(pts)
         return self
+
+    def path_points(self) -> list[Point]:
+        """길 움직임의 파일 점들(세계 좌표). 길이 아니면 빈 목록."""
+        mo = self.motion
+        if mo is None or mo.kind != "path":
+            return []
+        ox, oy = mo.origin
+        return [(ox + x, oy + y) for x, y in mo.points[: self.path_count or len(mo.points)]]
 
     def contains(self, p: Point, tol: float) -> bool:
         x0, y0, x1, y1 = self.bbox
@@ -188,6 +225,60 @@ class BodyItem:
         if self.placeholder:
             return math.dist(p, (self.pose[0], self.pose[1])) <= 0.3 + tol
         return False
+
+
+def shapes_at(shapes: Iterable[ShapeGeom], pose: Pose) -> tuple[list[list[Point]], list[tuple[Point, float]],
+                                                               list[tuple[Point, Point, float]]]:
+    """물체 좌표 모양들을 자세 pose에 놓은 세계 좌표 (다각형들, 원들, 선분들)."""
+    x, y, a = pose
+    polys: list[list[Point]] = []
+    circles: list[tuple[Point, float]] = []
+    segments: list[tuple[Point, Point, float]] = []
+    for s in shapes:
+        if s.kind == "poly":
+            polys.append([geo.transform(p, (x, y), a) for p in s.points])
+        elif s.kind == "circle":
+            circles.append((geo.transform(s.points[0], (x, y), a), s.radius))
+        elif s.kind == "segment":
+            segments.append((geo.transform(s.points[0], (x, y), a), geo.transform(s.points[1], (x, y), a), s.radius))
+    return polys, circles, segments
+
+
+def row_window(row: list[ShapeGeom], plan: MotionPlan, t: float) -> tuple[list[ShapeGeom], int]:
+    """장애물 줄에서 시각 t의 앞뒤 ROW_WINDOW_S초 안에 선수 자리(세계 x = 0, 생성기 좌표의 0)를 지나는 장애물만.
+
+    줄이 미는 방향 u에 대해 장애물의 "남은 거리" = min(시각 t의 세계 꼭짓점) · (-u)다(0이면 선수 자리에 닿음).
+    [-(지난 ROW_WINDOW_S초 동안 간 거리), 다음 ROW_WINDOW_S초 동안 갈 거리] 안의 장애물을 고르고,
+    그보다 먼 장애물 수를 함께 돌려준다. 하나도 없으면 가장 가까운 것 하나를 넣는다(멈춘 줄도 보이게).
+    """
+    if not row:
+        return [], 0
+    xt, yt, _ = pose_at(plan, t)
+    xa, ya, _ = pose_at(plan, t + ROW_WINDOW_S)
+    xb, yb, _ = pose_at(plan, max(0.0, t - ROW_WINDOW_S))
+    if plan.kind == "path" and len(plan.points) >= 2:
+        (px, py), (qx, qy) = plan.points[0], plan.points[-1]
+        n = math.hypot(qx - px, qy - py)
+        back = ((px - qx) / n, (py - qy) / n) if n > 1e-12 else (1.0, 0.0)
+    else:
+        back = (1.0, 0.0)
+    ahead = math.hypot(xa - xt, ya - yt)
+    behind = math.hypot(xt - xb, yt - yb)
+    keep: list[ShapeGeom] = []
+    later = 0
+    nearest: tuple[float, ShapeGeom] | None = None
+    for s in row:
+        d = min((p[0] + xt) * back[0] + (p[1] + yt) * back[1] for p in s.points)
+        if -behind - 1e-9 <= d <= ahead + 1e-9:
+            keep.append(s)
+        elif d > ahead:
+            later += 1
+            if nearest is None or d < nearest[0]:
+                nearest = (d, s)
+    if not keep and nearest is not None:
+        keep.append(nearest[1])
+        later -= 1
+    return keep, later
 
 
 @dataclass
@@ -257,6 +348,14 @@ class TargetItem:
 
 
 @dataclass
+class JumpItem:
+    ref: Ref
+    body: str
+    dir: float
+    """뛰는 방향(세계 좌표, 라디안)."""
+
+
+@dataclass
 class Scene:
     bounds: tuple[float, float, float, float] = (-50.0, -20.0, 50.0, 60.0)
     bodies: list[BodyItem] = field(default_factory=list)
@@ -267,6 +366,11 @@ class Scene:
     badges: list[BadgeItem] = field(default_factory=list)
     rays: list[RayItem] = field(default_factory=list)
     targets: list[TargetItem] = field(default_factory=list)
+    jumps: list[JumpItem] = field(default_factory=list)
+    aero_bodies: set[str] = field(default_factory=set)
+    """공기역학이 달린 물체 id."""
+    max_time: float = DEFAULT_MAX_TIME
+    """세계 최대 시간(미리보기 슬라이더 끝)."""
     spawn: Pose = (0.0, 0.0, 0.0)
     exact: bool = False
     """문서 전체가 검사를 통과해 런타임 그대로 그렸다."""
@@ -283,6 +387,10 @@ class Scene:
             if r.id == region_id:
                 return r
         return None
+
+    def moving(self) -> list[BodyItem]:
+        """정해진 움직임이 있는 물체들(그리는 순서)."""
+        return [b for b in self.bodies if b.motion is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +543,7 @@ class _SceneBuilder:
         return out
 
     def build(self) -> Scene:
-        steps = (self._episode_items, self._generators, self._spawn, self._bodies, self._regions,
+        steps = (self._world_info, self._episode_items, self._generators, self._spawn, self._bodies, self._regions,
                  self._checkpoints, self._joints, self._actuators, self._sensors)
         for step in steps:
             try:
@@ -443,6 +551,55 @@ class _SceneBuilder:
             except Exception:  # noqa: BLE001 (반쯤 만든 파일에서도 나머지는 그린다)
                 continue
         return self.scene
+
+    def _world_info(self) -> None:
+        world = self.data.get("world") if isinstance(self.data.get("world"), dict) else {}
+        t = self.ev.opt(world.get("max_time", DEFAULT_MAX_TIME))
+        self.scene.max_time = t if t is not None and t > 0 else DEFAULT_MAX_TIME
+
+    # ---- 움직임과 날개 (v2) ----
+    def _motion(self, b: dict[str, Any]) -> MotionPlan | None:
+        """정해진 움직임 세계 물체의 움직임(숫자만으로: 수식은 아는 값으로 계산). 런타임(Episode)과 같은 규칙."""
+        mo = b.get("motion")
+        if b.get("type") != "kinematic" or b.get("owner", "agent") != "world" or not isinstance(mo, dict):
+            return None
+        ev = self.ev
+        pos, angle = ev.vec(b.get("pos")), ev.num(b.get("angle", 0.0))
+        try:
+            if mo.get("kind") == "path":
+                pts = [ev.vec(q) for q in mo.get("points") or []]
+                if not pts:
+                    return None
+                mode = mo.get("mode", "once")
+                return MotionPlan.path(pos, angle, pts, ev.num(mo.get("speed", 1.0), 1.0), ev.num(mo.get("accel", 0.0)),
+                                       ev.num(mo.get("start", 0.0)), mode if mode in MODE_SYMBOLS else "once",
+                                       ev.num(mo.get("spin", 0.0)))
+            if mo.get("kind") == "wave":
+                return MotionPlan.wave(pos, angle, ev.vec(mo.get("amplitude", [0.0, 1.0]), (0.0, 1.0)),
+                                       ev.num(mo.get("period", 2.0), 2.0), ev.num(mo.get("phase", 0.0)),
+                                       ev.num(mo.get("spin", 0.0)))
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    @staticmethod
+    def _path_count(b: dict[str, Any]) -> int:
+        mo = b.get("motion")
+        if isinstance(mo, dict) and mo.get("kind") == "path" and isinstance(mo.get("points"), list):
+            return len(mo["points"])
+        return 0
+
+    def _wing_les(self, b: dict[str, Any]) -> list[Point]:
+        return [self.ev.vec(s.get("le", [0.0, 0.0])) for s in b.get("shapes") or []
+                if isinstance(s, dict) and s.get("kind") == "wing"]
+
+    def _decorate(self, item: BodyItem, b: dict[str, Any], motion: MotionPlan | None) -> BodyItem:
+        """문서 물체의 v2 정보(정해진 움직임, 날개 앞전)를 붙이고 마무리한다."""
+        item.kinematic = b.get("type") == "kinematic"
+        item.motion = motion if motion is not None else self._motion(b)
+        item.path_count = self._path_count(b) if item.motion is not None else 0
+        item.wing_les = self._wing_les(b)
+        return item.finish()
 
     # ---- 런타임 미리보기에 있는 것 ----
     def _episode_items(self) -> None:
@@ -456,6 +613,7 @@ class _SceneBuilder:
         self.scene.bounds = tuple(float(v) for v in g.bounds)  # type: ignore[assignment]
         doc_bodies = {str(b.get("id")): b for b in _items(self.data, "bodies")}
         gens = [x.id for x in ep.env.generators]
+        gen_kinds = {str(x.get("id")): x.get("kind") for x in _items(self.data, "generators")}
         for bg in g.bodies:
             if bg.id in doc_bodies:
                 ref: Ref = ("bodies", bg.id)
@@ -466,9 +624,18 @@ class _SceneBuilder:
                     continue
                 ref, generated = ("generators", gid), True
             place_by = doc_bodies.get(bg.id, {}).get("place_by")
-            self.scene.bodies.append(BodyItem(bg.id, ref, bg.owner, bg.moving, list(bg.tags), list(bg.shapes),
-                                              tuple(float(v) for v in bg.pose), generated,  # type: ignore[arg-type]
-                                              place_by if isinstance(place_by, str) else None).finish())
+            item = BodyItem(bg.id, ref, bg.owner, bg.moving, list(bg.tags), list(bg.shapes),
+                            tuple(float(v) for v in bg.pose), generated,  # type: ignore[arg-type]
+                            place_by if isinstance(place_by, str) else None)
+            motion = bg.motion  # v2: 런타임이 계산한 정해진 움직임(없으면 None)
+            if not generated:
+                self.scene.bodies.append(self._decorate(item, doc_bodies[bg.id], motion))
+                continue
+            if motion is not None:
+                item.kinematic, item.motion = True, motion
+                if gen_kinds.get(ref[1]) == "obstacles":
+                    item.row = list(bg.shapes)
+            self.scene.bodies.append(item.finish())
         doc_regions = {str(r.get("id")) for r in _items(self.data, "regions")}
         doc_cps = {str(c.get("id")) for c in _items(self.data, "checkpoints")}
         for rg in g.regions:
@@ -504,8 +671,39 @@ class _SceneBuilder:
                     self._track(gid, g)
                 elif g.get("kind") == "hills":
                     self._hills(gid, g)
+                elif g.get("kind") == "obstacles":
+                    self._obstacles(gid, g)
             except Exception:  # noqa: BLE001
                 continue
+
+    def _obstacles(self, gid: str, g: dict[str, Any]) -> None:
+        """장애물 줄(숫자만으로, 런타임과 같은 생성기). 검사 오류로 런타임 미리보기에서 빠졌을 때만 쓴다."""
+        from evolab.generators.obstacles import generate_obstacles
+
+        ev = self.ev
+
+        def pair(key: str, default: tuple[float, float]) -> tuple[float, float]:
+            v = g.get(key)
+            if isinstance(v, list) and len(v) == 2:
+                return (ev.num(v[0], default[0]), ev.num(v[1], default[1]))
+            return default
+
+        speed, accel = max(0.0, ev.num(g.get("speed", 6.0), 6.0)), ev.num(g.get("accel", 0.15), 0.15)
+        count = g.get("count", 30)
+        row = generate_obstacles(
+            int(ev.num(g.get("seed", 0.0))) & 0x7FFFFFFFFFFFFFFF, count=int(count) if T.is_number(count) else 30,
+            x=ev.num(g.get("x", 25.0), 25.0), y=ev.num(g.get("y", 0.0)), gap=pair("gap", (1.4, 3.0)),
+            width=pair("width", (0.6, 1.4)), height=pair("height", (0.5, 1.2)),
+            air_chance=ev.num(g.get("air_chance", 0.25), 0.25), air_y=pair("air_y", (1.3, 1.6)),
+            air_height=pair("air_height", (0.5, 0.8)), speed=speed, accel=accel)
+        shapes = [ShapeGeom("poly", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]) for x0, y0, x1, y1 in row.boxes]
+        d = ev.num(g.get("direction", math.pi), math.pi)
+        plan = MotionPlan.path((0.0, 0.0), 0.0, [(0.0, 0.0), (row.length * math.cos(d), row.length * math.sin(d))],
+                               speed, accel, 0.0, "once", 0.0)
+        self.scene.bodies.append(BodyItem(gid, ("generators", gid), "world", False, ["obstacle"], shapes,
+                                          (0.0, 0.0, 0.0), True, kinematic=True, motion=plan, row=shapes).finish())
+        for k, v in (("speed", speed), ("accel", accel), ("length", row.length)):
+            self.ev.set(f"gen.{gid}.{k}", float(v))
 
     def _terrain_body(self, gid: str, xs: Any, ys: Any, radius: float) -> None:
         shapes = [ShapeGeom("segment", [(float(xs[i]), float(ys[i])), (float(xs[i + 1]), float(ys[i + 1]))], radius)
@@ -618,6 +816,10 @@ class _SceneBuilder:
                     radii = [max(0.01, ev.num(r, 0.5)) for r in s.get("radii") or []]
                     if len(radii) >= 3:
                         out.append(ShapeGeom("poly", geo.radial_points(radii, ev.num(s.get("angle", 0.0)))))
+                elif kind == "wing":
+                    out.append(ShapeGeom("poly", T.wing_outline(
+                        ev.vec(s.get("le")), ev.num(s.get("chord", 1.0), 1.0), ev.num(s.get("angle", 0.0)),
+                        ev.num(s.get("thick", 0.04), 0.04), ev.num(s.get("camber", 0.0)))))
                 elif kind == "chain":
                     pts = [ev.vec(p) for p in s.get("points") or []]
                     pairs = list(zip(pts, pts[1:], strict=False))
@@ -673,8 +875,12 @@ class _SceneBuilder:
                 owner = "world" if b.get("owner") == "world" else "agent"
                 tags = [t for t in b.get("tags") or [] if isinstance(t, str)]
                 place_by = b.get("place_by") if isinstance(b.get("place_by"), str) else None
-                self.scene.bodies.append(BodyItem(bid, ("bodies", bid), owner, b.get("type", "dynamic") == "dynamic",
-                                                  tags, shapes, p, False, place_by, placeholder=not shapes).finish())
+                motion = self._motion(b)
+                if motion is not None:
+                    p = pose_at(motion, 0.0)  # 런타임처럼 시작 자세 = 움직임의 0초 자세
+                item = BodyItem(bid, ("bodies", bid), owner, b.get("type", "dynamic") == "dynamic", tags, shapes, p,
+                                False, place_by, placeholder=not shapes)
+                self.scene.bodies.append(self._decorate(item, b, motion))
             except Exception:  # noqa: BLE001
                 continue
 
@@ -760,6 +966,16 @@ class _SceneBuilder:
                 self.scene.badges.append(BadgeItem(ref, "vehicle", body.id if body else None))
             elif kind == "motor":
                 self.scene.badges.append(BadgeItem(ref, "motor", None, str(a.get("joint"))))
+            elif kind == "jump":
+                body = self.scene.body(str(a.get("body")))
+                if body is not None:
+                    self.scene.jumps.append(JumpItem(ref, body.id, ev.num(a.get("dir", math.pi / 2), math.pi / 2)))
+                self.scene.badges.append(BadgeItem(ref, "jump", body.id if body else None))
+            elif kind == "aero":
+                body = self.scene.body(str(a.get("body")))
+                if body is not None:
+                    self.scene.aero_bodies.add(body.id)
+                self.scene.badges.append(BadgeItem(ref, "aero", body.id if body else None))
 
     def _sensors(self) -> None:
         ep_rays: dict[str, list[float]] = {}
@@ -911,6 +1127,12 @@ class EditorCanvas(QWidget):
     status_changed = Signal(str)
     """도구 안내나 할 수 없는 조작의 이유(한국어)."""
     tool_changed = Signal(str)
+    preview_changed = Signal(float)
+    """미리보기 시각(초)이 바뀌었다."""
+    playing_changed = Signal(bool)
+    """움직임 미리보기 재생을 시작했다(True)·멈췄다(False)."""
+    motion_changed = Signal(bool)
+    """장면에 정해진 움직임 물체가 생겼다(True)·없어졌다(False)."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -954,7 +1176,24 @@ class EditorCanvas(QWidget):
         self.fit_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.fit_action.triggered.connect(self.fit)
         self.addAction(self.fit_action)
+        # v2: 미리보기 시각, 재생(정적 그림 캐시 + 움직이는 물체 덧그리기), 「전체 보기」 순환
+        self.preview_time = 0.0
+        self._playing = False
+        self._play_from = 0.0
+        self._play_clock = QElapsedTimer()
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(round(1000 / PREVIEW_FPS))
+        self._play_timer.timeout.connect(self._on_play_tick)
+        self._static_cache: tuple[Any, QImage] | None = None
+        self._has_motion = False
+        self._fit_mode = ""
+        self._fit_camera: tuple[Point, float] | None = None
+        self.drawn_poses: dict[str, Pose] = {}
+        """마지막으로 그린 정해진 움직임 물체의 자세(물체 id -> 세계 자세). 테스트와 화면 확인용."""
         doc.changed.connect(self._on_doc_changed)
+        tool_request = getattr(doc, "tool_request", None)
+        if tool_request is not None:
+            tool_request.connect(self._on_tool_request)
         doc.selection_changed.connect(self._on_selection_changed)
         doc.checked.connect(self._on_checked)
         doc.file_changed.connect(self._on_file_changed)
@@ -966,10 +1205,28 @@ class EditorCanvas(QWidget):
     # ------------------------------------------------------------------
     def _on_doc_changed(self) -> None:
         self._dirty = True
+        self._static_cache = None
+        if self._playing or self.preview_time != 0.0:
+            self.stop_preview()  # 문서가 바뀌면 멈추고 0초(설계 D24)
         if self._live:
             self.update()
         else:
             self._timer.start()
+
+    def _on_tool_request(self, tool_id: str, ref: object) -> None:
+        """속성 패널 단추가 도구를 켜 달라고 했다(「캔버스에서 길 그리기」)."""
+        if tool_id == "path" and isinstance(ref, tuple) and len(ref) == 2:
+            self.start_path(str(ref[1]))
+        elif tool_id in T.TOOL_IDS:
+            self.set_tool(tool_id)
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def start_path(self, body_id: str) -> bool:
+        """길 그리기 도구를 켜고 이 물체의 길을 바로 그리기 시작한다."""
+        self.set_tool("path")
+        tool = self._tool
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        return isinstance(tool, T.PathTool) and tool.start_with(body_id)
 
     def _on_selection_changed(self, _refs: list[Any]) -> None:
         self.update()
@@ -977,11 +1234,13 @@ class EditorCanvas(QWidget):
     def _on_checked(self, issues: list[Any]) -> None:
         out: dict[Ref, str] = {}
         data = self.doc.data
+        rank = {"error": 2, "warning": 1}
         for issue in issues:
             ref = where_to_ref(data, issue.where)
             if ref is None:
                 continue
-            if out.get(ref) != "error":
+            # 강조는 오류 > 경고 > 안내(안내는 색이 없다). 안내가 앞의 경고를 덮지 않게 한다.
+            if ref not in out or rank.get(issue.severity, 0) > rank.get(out[ref], 0):
                 out[ref] = issue.severity
         self._issue_refs = out
         self.update()
@@ -989,6 +1248,7 @@ class EditorCanvas(QWidget):
     def _on_file_changed(self) -> None:
         if self.doc.undo_stack.count() == 0:
             self._fit_pending = True
+            self._fit_mode = ""  # 새 파일: 「전체 보기」 순환을 처음부터(기본 보기 먼저)
             self._dirty = True
             self.update()
 
@@ -1004,10 +1264,21 @@ class EditorCanvas(QWidget):
             self._scene = build_scene(self.doc)
             self._dirty = False
             self._badge_cache = None
+            self._static_cache = None
+            has = bool(self._scene.moving())
+            if has != self._has_motion:
+                self._has_motion = has
+                self.motion_changed.emit(has)
             if self._fit_pending and self.isVisible() and self.width() > 0 and self.height() > 0:
                 self._fit_pending = False
-                self._fit_to(self._scene)
+                self._fit_initial(self._scene)
         return self._scene
+
+    @property
+    def has_motion(self) -> bool:
+        """장면에 정해진 움직임 물체가 있나(미리보기 줄을 보일지)."""
+        self.scene()
+        return self._has_motion
 
     def _paint_scene(self) -> Scene:
         if self._dirty and self._timer.isActive() and self._scene is not None:
@@ -1035,9 +1306,150 @@ class EditorCanvas(QWidget):
                 self.center[1] - (p.y() - self.height() / 2.0) / self.scale)
 
     def fit(self) -> None:
-        """장면 전체가 보이게."""
+        """「전체 보기」: 기본 보기(editor.view)가 있으면 그 상자, 그 상태에서 한 번 더 누르면 장면 전체(순환).
+        기본 보기가 없으면 늘 장면 전체."""
         self._fit_pending = False
-        self._fit_to(self.scene())
+        scene = self.scene()
+        box = self.view_box()
+        unchanged = self._fit_camera == (self.center, self.scale)
+        if box is not None and not (self._fit_mode == "view" and unchanged):
+            self._fit_box(box)
+            self._fit_mode = "view"
+        else:
+            self._fit_to(scene)
+            self._fit_mode = "full"
+        self._fit_camera = (self.center, self.scale)
+        self.update()
+
+    def _fit_initial(self, scene: Scene) -> None:
+        """파일을 처음 열었을 때의 카메라: 기본 보기가 있으면 그 상자, 없으면 장면 전체."""
+        box = self.view_box()
+        if box is not None:
+            self._fit_box(box)
+            self._fit_mode = "view"
+        else:
+            self._fit_to(scene)
+            self._fit_mode = "full"
+        self._fit_camera = (self.center, self.scale)
+
+    def _fit_box(self, box: tuple[float, float, float, float]) -> None:
+        x0, y0, x1, y1 = box
+        w, h = max(self.width(), 50), max(self.height(), 50)
+        self.scale = min(max(min(w / (x1 - x0), h / (y1 - y0)), SCALE_RANGE[0]), SCALE_RANGE[1])
+        self.center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+        self._badge_cache = None
+
+    # ---- 기본 보기 (editor.view, 해시 밖) ----
+    def view_box(self) -> tuple[float, float, float, float] | None:
+        """문서의 기본 보기 상자(없거나 잘못되었으면 None)."""
+        data = self.doc.data if isinstance(self.doc.data, dict) else {}
+        return editor_view_box(data.get("editor"))
+
+    def visible_box(self) -> tuple[float, float, float, float]:
+        """지금 화면에 보이는 세계 상자 (x0, y0, x1, y1)."""
+        x0, y1 = self.screen_to_world(QPointF(0.0, 0.0))
+        x1, y0 = self.screen_to_world(QPointF(float(max(self.width(), 1)), float(max(self.height(), 1))))
+        return (x0, y0, x1, y1)
+
+    def save_view_box(self) -> tuple[float, float, float, float]:
+        """지금 보기를 기본 보기로 저장한다(되돌리기 한 단계, 환경 해시는 그대로)."""
+        box = tuple(round(v, 3) + 0.0 for v in self.visible_box())
+        editor = self.doc.data.get("editor") if isinstance(self.doc.data.get("editor"), dict) else {}
+        new = with_view_box(editor, box)  # type: ignore[arg-type]
+        self.doc.edit(S.ED_VIEW_SAVE, lambda d: d.__setitem__("editor", new))
+        self._fit_mode = "view"
+        self._fit_camera = (self.center, self.scale)
+        self.message(S.ED_VIEW_SAVED)
+        return box  # type: ignore[return-value]
+
+    def clear_view_box(self) -> None:
+        """기본 보기를 지운다(되돌리기 한 단계). 다른 editor 칸은 그대로 둔다."""
+        editor = self.doc.data.get("editor") if isinstance(self.doc.data.get("editor"), dict) else None
+        if editor is None or "view" not in editor:
+            return
+        new = with_view_box(editor, None)
+
+        def mutate(d: dict[str, Any]) -> None:
+            if new:
+                d["editor"] = new
+            else:
+                d.pop("editor", None)
+
+        self.doc.edit(S.ED_VIEW_CLEAR, mutate)
+        self._fit_mode = ""
+
+    # ---- 미리보기 시각 (v2 D24) ----
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    def max_preview_time(self) -> float:
+        """미리보기 시각의 끝 = 세계 최대 시간(숫자 칸이면 문서에서 바로, 아니면 장면이 계산한 값)."""
+        world = self.doc.data.get("world") if isinstance(self.doc.data, dict) else None
+        v = world.get("max_time") if isinstance(world, dict) else None
+        if T.is_number(v) and math.isfinite(float(v)) and float(v) > 0:
+            return float(v)
+        return self._scene.max_time if self._scene is not None else DEFAULT_MAX_TIME
+
+    def set_preview_time(self, t: float) -> None:
+        """정해진 움직임 물체를 시각 t(초)의 자세로 그린다(0 ~ 세계 최대 시간). 학습에는 영향 없음."""
+        t = min(max(0.0, float(t)), self.max_preview_time())
+        if self._playing:
+            self._play_from = t
+            self._play_clock.restart()
+        if t != self.preview_time:
+            self.preview_time = t
+            self.preview_changed.emit(t)
+            self.update()
+
+    def play(self) -> None:
+        """움직임 미리보기를 지금 시각부터 재생한다(끝이면 0초부터)."""
+        if self._playing or not self.has_motion:
+            return
+        if self.preview_time >= self.max_preview_time() - 1e-9:
+            self.set_preview_time(0.0)
+        self._playing = True
+        self._play_from = self.preview_time
+        self._play_clock.start()
+        self._play_timer.start()
+        self.playing_changed.emit(True)
+        self.update()
+
+    def pause(self) -> None:
+        if not self._playing:
+            return
+        self._playing = False
+        self._play_timer.stop()
+        self.playing_changed.emit(False)
+        self.update()
+
+    def toggle_play(self) -> None:
+        if self._playing:
+            self.pause()
+        else:
+            self.play()
+
+    def stop_preview(self) -> None:
+        """멈추고 0초로."""
+        self.pause()
+        self._static_cache = None
+        if self.preview_time != 0.0:
+            self.preview_time = 0.0
+            self.preview_changed.emit(0.0)
+            self.update()
+
+    def _on_play_tick(self) -> None:
+        if not self._playing:
+            return
+        t = self._play_from + self._play_clock.elapsed() / 1000.0
+        end = self.max_preview_time()
+        if t >= end:
+            self.preview_time = end
+            self.preview_changed.emit(end)
+            self.pause()
+            return
+        self.preview_time = t
+        self.preview_changed.emit(t)
         self.update()
 
     def _fit_to(self, scene: Scene) -> None:
@@ -1211,6 +1623,10 @@ class EditorCanvas(QWidget):
         if body is not None and not body.place_by:
             if self._near(self.rotate_handle(body), w, HANDLE_PX):
                 return Pick(body.ref, "rotate", center=(body.pose[0], body.pose[1]))
+        if body is not None and body.motion is not None:
+            for k, q in enumerate(body.path_points()):
+                if self._near(q, w, HANDLE_PX):
+                    return Pick(body.ref, "path_pt", k, center=q)
         sp, sd = self.spawn_handles()
         screen = self.world_to_screen(*w)
         for item, rect in self.badge_rects():
@@ -1400,13 +1816,29 @@ class EditorCanvas(QWidget):
         scene = self._paint_scene()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._playing or self.preview_time > 0.0:
+            # 재생 중이거나 미리보기 시각을 옮겨 둔 동안: 움직이지 않는 그림은 한 번만 그려 두고 다시 쓴다
+            p.drawImage(0, 0, self._static_image(scene))
+        else:
+            self._paint_static(p, scene)
+        self._paint_moving(p, scene)
+        self._paint_badges(p)  # 표지·손잡이는 움직이는 물체 위에(작고 싸다)
+        self._paint_handles(p)
+        self._tool.overlay(p)
+        self._paint_hud(p, scene)
+        p.end()
+
+    def _paint_static(self, p: QPainter, scene: Scene) -> None:
+        """움직이지 않는 것(정해진 움직임 물체는 길 점선만, 표지와 회전 손잡이는 paintEvent가 맨 위에)."""
         p.fillRect(self.rect(), COLOR_BG)
         self._paint_grid(p)
         self._paint_bounds(p, scene)
         self._paint_regions(p, scene)
         self._paint_terrain(p, scene)
         self._paint_checkpoints(p, scene)
-        for b in [x for x in scene.bodies if not x.generated and x.owner != "agent" and not self._terrain_like(x)]:
+        self._paint_paths(p, scene)
+        for b in [x for x in scene.bodies if not x.generated and x.owner != "agent" and not self._terrain_like(x)
+                  and x.motion is None]:
             self._paint_body(p, b)
         for b in [x for x in scene.bodies if not x.generated and x.owner == "agent"]:
             self._paint_body(p, b)
@@ -1414,12 +1846,29 @@ class EditorCanvas(QWidget):
         self._paint_targets(p, scene)
         self._paint_joints(p, scene)
         self._paint_thrusters(p, scene)
+        self._paint_jumps(p, scene)
         self._paint_spawn(p, scene)
-        self._paint_badges(p)
-        self._paint_handles(p)
-        self._tool.overlay(p)
-        self._paint_hud(p, scene)
-        p.end()
+
+    def _static_key(self, scene: Scene) -> Any:
+        return (id(scene), self.center, self.scale, self.width(), self.height(), self.devicePixelRatioF(),
+                tuple(self.doc.selection), id(self._issue_refs), self._tool_id, self.snap_step)
+
+    def _static_image(self, scene: Scene) -> QImage:
+        """움직이지 않는 그림을 그린 이미지(같은 장면·카메라·선택이면 다시 그리지 않는다)."""
+        key = self._static_key(scene)
+        if self._static_cache is not None and self._static_cache[0] == key:
+            return self._static_cache[1]
+        dpr = self.devicePixelRatioF()
+        img = QImage(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)),
+                     QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        q = QPainter(img)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        q.setFont(self.font())
+        self._paint_static(q, scene)
+        q.end()
+        self._static_cache = (key, img)
+        return img
 
     def _paint_grid(self, p: QPainter) -> None:
         w, h = self.width(), self.height()
@@ -1508,7 +1957,7 @@ class EditorCanvas(QWidget):
     def _paint_terrain(self, p: QPainter, scene: Scene) -> None:
         bottom = scene.bounds[1] - 50.0 if math.isfinite(scene.bounds[1]) else -100.0
         for b in scene.bodies:
-            if not self._terrain_like(b):
+            if not self._terrain_like(b) or b.motion is not None:
                 continue
             chains = self._segment_chains(b)
             fill = "terrain" in b.tags
@@ -1549,7 +1998,7 @@ class EditorCanvas(QWidget):
         if b.owner == "agent":
             fill = COLOR_LEG if "leg" in b.tags else COLOR_AGENT
         else:
-            fill = COLOR_WORLD_BODY if b.dynamic else COLOR_STATIC
+            fill = COLOR_WORLD_BODY if b.dynamic or b.kinematic else COLOR_STATIC
         x, y, a = b.pose
 
         def outline() -> None:
@@ -1582,11 +2031,147 @@ class EditorCanvas(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(self._q((x, y)), 0.3 * self.scale + 4, 0.3 * self.scale + 4)
         self._outline(p, b.ref, outline, False)
+        if b.wing_les:  # 날개 모양의 앞전에 점
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(COLOR_JOINT))
+            for le in b.wing_les:
+                p.drawEllipse(self._q(geo.transform(le, (x, y), a)), 2.5, 2.5)
+        if b.id in self._scene_aero():
+            self._paint_wind(p, b)
         if b.ref in self.doc.selection:
             o = self._q((x, y))
             p.setPen(_pen(COLOR_SELECT, 1.0))
             p.drawLine(o + QPointF(-4, 0), o + QPointF(4, 0))
             p.drawLine(o + QPointF(0, -4), o + QPointF(0, 4))
+
+    def _scene_aero(self) -> set[str]:
+        return self._scene.aero_bodies if self._scene is not None else set()
+
+    def _paint_wind(self, p: QPainter, b: BodyItem) -> None:
+        """공기역학 물체: 물체 상자 앞(바람이 오는 쪽, 왼쪽)에 작은 바람 줄기 셋."""
+        lo, hi = self._q((b.bbox[0], b.bbox[1])), self._q((b.bbox[2], b.bbox[3]))
+        cy, x1 = (lo.y() + hi.y()) / 2.0, lo.x() - 5.0
+        p.setPen(_pen(COLOR_WIND, 1.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for k in (-1, 0, 1):
+            y = cy + 6.0 * k
+            p.drawPolyline(QPolygonF([QPointF(x1 - 14.0, y), QPointF(x1 - 9.0, y - 1.5), QPointF(x1 - 4.0, y + 1.0),
+                                      QPointF(x1, y)]))
+
+    # ---- 정해진 움직임 (v2) ----
+    def _paint_paths(self, p: QPainter, scene: Scene) -> None:
+        """길 점선(진행 방향 화살촉, 방식 기호)과 흔들기 양 끝 자세(옅게). 움직이지 않으므로 정적 그림에 들어간다."""
+        font = self._badge_font()
+        for b in scene.moving():
+            mo = b.motion
+            assert mo is not None
+            if b.row is not None:
+                continue  # 장애물 줄: 길 대신 「→ 장애물 n개」(움직이는 그림 쪽)
+            if mo.kind == "wave":
+                period = mo.period
+                for frac in (0.25, 0.75):
+                    t = (period * (frac - mo.phase)) % period
+                    polys, circles, _segs = shapes_at(b.shapes, pose_at(mo, t))
+                    p.setPen(_pen(COLOR_GHOST, 1.0, Qt.PenStyle.DashLine))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    for poly in polys:
+                        p.drawPolygon(self._poly(poly))
+                    for c, r in circles:
+                        p.drawEllipse(self._q(c), r * self.scale, r * self.scale)
+                continue
+            ox, oy = mo.origin
+            pts = [self._q((ox + x, oy + y)) for x, y in mo.points]
+            if len(pts) < 2:
+                continue
+            p.setPen(_pen(COLOR_PATH, 1.5, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(QPolygonF(pts))
+            seg = next(((a, c) for a, c in zip(pts, pts[1:], strict=False)
+                        if math.hypot(c.x() - a.x(), c.y() - a.y()) > 12), None)
+            if seg is not None:  # 첫 구간 가운데에 진행 방향 화살촉
+                a, c = seg
+                mid = QPointF((a.x() + c.x()) / 2, (a.y() + c.y()) / 2)
+                ang = math.atan2(c.y() - a.y(), c.x() - a.x())
+                p.setPen(_pen(COLOR_PATH, 1.5))
+                for side in (-1, 1):
+                    a2 = ang + math.pi + side * 0.5
+                    p.drawLine(mid, mid + QPointF(7 * math.cos(a2), 7 * math.sin(a2)))
+            end = pts[b.path_count - 1] if 0 < b.path_count <= len(pts) else pts[-1]
+            p.setFont(font)
+            p.setPen(COLOR_PATH)
+            p.drawText(end + QPointF(6, -6), MODE_SYMBOLS.get(mo.mode, ""))
+
+    def _paint_moving(self, p: QPainter, scene: Scene) -> None:
+        """정해진 움직임 물체를 미리보기 시각의 자세로 그린다(재생 중에는 이것만 다시 그린다)."""
+        t = self.preview_time
+        poses: dict[str, Pose] = {}
+        font = None
+        for b in scene.moving():
+            mo = b.motion
+            assert mo is not None
+            pose = pose_at(mo, t)
+            poses[b.id] = pose
+            shapes = b.shapes
+            hidden = b.row_hidden
+            if b.row is not None and t > 0.0:
+                shapes, hidden = row_window(b.row, mo, t)
+            polys, circles, segments = shapes_at(shapes, pose)
+            color, selected = self._highlight(b.ref)
+
+            def outline(polys: list[list[Point]] = polys, circles: list[tuple[Point, float]] = circles) -> None:
+                for poly in polys:
+                    p.drawPolygon(self._poly(poly))
+                for c, r in circles:
+                    p.drawEllipse(self._q(c), r * self.scale, r * self.scale)
+
+            self._outline(p, b.ref, outline, True)
+            if t > 0.0 and b.row is None:  # 시작 자세를 옅게 남긴다(누르고 고치는 자리)
+                p.setPen(_pen(COLOR_GHOST, 1.0, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                for poly in b.polys:
+                    p.drawPolygon(self._poly(poly))
+            p.setPen(_pen(COLOR_AGENT_EDGE, 1.0))
+            p.setBrush(QBrush(COLOR_WORLD_BODY))
+            for poly in polys:
+                p.drawPolygon(self._poly(poly))
+            for c, r in circles:
+                p.drawEllipse(self._q(c), r * self.scale, r * self.scale)
+            for s0, s1, r in segments:
+                p.setPen(_pen(COLOR_WORLD_BODY, max(1.5, 2 * r * self.scale)))
+                p.drawLine(self._q(s0), self._q(s1))
+            self._outline(p, b.ref, outline, False)
+            if b.row is not None and hidden > 0 and polys:
+                font = font or self._badge_font()
+                p.setFont(font)
+                p.setPen(COLOR_LABEL)
+                far = max((q for poly in polys for q in poly), key=lambda q: q[0])
+                near = min(q[1] for poly in polys for q in poly)
+                p.drawText(self._q((far[0], near)) + QPointF(8, -4), S.EDC_OBSTACLES_MORE.format(count=hidden))
+            if selected and b.row is None and self._tool_id == "select":
+                p.setPen(_pen(COLOR_SELECT, 1.0))
+                p.setBrush(QBrush(COLOR_BG))
+                for q in b.path_points():
+                    sq = self._q(q)
+                    p.drawRect(QRectF(sq.x() - 3.5, sq.y() - 3.5, 7, 7))
+        self.drawn_poses = poses
+
+    def _paint_jumps(self, p: QPainter, scene: Scene) -> None:
+        """점프 추진기: 물체 위쪽에 뛰는 방향 화살표(이름은 표지에)."""
+        for j in scene.jumps:
+            body = scene.body(j.body)
+            if body is None:
+                continue
+            _color, selected = self._highlight(j.ref)
+            top = self._q(((body.bbox[0] + body.bbox[2]) / 2.0, body.bbox[3]))
+            base = top + QPointF(0, -4)
+            tip = base + QPointF(26 * math.cos(j.dir), -26 * math.sin(j.dir))
+            main = COLOR_SELECT if selected else COLOR_FLAME
+            p.setPen(_pen(main, 2.0))
+            p.drawLine(base, tip)
+            ang = math.atan2(tip.y() - base.y(), tip.x() - base.x())
+            for side in (-1, 1):
+                a2 = ang + math.pi + side * 0.5
+                p.drawLine(tip, tip + QPointF(7 * math.cos(a2), 7 * math.sin(a2)))
 
     def _paint_joints(self, p: QPainter, scene: Scene) -> None:
         for j in scene.joints:
@@ -1865,3 +2450,65 @@ class EditorCanvas(QWidget):
         if self._fit_pending:
             self._dirty = True
         super().showEvent(event)
+
+
+class PreviewBar(QWidget):
+    """캔버스 아래 미리보기 시각 줄(v2 D24): 「미리보기 시각」 슬라이더(0 ~ 세계 최대 시간)와 ▶/⏸.
+
+    정해진 움직임 물체가 있을 때만 보인다(v1 환경 화면은 그대로). 문서가 바뀌면 캔버스가 멈추고 0초로 돌린다.
+    """
+
+    def __init__(self, canvas: EditorCanvas, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.canvas = canvas
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setSpacing(6)
+        self.play_button = QToolButton()
+        self.play_button.setText("▶")
+        self.play_button.setToolTip(S.ED_PREVIEW_PLAY)
+        self.play_button.clicked.connect(canvas.toggle_play)
+        self.title = QLabel(S.ED_PREVIEW_TIME)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setToolTip(S.ED_PREVIEW_TIME_TIP)
+        self.title.setToolTip(S.ED_PREVIEW_TIME_TIP)
+        self.slider.setRange(0, 0)
+        self.slider.valueChanged.connect(self._on_slider)
+        self.time_label = QLabel()
+        self.time_label.setMinimumWidth(self.fontMetrics().horizontalAdvance("000.0 / 000.0") + 8)
+        lay.addWidget(self.play_button)
+        lay.addWidget(self.title)
+        lay.addWidget(self.slider, 1)
+        lay.addWidget(self.time_label)
+        canvas.preview_changed.connect(self._on_time)
+        canvas.playing_changed.connect(self._on_playing)
+        canvas.motion_changed.connect(self._on_motion)
+        canvas.doc.changed.connect(self._sync_range)
+        self._sync_range()
+        self._on_time(canvas.preview_time)
+        self.setVisible(canvas.has_motion)
+
+    def _sync_range(self) -> None:
+        end = self.canvas.max_preview_time()
+        ticks = max(1, round(end / PREVIEW_STEP))
+        if self.slider.maximum() != ticks:
+            self.slider.blockSignals(True)
+            self.slider.setRange(0, ticks)
+            self.slider.blockSignals(False)
+        self._on_time(self.canvas.preview_time)
+
+    def _on_slider(self, value: int) -> None:
+        self.canvas.set_preview_time(value * PREVIEW_STEP)
+
+    def _on_time(self, t: float) -> None:
+        self.slider.blockSignals(True)
+        self.slider.setValue(round(t / PREVIEW_STEP))
+        self.slider.blockSignals(False)
+        self.time_label.setText(f"{t:.1f} / {self.canvas.max_preview_time():.1f}")
+
+    def _on_playing(self, playing: bool) -> None:
+        self.play_button.setText("⏸" if playing else "▶")
+
+    def _on_motion(self, has: bool) -> None:
+        self._sync_range()
+        self.setVisible(has)

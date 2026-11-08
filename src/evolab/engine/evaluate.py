@@ -9,14 +9,22 @@
 2이면 4스텝마다 기준 물체 위치를 격자 틀의 칸으로 센다. 관찰기는 Episode의 읽기 전용 접근자(applied_outputs,
 output_channel_index, anchor_body)와 pymunk Body.position만 읽고 난수를 쓰지 않는다. 그래서 점수·궤적은 관찰을
 켜도 같고, 쌍별 관찰은 (환경, 유전자, 시험, 틀)만의 함수다.
+
+조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 Episode를 만들 수 없는(EpisodeBuildError) 쌍은 학습을 멈추지 않고 그 쌍만
+실패로 센다(점수 NaN, 결과 failure, 종료 사건 BUILD_FAILED_EVENT, 스텝·블록·행동 0, 궤적 프레임 0개, 관찰 0). 그 쌍은
+스텝 루프와 신경망 묶음에 넣지 않는다(행마다 독립이라 다른 쌍의 결과는 그대로). 같은 시험을 처음 몸으로도 만들 수 없으면
+몸이 아니라 환경의 문제라 v1.2처럼 오류를 올린다. 실패는 (환경, 몸 수치, 시험)의 순수 함수라 어느 워커에서나 같고,
+실패가 없으면 v1.2와 같은 길을 그대로 지난다.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Final, cast
 
 import numpy as np
 
@@ -24,7 +32,12 @@ from evolab.policy.brain import BatchBrain, unpack
 from evolab.policy.genome import GenomeLayout
 from evolab.runs.observe import ACTION_BINS
 from evolab.spec.compiled import EnvSpec
-from evolab.world.physics2d.episode import Episode, Trial
+from evolab.world.physics2d.episode import Episode, EpisodeBuildError, EpisodeResult, Trial
+
+BUILD_FAILED_EVENT: Final = ""
+"""조립 실패 쌍의 종료 사건(점수 NaN, 결과 failure, 스텝 0). 어느 종료 사건 id와도 겹치지 않아 통계 end_* 열에 들지 않는다
+(그래서 그 세대의 end_* 합이 1보다 작아진다, 설계 4.9)."""
+BUILD_FAILED_OUTCOME: Final = "failure"
 
 POSITION_EVERY = 4
 """관찰 코드 2인 쌍의 위치 표본 간격(스텝). 표본 수 = 스텝 // 4."""
@@ -242,6 +255,63 @@ class EvalResult:
         )
 
 
+def build_failed_result(spec: EnvSpec) -> EpisodeResult:
+    """조립 실패 쌍의 결과(설계 4.9): 점수 NaN, 결과 failure, 종료 사건 BUILD_FAILED_EVENT, 시간·스텝 0, 블록·행동 0.
+
+    가중치 블록 값은 가중치 점수 환경이면 0(통계 기여 열이 NaN이 되지 않게), 수식 점수 환경이면 Episode.result()처럼
+    비어 있다(EvalResult.weighted는 NaN). 화면(재생·경주)이 실패한 칸의 결과로도 쓸 수 있다.
+    """
+    from evolab.app import strings as S
+
+    blocks = {b.id: 0.0 for b in spec.file.scoring.blocks}
+    weighted = dict(blocks) if spec.formula is None else {}
+    channels = [c.name for c in spec.actuator_channels.values()]
+    return EpisodeResult(
+        score=math.nan, blocks=blocks, weighted=weighted, outcome=BUILD_FAILED_OUTCOME, end_event=BUILD_FAILED_EVENT,
+        end_label=S.RT_BUILD_FAILED_END, time=0.0, steps=0,
+        action_mean_abs={c: 0.0 for c in [*channels, *spec.outputs]},
+    )
+
+
+def _empty_trajectory(spec: EnvSpec, every: int) -> Trajectory:
+    """조립 실패 쌍의 궤적: 프레임 0개(물체 0개, 출력 열은 구동기 채널 수), 끝난 스텝 0."""
+    u = len(spec.actuator_channels)
+    return Trajectory(np.zeros((0, 0, 3), dtype=np.float32), np.zeros((0, u), dtype=np.float32), every,
+                      float(spec.file.world.dt), 0)
+
+
+def _empty_observation(n_out: int) -> PairObservation:
+    """조립 실패 쌍의 관찰: 아무것도 세지 않음(스텝 0, 칸 없음). 세대 요약에 0을 더한다."""
+    return PairObservation(np.zeros(n_out * ACTION_BINS, dtype=np.uint32), np.zeros(n_out, dtype=np.float64), 0,
+                           np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.uint32), 0)
+
+
+def _build(spec: EnvSpec, body: np.ndarray | None, trial: Trial) -> Episode | EpisodeBuildError:
+    """쌍 하나의 Episode. 조립할 수 없으면 그 EpisodeBuildError(돌려줌). 다른 예외는 코드 결함이라 그대로 올린다."""
+    try:
+        return Episode(spec, body, trial)
+    except EpisodeBuildError as exc:
+        return exc
+
+
+def _only_body_failures(spec: EnvSpec, pairs: Sequence[tuple[int, Trial]],
+                        errors: dict[int, EpisodeBuildError]) -> None:
+    """조립 실패가 그 몸 수치 때문인지 본다(설계 D22: 처음 몸은 조립되는데 특정 몸 수치로만 안 될 때만 그 쌍의 실패).
+
+    같은 시험을 처음 몸(Episode(spec, None, 시험): 몸 수치 = 환경 파일의 처음 값)으로도 조립할 수 없으면 몸이 아니라
+    환경·시험의 문제라 v1.2처럼 그 오류를 올린다(학습이 멈추고 워커 풀은 PoolError로 알린다). 실패가 있을 때만
+    시험마다 한 번 더 만들어 본다.
+    """
+    reference: dict[tuple[int, int | None], bool] = {}
+    for i in sorted(errors):
+        trial = pairs[i][1]
+        key = (trial.seed, trial.track)
+        if key not in reference:
+            reference[key] = not isinstance(_build(spec, None, trial), EpisodeBuildError)
+        if not reference[key]:
+            raise errors[i]
+
+
 @dataclass
 class _Active:
     index: np.ndarray
@@ -269,21 +339,34 @@ def evaluate(
     all_brains = unpack(layout.brain, layout.brain_params(genomes))
     rows = np.array([g for g, _ in pairs], dtype=np.int64)
     t_start = time.perf_counter()  # 세계 만들기도 시뮬레이션 시간에 넣는다
-    episodes = [Episode(spec, body[g] if body is not None else None, trial) for g, trial in pairs]
+    made = [_build(spec, body[g] if body is not None else None, trial) for g, trial in pairs]
+    errors = {i: ep for i, ep in enumerate(made) if isinstance(ep, EpisodeBuildError)}
+    if errors:
+        _only_body_failures(spec, pairs, errors)
+    built: list[Episode | None] = [None if i in errors else cast(Episode, ep) for i, ep in enumerate(made)]
+    failed = sorted(errors)
+    del made, errors  # 예외의 traceback이 만들다 만 세계를 붙잡지 않게
+    episodes = cast("list[Episode]", built)  # 스텝 루프는 만든 쌍(active.index)만 다룬다
     recorders: dict[int, _Recorder] = {}
     if record is not None:
         for i, on in enumerate(record):
-            if on:
-                recorders[i] = _Recorder(max(1, int(every)), episodes[i].dt)
-                recorders[i].add(episodes[i])
+            ep = built[i]
+            if on and ep is not None:
+                recorders[i] = _Recorder(max(1, int(every)), ep.dt)
+                recorders[i].add(ep)
     observers: list[_Observer | None] | None = None
     if observe is not None and any(observe):
         ranges = layout.output_ranges
-        observers = [_make_observer(episodes[i], ranges, int(code), frame) for i, code in enumerate(observe)]
+        observers = [None if ep is None else _make_observer(ep, ranges, int(code), frame)
+                     for ep, code in zip(built, observe, strict=True)]
 
     nn_t = 0.0
     sweeps = 0
-    active = _Active(np.arange(n), all_brains.select(rows)) if n else None
+    if failed:
+        live = np.array([i for i, ep in enumerate(built) if ep is not None], dtype=np.int64)
+        active = _Active(live, all_brains.select(rows[live])) if len(live) else None
+    else:  # v1.2와 같은 길(실패가 없으면 결과가 비트 단위로 같다)
+        active = _Active(np.arange(n), all_brains.select(rows)) if n else None
     while active is not None and len(active.index):
         idx = active.index
         for j, i in enumerate(idx):
@@ -325,8 +408,24 @@ def evaluate(
             # 끝난 줄도 계속 계산하되 결과는 쓰지 않는다(끝난 에피소드의 step은 아무 일도 안 한다)
             pass
 
-    results = [ep.result() for ep in episodes]
+    failed_result = build_failed_result(spec) if failed else None
+    results = [failed_result if ep is None else ep.result() for ep in built]
     block_ids = [b.id for b in spec.file.scoring.blocks]
+    trajectories: list[Trajectory | None] | None = None
+    if recorders:
+        trajectories = [recorders[i].build() if i in recorders else None for i in range(n)]
+    if record is not None and failed and any(record[i] for i in failed):  # 요청한 조립 실패 쌍: 프레임 0개
+        trajectories = trajectories or [None] * n
+        for i in failed:
+            if record[i]:
+                trajectories[i] = _empty_trajectory(spec, max(1, int(every)))
+    observations: list[PairObservation | None] | None = None
+    if observers is not None:
+        observations = [None if ob is None else ob.build() for ob in observers]
+        codes = list(observe) if observe is not None else []
+        for i in failed:
+            if int(codes[i]) != OBSERVE_NONE:  # 요청한 조립 실패 쌍: 0을 센 관찰(세대 요약이 그 쌍을 세지 않음)
+                observations[i] = _empty_observation(len(layout.output_ranges))
     return EvalResult(
         scores=np.array([r.score for r in results], dtype=np.float64),
         steps=np.array([r.steps for r in results], dtype=np.int64),
@@ -338,8 +437,8 @@ def evaluate(
         ),
         weighted=np.array([[r.weighted.get(b, np.nan) for b in block_ids] for r in results],
                           dtype=np.float64).reshape(n, len(block_ids)),
-        trajectories=[recorders[i].build() if i in recorders else None for i in range(n)] if recorders else None,
+        trajectories=trajectories,
         nn_seconds=nn_t,
         sim_seconds=time.perf_counter() - t_start - nn_t,
-        observations=None if observers is None else [None if ob is None else ob.build() for ob in observers],
+        observations=observations,
     )

@@ -19,8 +19,13 @@ from evolab.scoring.expr import Compiled, ExprError, Sym, compile_expr, formula_
 from evolab.spec import model as m
 from evolab.spec import symbols as sy
 
-Severity = Literal["error", "warning"]
+Severity = Literal["error", "warning", "info"]
+"""error: 쓸 수 없음. warning: 쓸 수 있지만 아마 실수. info: 일부러 만든 환경을 알려 주는 안내(v2: 뇌 없는 환경)."""
 RAND_LIMIT = 1e15
+OBSTACLES_MIN_LEAD = 2.0
+"""장애물 줄의 첫 장애물이 에이전트 시작 위치에서 이만큼(m) 안쪽에서 출발하면 경고한다(v2 설계 R11)."""
+AERO_STALL_MAX = 1.5
+"""공기역학 실속 각도(rad)의 상한. 범위는 (0, 1.5]."""
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,11 @@ class EnvSpec:
     @property
     def warnings(self) -> list[Issue]:
         return [i for i in self.issues if i.severity == "warning"]
+
+    @property
+    def infos(self) -> list[Issue]:
+        """안내(v2 심각도 info). 오류·경고 개수에 넣지 않는다."""
+        return [i for i in self.issues if i.severity == "info"]
 
     @property
     def track_set_size(self) -> int | None:
@@ -162,6 +172,9 @@ class _Compiler:
     def warn(self, where: str, message: str) -> None:
         self.issues.append(Issue("warning", where, message))
 
+    def info(self, where: str, message: str) -> None:
+        self.issues.append(Issue("info", where, message))
+
     def compile(
         self, where: str, source: str, symbols: dict[str, Sym], *, want: Literal["num", "bool"], max_phase: str
     ) -> Compiled | None:
@@ -180,6 +193,7 @@ class _Compiler:
         self._check_materials()
         self._check_refs()
         self._check_not_yet()
+        self._check_v2()
         formulas = self._compile_formulas()
         events, order = self._compile_events()
         blocks, formula = self._compile_scoring()
@@ -304,7 +318,7 @@ class _Compiler:
         own = {b.id: b for b in env.bodies}
         for i, b in enumerate(env.bodies):
             where = f"bodies[{i}]"
-            if b.owner == "agent" and b.type != "dynamic":
+            if b.owner == "agent" and b.type == "static":
                 self.warn(where, S.SPEC_AGENT_NOT_DYNAMIC.format(id=b.id))
             if b.place_by is not None:
                 j = joints.get(b.place_by)
@@ -328,14 +342,21 @@ class _Compiler:
                 self.warn(f"joints[{i}].collide", S.SPEC_AGENT_COLLIDE.format(id=j.id))
         for i, a in enumerate(env.actuators):
             where = f"actuators[{i}]"
-            if isinstance(a, (m.Thruster, m.Vehicle)):
+            if isinstance(a, (m.Thruster, m.Vehicle, m.Jump, m.Aero)):
                 body_ref(f"{where}.body", a.body)
                 if a.body in bodies and a.body not in agent_dynamic:
                     self.error(f"{where}.body", S.SPEC_ACTUATOR_BODY.format(ref=a.body))
+            if isinstance(a, m.Jump):
+                for k, ref in enumerate(a.ground):
+                    hit_ref(f"{where}.ground[{k}]", ref, a.body)
             for k, key in enumerate(_keys_of(a)):
-                if key in sy.CONTROL_KEYS:
+                if sy.key_allowed(a, key):
+                    continue
+                if key in sy.JUMP_ONLY_KEYS:
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_SPACE_JUMP_ONLY.format(id=a.id))
+                elif key in sy.RESERVED_KEYS:
                     self.error(f"{where}.keys[{k}]", S.SPEC_KEY_RESERVED.format(key=key))
-                elif key not in sy.KEY_NAMES:
+                else:
                     self.error(f"{where}.keys[{k}]", S.SPEC_KEY_UNKNOWN.format(key=key))
             if isinstance(a, m.Thruster) and a.tank is not None and a.tank not in tanks:
                 self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=a.tank))
@@ -398,10 +419,14 @@ class _Compiler:
         if env.checkpoints or tracks:
             if not [a for a in env.actuators if isinstance(a, m.Vehicle)] and not agent_bodies:
                 self.error("checkpoints", S.SPEC_NO_AGENT_BODY)
-        if not env.sensors:
-            self.warn("sensors", S.SPEC_NO_SENSORS)
-        if not [a for a in env.actuators if not isinstance(a, m.FuelTank)]:
-            self.warn("actuators", S.SPEC_NO_ACTUATORS)
+        if not sy.actuator_channels(env) and sy.evolved_params(env):
+            # 뇌 없는 환경(v2 설계 D20): 출력이 없고 몸 수치가 진화하면 일부러 만든 환경이라 경고 대신 안내 하나.
+            self.info("brain", S.SPEC_BRAINLESS)
+        else:
+            if not env.sensors:
+                self.warn("sensors", S.SPEC_NO_SENSORS)
+            if not [a for a in env.actuators if not isinstance(a, (m.FuelTank, m.Aero))]:
+                self.warn("actuators", S.SPEC_NO_ACTUATORS)
         if not env.scoring.blocks and env.scoring.formula is None:
             self.warn("scoring", S.SPEC_NO_SCORE)
 
@@ -435,9 +460,80 @@ class _Compiler:
                     walk(v, f"{path}[{i}]")
 
         walk(self.env, "")
-        for i, b in enumerate(self.env.bodies):
-            if b.type == "kinematic":
-                self.error(f"bodies[{i}].type", S.SPEC_NOT_YET.format(milestone="2"))
+
+    # ------------------------------------------------------------------
+    # v2.0 부품 (설계 2.3). 숫자로 적은 칸만 본다(수식 결과는 런타임이 범위를 잡는다).
+    # ------------------------------------------------------------------
+    def _check_v2(self) -> None:
+        env = self.env
+        for i, b in enumerate(env.bodies):
+            where = f"bodies[{i}]"
+            if b.type == "kinematic" and b.owner == "agent":
+                self.error(f"{where}.type", S.SPEC_KINEMATIC_AGENT.format(id=b.id))
+            if b.motion is not None and b.type != "kinematic":
+                self.error(f"{where}.motion", S.SPEC_MOTION_NOT_KINEMATIC.format(id=b.id))
+            elif b.motion is None and b.type == "kinematic" and b.owner == "world":
+                self.warn(f"{where}.type", S.SPEC_KINEMATIC_NO_MOTION.format(id=b.id))
+            if b.motion is not None:
+                self._check_motion(f"{where}.motion", b)
+            for k, s in enumerate(b.shapes):
+                swhere = f"{where}.shapes[{k}]"
+                if isinstance(s, m.Wing) and (_below(s.chord, 0.0, strict=False) or _below(s.thick, 0.0, strict=False)):
+                    self.error(swhere, S.SPEC_WING_SIZE.format(id=b.id))
+                density = getattr(s, "density", None)
+                if density is None:
+                    continue
+                if b.type != "dynamic":
+                    self.warn(f"{swhere}.density", S.SPEC_SHAPE_DENSITY_STATIC.format(id=b.id))
+                elif _below(density, 0.0):
+                    self.error(f"{swhere}.density", S.SPEC_NEGATIVE.format(name="density"))
+        for i, r in enumerate(env.regions):
+            if getattr(r.shape, "density", None) is not None:
+                self.warn(f"regions[{i}].shape.density", S.SPEC_REGION_DENSITY.format(id=r.id))
+        own = {b.id: b for b in env.bodies}
+        for i, a in enumerate(env.actuators):
+            where = f"actuators[{i}]"
+            if isinstance(a, m.Jump):
+                if _below(a.speed, 0.0):
+                    self.error(f"{where}.speed", S.SPEC_NEGATIVE.format(name="speed"))
+            elif isinstance(a, m.Aero):
+                for name in ("density", "span", "aspect_ratio", "friction"):
+                    if _below(getattr(a, name), 0.0):
+                        self.error(f"{where}.{name}", S.SPEC_AERO_RANGE.format(id=a.id, name=name))
+                stall = _number(a.stall)
+                if stall is not None and not 0.0 < stall <= AERO_STALL_MAX:
+                    self.error(f"{where}.stall", S.SPEC_AERO_RANGE.format(id=a.id, name="stall"))
+                body = own.get(a.body)
+                if body is not None and not any(_takes_air(s, a.surfaces) for s in body.shapes):
+                    self.warn(f"{where}.surfaces", S.SPEC_AERO_NO_EDGES.format(id=a.id, body=a.body))
+        for i, g in enumerate(env.generators):
+            if not isinstance(g, m.ObstacleGen):
+                continue
+            where = f"generators[{i}]"
+            if _below(g.gap[0], 0.0, strict=False) or _below(g.gap[1], 0.0, strict=False):
+                self.error(f"{where}.gap", S.SPEC_OBSTACLES_GAP.format(id=g.id))
+            values = [_number(v) for v in (g.x, g.y, g.direction, env.agent.spawn.x, env.agent.spawn.y)]
+            if sy.agent_body_ids(env) and all(v is not None for v in values):
+                x, y, d, sx, sy_ = (float(v) for v in values)  # type: ignore[arg-type]
+                # 줄이 다가오는 쪽(-direction)으로 잰 첫 장애물까지의 거리. 방향 π면 x - 에이전트 시작 x.
+                if (x - sx) * -math.cos(d) + (y - sy_) * -math.sin(d) < OBSTACLES_MIN_LEAD:
+                    self.warn(f"{where}.x", S.SPEC_OBSTACLES_START.format(id=g.id))
+
+    def _check_motion(self, where: str, b: m.Body) -> None:
+        mo = b.motion
+        if isinstance(mo, m.WaveMotion):
+            period = _number(mo.period)
+            if period is not None and period <= 0:
+                self.error(f"{where}.period", S.SPEC_MOTION_PERIOD.format(id=b.id))
+            return
+        assert isinstance(mo, m.PathMotion)
+        if _number(mo.spin) != 0.0:
+            return  # 제자리에서 돈다(또는 수식이라 알 수 없다)
+        pts = {(_number(p[0]), _number(p[1])) for p in mo.points}
+        still_path = len(pts) == 1 and None not in next(iter(pts))  # 숫자로 적은 점이 모두 같다: 길이 0
+        still_speed = _below(mo.speed, 0.0, strict=False) and _below(mo.accel, 0.0, strict=False)
+        if still_path or still_speed:
+            self.warn(where, S.SPEC_MOTION_STILL.format(id=b.id))
 
     def _compile_formulas(self) -> dict[tuple[str, sy.BuildStage], Compiled]:
         out: dict[tuple[str, sy.BuildStage], Compiled] = {}
@@ -516,7 +612,27 @@ def _keys_of(a: m.Actuator) -> list[str]:
         return [*a.keys_forward, *a.keys_back, *a.keys_left, *a.keys_right]
     if isinstance(a, m.Motor):
         return [*a.keys_pos, *a.keys_neg]
+    if isinstance(a, m.Jump):
+        return list(a.keys)
     return []
+
+
+def _number(value: Any) -> float | None:
+    """숫자로 적은 칸이면 그 값, 수식이면 None."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _below(value: Any, limit: float, *, strict: bool = True) -> bool:
+    """숫자로 적은 칸이 limit보다 작은가(strict=False면 limit 이하도). 수식이면 False(런타임이 범위를 잡는다)."""
+    x = _number(value)
+    return x is not None and (x < limit if strict else x <= limit)
+
+
+def _takes_air(shape: Any, surfaces: str) -> bool:
+    """공기역학 부품이 이 모양의 테두리에 공기힘을 거는가(원·선은 받지 않음, wings면 날개 모양만)."""
+    if surfaces == "wings":
+        return isinstance(shape, m.Wing)
+    return isinstance(shape, (m.Box, m.Poly, m.Radial, m.Wing))
 
 
 def finite(x: float) -> float:

@@ -1660,3 +1660,22 @@ LAB_BUILD_FAILED_N: Final = "이 세대에 몸을 만들 수 없는 개체가 {n
 DASH_EMPTY_NO_BRAIN: Final = "이 환경은 뇌가 없습니다. 몸만 진화합니다."
 DASH_EMPTY_NO_OUTPUTS: Final = "구동기 출력이 없습니다."
 DASH_END_BUILD_FAILED: Final = "조립 실패"
+
+# v2.0 묶음 B(에디터)가 더한 문자열 (설계 6절에 없던 것)
+EDC_LABEL_JUMP: Final = "점프"
+EDC_LABEL_OBSTACLE_SEED: Final = "장애물 시드"
+ED_VIEW_MENU: Final = "보기"
+
+# v2.0 묶음 A(런타임·검사)가 더한 문자열 (설계 6절에 없던 것)
+SPEC_REGION_DENSITY: Final = "영역 '{id}'는 물체가 아니라서 모양 밀도를 쓰지 않습니다."
+SELFTEST_CHECK_V2_ENV: Final = "v2 내장 예제 (점프 게임·글라이더, 같은 시드 두 번 시뮬레이션)"
+
+# v2.0 묶음 E(조립 실패)가 더한 문자열 (설계 6절에 없던 것)
+TRAIN_INITIAL_BODY_FAILED: Final = "처음 몸 수치로는 몸을 만들 수 없습니다. {reason}"
+
+# v2.0 묶음 C(보기 화면)가 더한 사전 항목 (설계 6절에 없던 것)
+# 새 구동기 Jump·Aero의 body 칸 도움말: 묶은 exe에는 model.py 설명이 없어 새 칸마다 strings에 둔다(D28·T47).
+EDP_FIELD_TIPS.update({
+    "Jump.body": "점프 추진기를 다는 에이전트 물체입니다. 이 물체가 땅에 닿아 있을 때 뜁니다.",
+    "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
+})

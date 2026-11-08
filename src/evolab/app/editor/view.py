@@ -3,6 +3,8 @@
 왼쪽 부품 팔레트, 가운데 캔버스, 오른쪽 속성 패널, 아래 탭(세계·사건·점수·랜덤·생성기·평가·뇌·매개변수·검사 결과).
 기본 기능: 새로 만들기, 열기, 저장, 다른 이름으로 저장, 내장 예제에서 시작, 되돌리기·다시하기, 복사·붙여넣기,
 직접 조종, 실험실로 보내기(멈춘 실험이면 고친 환경으로 이어서 학습, 아니면 새 실행에 쓸 환경).
+v2: 캔버스 아래 미리보기 시각 줄(정해진 움직임 물체가 있을 때), 보기 메뉴(전체 보기, 기본 보기 저장·지우기), 내장 예제
+목록은 paths.builtin_envs() 순서.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
-from evolab.app.editor.canvas import EditorCanvas
+from evolab.app.editor.canvas import EditorCanvas, PreviewBar
 from evolab.app.editor.document import EnvDocument
 from evolab.app.editor.forms import FieldWidget
 from evolab.app.editor.palette import Palette
@@ -37,8 +39,23 @@ from evolab.app.editor.tabs import BottomTabs
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import parse_env
 
-BUILTINS = (("lander.evoenv", S.ED_BUILTIN_LANDER), ("track_car.evoenv", S.ED_BUILTIN_TRACK),
-            ("hill_car.evoenv", S.ED_BUILTIN_HILL))
+BUILTIN_TITLES = {"lander": S.ED_BUILTIN_LANDER, "track_car": S.ED_BUILTIN_TRACK, "hill_car": S.ED_BUILTIN_HILL,
+                  "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER}
+"""내장 예제 메뉴 이름(파일 이름 줄기 -> 이름). 여기 없는 파일은 그 파일의 name."""
+def _builtin_title(path: Path) -> str:
+    title = BUILTIN_TITLES.get(path.stem)
+    if title is not None:
+        return title
+    try:
+        name = json.loads(path.read_text(encoding="utf-8-sig")).get("name")
+    except (OSError, ValueError, AttributeError):
+        name = None
+    return name if isinstance(name, str) and name else path.stem
+
+
+def builtin_menu_items() -> list[tuple[str, str]]:
+    """「내장 예제에서 시작하기」 메뉴: (파일 이름, 메뉴 이름), 정해진 순서."""
+    return [(f.name, _builtin_title(f)) for f in paths.builtin_envs()]
 
 
 class EditorView(QWidget):
@@ -55,6 +72,7 @@ class EditorView(QWidget):
         """실험실의 멈춘 실험에서 연 환경인가(보내면 이어서 학습)."""
 
         self.canvas = EditorCanvas(self.doc)
+        self.preview_bar = PreviewBar(self.canvas)
         self.palette = Palette()
         self.palette.connect_canvas(self.canvas)
         self.props = PropertyPanel(self.doc)
@@ -69,9 +87,15 @@ class EditorView(QWidget):
         self.doc.file_changed.connect(lambda: self.title_changed.emit(self.doc.title()))
 
         self.toolbar = self._build_toolbar()
+        center = QWidget()
+        cl = QVBoxLayout(center)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        cl.addWidget(self.canvas, 1)
+        cl.addWidget(self.preview_bar)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(self.palette)
-        top.addWidget(self.canvas)
+        top.addWidget(center)
         top.addWidget(self.props)
         top.setStretchFactor(0, 0)
         top.setStretchFactor(1, 1)
@@ -113,13 +137,29 @@ class EditorView(QWidget):
         self.act_save = act(S.ED_SAVE, self.save, QKeySequence.StandardKey.Save)
         self.act_save_as = act(S.ED_SAVE_AS, self.save_as, QKeySequence.StandardKey.SaveAs)
         menu = QMenu(self)
-        for name, title in BUILTINS:
+        for name, title in builtin_menu_items():
             menu.addAction(title).triggered.connect(lambda _c=False, n=name: self.start_from_builtin(n))
+        self.builtin_menu = menu
         btn = QToolButton()
         btn.setText(S.ED_FROM_BUILTIN)
         btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         btn.setMenu(menu)
         bar.addWidget(btn)
+        # 보기: 전체 보기(F, 기본 보기 <-> 장면 전체), 지금 보기를 기본 보기로, 기본 보기 지우기
+        view_menu = QMenu(self)
+        view_menu.addAction(self.canvas.fit_action)
+        view_menu.addSeparator()
+        self.act_view_save = view_menu.addAction(S.ED_VIEW_SAVE)
+        self.act_view_save.triggered.connect(self.canvas.save_view_box)
+        self.act_view_clear = view_menu.addAction(S.ED_VIEW_CLEAR)
+        self.act_view_clear.triggered.connect(self.canvas.clear_view_box)
+        view_menu.aboutToShow.connect(lambda: self.act_view_clear.setEnabled(self.canvas.view_box() is not None))
+        self.view_menu = view_menu
+        vbtn = QToolButton()
+        vbtn.setText(S.ED_VIEW_MENU)
+        vbtn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        vbtn.setMenu(view_menu)
+        bar.addWidget(vbtn)
         bar.addSeparator()
         undo = self.doc.undo_stack.createUndoAction(self, S.ED_UNDO)
         undo.setShortcut(QKeySequence.StandardKey.Undo)
@@ -138,8 +178,9 @@ class EditorView(QWidget):
 
     def _on_checked(self, issues: list) -> None:
         errors = sum(1 for i in issues if i.severity == "error")
-        warnings = len(issues) - errors
-        self.status.setText(S.ED_STATUS.format(errors=errors, warnings=warnings) if issues else S.ED_STATUS_OK)
+        warnings = sum(1 for i in issues if i.severity == "warning")  # 안내(info)는 문제가 아니라 세지 않는다
+        self.status.setText(S.ED_STATUS.format(errors=errors, warnings=warnings) if errors or warnings
+                            else S.ED_STATUS_OK)
         self.act_play.setEnabled(errors == 0)
         self.act_lab.setEnabled(errors == 0)
 

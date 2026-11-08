@@ -104,6 +104,11 @@ def path_to_where(path: JsonPath) -> str:
     return out
 
 
+def problems(issues: list[Issue]) -> list[Issue]:
+    """칸에 빨간 표시를 할 결과: 오류와 경고. 안내(info, v2: 뇌 없는 환경)는 문제가 아니라 뺀다."""
+    return [i for i in issues if i.severity != "info"]
+
+
 def issues_at(issues: list[Issue], path: JsonPath, exact: bool = False) -> list[Issue]:
     """이 경로(또는 그 안쪽)를 가리키는 검사 결과."""
     w = path_to_where(path)
@@ -436,17 +441,25 @@ def _generator_outputs(data: Any) -> tuple[list[str], list[str], list[str], list
             bodies.append(f"{gid}.walls")
             cps.append(f"{gid}.cp")
             tags.append("wall")
+        elif g.get("kind") == "hills":
+            bodies.append(gid)
+            tags.append("terrain")
+        elif g.get("kind") == "obstacles":
+            bodies.append(gid)
+            tags += ["obstacle", "air"]
     return bodies, regions, cps, tags
 
 
 _REF_KIND_BY_MODEL = {
     ("Thruster", "body"): "agent_body",
     ("Vehicle", "body"): "agent_body",
+    ("Jump", "body"): "agent_body",
+    ("Aero", "body"): "agent_body",
 }
 _REF_KIND_BY_KEY = {
     "body": "body", "a": "body", "b": "body", "target": "target", "joint": "joint", "place_by": "joint",
     "tank": "tank", "event": "event", "checkpoints": "checkpoint", "with": "hit", "hits": "hit",
-    "actuators": "actuator",
+    "actuators": "actuator", "ground": "hit",
 }
 
 
@@ -508,6 +521,11 @@ _DEFAULT_NUMBERS: dict[str, float] = {
     "max_speed": 5.0, "spread": 1.5, "length": 10.0, "width": 8.0, "x": 0.0, "value": 1.0, "capacity": 100.0,
 }
 _DEFAULT_TEXT: dict[str, str] = {"when": "time > 10", "expr": "time"}
+NEW_PATH_POINTS: tuple[tuple[float, float], ...] = ((0.0, 0.0), (2.0, 0.0))
+"""새 길 움직임의 점(물체 자리에서 출발해 오른쪽 2m). 길 그리기 도구로 다시 그리면 바뀐다."""
+NEW_MOTION: dict[str, Any] = {"kind": "path", "points": [list(p) for p in NEW_PATH_POINTS], "speed": 1.0,
+                              "mode": "pingpong"}
+"""속성 패널에서 「움직임」을 켰을 때의 값(길 그리기 도구의 기본값과 같은 속력 1, 왕복)."""
 _DEFAULT_LITERAL_LISTS: dict[str, list[str]] = {"fields": ["vx", "vy"]}
 
 
@@ -542,6 +560,8 @@ def blank_value(spec: FieldSpec, data: dict[str, Any]) -> Any:
         default = _DEFAULT_LITERAL_LISTS.get(spec.key)
         return list(default) if default else list(info.item.choices[: max(1, info.min_len)]) if info.item else []
     if k == "vec_list":
+        if spec.model is m.PathMotion and spec.key == "points":
+            return [list(p) for p in NEW_PATH_POINTS]
         if info.min_len >= 3:
             return [[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]]
         return [[-1.0, 0.0], [1.0, 0.0]]
@@ -2176,6 +2196,33 @@ class FormRows(QWidget):
                 lay.addRow(w)
             else:
                 self._add_row(field_name(model, spec.key), w.tooltip(), w)
+            if INFO_AFTER.get(model) == spec.key:
+                self._add_info()
+        if model in INFO_AFTER and self.info_label is None and INFO_AFTER[model] is None:
+            self._add_info()
+        self._sync_info()
+
+    info_label: QLabel | None = None
+    """v2 속성 글(점프 높이, 날개 면적, 길 길이·한 바퀴 시간). 그 모델이 아니면 None."""
+
+    def _add_info(self) -> None:
+        label = QLabel()
+        label.setWordWrap(True)
+        label.setStyleSheet("color: palette(placeholder-text);")
+        self.layout_.addRow(label)
+        self.info_label = label
+
+    def _sync_info(self) -> None:
+        """속성 글을 지금 값으로 고치고, 물체 폼이면 「움직임」 묶음을 정해진 움직임일 때만 보인다."""
+        if self.info_label is not None:
+            text = info_text(self.ctx.doc.data, self.model, self.path)
+            self.info_label.setText(text or "")
+            self.layout_.setRowVisible(self.info_label, bool(text))
+        motion = self.fields.get("motion") if self.model is m.Body else None
+        if motion is not None:
+            item = self.ctx.doc.get(self.path)
+            item = item if isinstance(item, dict) else {}
+            self.layout_.setRowVisible(motion, item.get("type") == "kinematic" or item.get("motion") is not None)
 
     def _add_row(self, text: str, tip: str, w: FieldWidget, extra: QWidget | None = None) -> None:
         label = QLabel(text)
@@ -2195,10 +2242,125 @@ class FormRows(QWidget):
     def refresh(self) -> None:
         for w in self.fields.values():
             w.refresh()
+        self._sync_info()
 
     def leaves(self) -> Iterator[FieldWidget]:
         for w in self.fields.values():
             yield from w.leaves()
+
+
+# ---------------------------------------------------------------------------
+# v2 속성 글: 점프 높이, 날개 면적, 길 길이·한 바퀴 시간 (설계 5.1)
+# ---------------------------------------------------------------------------
+
+INFO_AFTER: dict[type[BaseModel], str | None] = {m.Jump: "speed", m.Wing: "chord", m.PathMotion: None,
+                                                 m.WaveMotion: None}
+"""속성 글을 둘 모델 -> 그 글을 넣을 칸 바로 아래(None이면 맨 아래)."""
+
+
+def plain_number(data: Any, value: Any) -> float | None:
+    """숫자, 또는 매개변수 하나를 그대로 가리키는 수식("=p.<id>")이면 그 매개변수 값. 아니면 None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        x = float(value)
+        return x if math.isfinite(x) else None
+    pid = plain_param(value)
+    if pid is not None:
+        for prm in _items(data, "params"):
+            if prm.get("id") == pid:
+                return plain_number(data, prm.get("value"))
+    return None
+
+
+def jump_height_text(data: Any, jump: Any) -> str | None:
+    """점프 높이 어림 h = speed² / (2|g_y|) (중력 y가 숫자이고 0이 아닐 때)."""
+    if not isinstance(jump, dict):
+        return None
+    v = plain_number(data, jump.get("speed", spec_for(m.Jump, "speed").default))  # type: ignore[union-attr]
+    world = data.get("world") if isinstance(data, dict) else None
+    grav = world.get("gravity") if isinstance(world, dict) else None
+    g = plain_number(data, grav[1]) if isinstance(grav, (list, tuple)) and len(grav) == 2 else None
+    if v is None or g is None or g == 0.0:
+        return None
+    return S.EDP_JUMP_HEIGHT.format(h=v * v / (2.0 * abs(g)), g=abs(g))
+
+
+def wing_area_text(data: Any, body: Any, wing: Any) -> str | None:
+    """날개 면적 = 시위 x 공기역학 폭(그 물체의 첫 공기역학. 없으면 폭 기본값 1m)."""
+    if not isinstance(wing, dict) or not isinstance(body, dict):
+        return None
+    c = plain_number(data, wing.get("chord", spec_for(m.Wing, "chord").default))  # type: ignore[union-attr]
+    span: float | None = float(spec_for(m.Aero, "span").default)  # type: ignore[union-attr]
+    for a in _items(data, "actuators"):
+        if a.get("kind") == "aero" and a.get("body") == body.get("id"):
+            span = plain_number(data, a.get("span", span))
+            break
+    if c is None or span is None:
+        return None
+    return S.EDP_WING_AREA.format(a=c * span, c=c, s=span)
+
+
+def motion_plan_of(data: Any, motion: Any) -> Any:
+    """움직임 사전을 숫자로 계산한 MotionPlan(물체 자리 기준, 각도 0). 숫자로 못 정하는 칸이 있으면 None."""
+    from evolab.world.physics2d.motion import MotionPlan
+
+    if not isinstance(motion, dict):
+        return None
+    num = functools.partial(plain_number, data)
+
+    def field(model: type[BaseModel], key: str) -> float | None:
+        return num(motion.get(key, spec_for(model, key).default))  # type: ignore[union-attr]
+
+    try:
+        if motion.get("kind") == "path":
+            pts = [(num(q[0]), num(q[1])) for q in motion.get("points") or [] if isinstance(q, (list, tuple))
+                   and len(q) == 2]
+            vals = [field(m.PathMotion, k) for k in ("speed", "accel", "start", "spin")]
+            mode = motion.get("mode", "once")
+            if len(pts) < 2 or any(x is None for q in pts for x in q) or any(v is None for v in vals):
+                return None
+            return MotionPlan.path((0.0, 0.0), 0.0, pts, *vals[:3], mode, vals[3])  # type: ignore[arg-type]
+        if motion.get("kind") == "wave":
+            amp = motion.get("amplitude", spec_for(m.WaveMotion, "amplitude").default)  # type: ignore[union-attr]
+            a = (num(amp[0]), num(amp[1])) if isinstance(amp, (list, tuple)) and len(amp) == 2 else (None, None)
+            vals = [field(m.WaveMotion, k) for k in ("period", "phase", "spin")]
+            if None in a or any(v is None for v in vals):
+                return None
+            return MotionPlan.wave((0.0, 0.0), 0.0, a, *vals)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def path_info_text(data: Any, motion: Any) -> str | None:
+    """길 길이와 한 바퀴 시간(되풀이하지 않으면 길이만). 흔들기는 양 끝 거리와 주기."""
+    from evolab.world.physics2d.motion import path_length, period_of
+
+    plan = motion_plan_of(data, motion)
+    if plan is None:
+        return None
+    period = period_of(plan)
+    if period is None:
+        return S.EDP_PATH_LENGTH.format(length=path_length(plan))
+    return S.EDP_PATH_INFO.format(length=path_length(plan), period=period)
+
+
+def info_text(data: Any, model: type[BaseModel], path: JsonPath) -> str | None:
+    """폼 경로 path의 모델 model에 붙일 속성 글(없으면 None)."""
+    try:
+        item = get_path(data, path)
+    except (KeyError, IndexError, TypeError):
+        return None
+    if model is m.Jump:
+        return jump_height_text(data, item)
+    if model is m.Wing:
+        try:
+            body = get_path(data, path[:2])
+        except (KeyError, IndexError, TypeError):
+            return None
+        return wing_area_text(data, body, item)
+    if model in (m.PathMotion, m.WaveMotion):
+        return path_info_text(data, item)
+    return None
 
 
 class ModelGroup(FieldWidget):
@@ -2261,7 +2423,11 @@ class ModelGroup(FieldWidget):
 
 
 class UnionGroup(FieldWidget):
-    """종류를 고르는 묶음 하나(영역의 모양)."""
+    """종류를 고르는 묶음 하나(영역의 모양, v2 물체의 움직임). 선택 칸이면 상자에 체크박스(켜면 첫 종류로 만든다).
+
+    물체의 「움직임」(Body.motion) 아래에는 「캔버스에서 길 그리기」 단추가 있다: 캔버스의 길 그리기 도구를 이 물체로
+    켠다(doc.tool_request). 세계 물체에만 보인다.
+    """
 
     spans = True
 
@@ -2270,22 +2436,57 @@ class UnionGroup(FieldWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.box = QGroupBox(field_name(spec.model, spec.key))
+        self.box.setToolTip(self._tip)
         lay.addWidget(self.box)
         inner = QVBoxLayout(self.box)
         inner.setContentsMargins(6, 4, 6, 4)
         value = self.value()
         model = model_for(spec.info, value)
         self.rows: FormRows | None = None
+        self.draw_button: QPushButton | None = None
+        if spec.info.optional:
+            self.box.setCheckable(True)
+            self.box.setChecked(value is not None)
+            self.box.clicked.connect(self._on_toggle)
         if model is not None:
             self.rows = FormRows(ctx, self.path, model, kind_info=spec.info)
             inner.addWidget(self.rows)
-        else:
+        elif value is not None or not spec.info.optional:
             kf = UnionKindField(ctx, (*self.path, "kind"), spec.info)
             inner.addWidget(kf)
             self._kind_only = kf
+        owner = self.doc.get(self.path[:-1])
+        if (spec.model is m.Body and spec.key == "motion" and isinstance(owner, dict)
+                and owner.get("owner", "agent") == "world"):
+            # 상자 밖에 둔다: 체크할 수 있는 상자가 꺼져 있으면 안쪽 위젯도 꺼진다.
+            self.draw_button = QPushButton(S.EDP_PATH_DRAW)
+            self.draw_button.setToolTip(S.EDC_HINT_PATH)
+            self.draw_button.clicked.connect(self._on_draw)
+            lay.addWidget(self.draw_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.editor = None
 
+    def _on_toggle(self, checked: bool) -> None:
+        assert self.spec is not None
+        if not checked:
+            self.write(None, merge=False)
+            return
+        if self.spec.model is m.Body and self.spec.key == "motion":
+            new: dict[str, Any] = {**NEW_MOTION, "points": [list(p) for p in NEW_PATH_POINTS]}
+        else:
+            kind, model = next(iter(kinds_of(self.spec.info.models).items()))
+            new = new_item(model, self.doc.data, kind=kind)
+        self.write(new, merge=False)
+
+    def _on_draw(self) -> None:
+        owner = self.doc.get(self.path[:-1])
+        if isinstance(owner, dict) and isinstance(owner.get("id"), str):
+            self.doc.tool_request.emit("path", ("bodies", owner["id"]))
+
     def refresh(self) -> None:
+        if self.spec is not None and self.spec.info.optional:
+            self.box.blockSignals(True)
+            self.box.setChecked(self.value() is not None)
+            self.box.blockSignals(False)
         if self.rows is not None:
             self.rows.refresh()
 
@@ -2563,7 +2764,7 @@ class ModelForm(QWidget):
     def apply_issues(self, issues: list[Issue] | None = None) -> None:
         if self.path is None:
             return
-        rel = issues_at(self.doc.issues if issues is None else issues, self.path)
+        rel = issues_at(problems(self.doc.issues if issues is None else issues), self.path)
         for leaf in self.leaves():
             leaf.set_issues(rel)
 

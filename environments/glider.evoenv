@@ -1,0 +1,281 @@
+{
+  "version": 2,
+  "name": "글라이더",
+  "description": "높은 곳에서 던진 글라이더가 최대한 멀리 난다. 날개 모양과 무게 중심(추 위치)이 몸 수치로 진화하고 뇌는 없다. 몸 수치 범위는 부품 상자의 크기라서 그보다 큰 날개나 긴 꼬리는 고를 수 없다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "wind": [
+      "=r.wind",
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 120.0,
+    "bounds": [
+      -30.0,
+      -5.0,
+      1200.0,
+      120.0
+    ],
+    "contact_debounce": 0.1
+  },
+  "params": [
+    {
+      "id": "wing_x",
+      "label": "날개 앞전 위치",
+      "value": 0.3,
+      "evolve": true,
+      "min": -0.6,
+      "max": 1.0
+    },
+    {
+      "id": "chord",
+      "label": "날개 시위",
+      "value": 0.8,
+      "evolve": true,
+      "min": 0.3,
+      "max": 2.4
+    },
+    {
+      "id": "wing_i",
+      "label": "날개 붙임각",
+      "value": 0.06,
+      "evolve": true,
+      "min": -0.15,
+      "max": 0.3
+    },
+    {
+      "id": "camber",
+      "label": "날개 휨",
+      "value": 0.03,
+      "evolve": true,
+      "min": 0.0,
+      "max": 0.08
+    },
+    {
+      "id": "tail_x",
+      "label": "꼬리날개 앞전 위치",
+      "value": -1.3,
+      "evolve": true,
+      "min": -3.4,
+      "max": -0.6
+    },
+    {
+      "id": "tail_c",
+      "label": "꼬리날개 시위",
+      "value": 0.35,
+      "evolve": true,
+      "min": 0.1,
+      "max": 1.2
+    },
+    {
+      "id": "tail_i",
+      "label": "꼬리날개 붙임각",
+      "value": -0.03,
+      "evolve": true,
+      "min": -0.25,
+      "max": 0.15
+    },
+    {
+      "id": "ballast",
+      "label": "추 위치(무게 중심)",
+      "value": 0.5,
+      "evolve": true,
+      "min": -1.0,
+      "max": 1.2
+    }
+  ],
+  "randomize": [
+    {
+      "id": "v0",
+      "label": "던지는 속도",
+      "dist": "uniform",
+      "low": 9.0,
+      "high": 11.0
+    },
+    {
+      "id": "a0",
+      "label": "던지는 각도",
+      "dist": "uniform",
+      "low": -0.08,
+      "high": 0.08
+    },
+    {
+      "id": "wind",
+      "label": "바람(-는 맞바람)",
+      "dist": "uniform",
+      "low": -2.0,
+      "high": 1.0
+    }
+  ],
+  "agent": {
+    "spawn": {
+      "x": 0.0,
+      "y": 20.0,
+      "angle": "=r.a0",
+      "vx": "=r.v0",
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "ground",
+      "label": "땅",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        585.0,
+        -0.5
+      ],
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 1230.0,
+          "h": 1.0
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "ground"
+      ]
+    },
+    {
+      "id": "glider",
+      "label": "글라이더",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "shapes": [
+        {
+          "kind": "box",
+          "w": "=1.3 - p.tail_x",
+          "h": 0.06,
+          "offset": [
+            "=(1.3 + p.tail_x) / 2",
+            0.0
+          ]
+        },
+        {
+          "kind": "wing",
+          "le": [
+            "=p.wing_x",
+            0.06
+          ],
+          "chord": "=p.chord",
+          "angle": "=p.wing_i",
+          "thick": 0.04,
+          "camber": "=p.camber"
+        },
+        {
+          "kind": "wing",
+          "le": [
+            "=p.tail_x",
+            0.06
+          ],
+          "chord": "=p.tail_c",
+          "angle": "=p.tail_i",
+          "thick": 0.04,
+          "camber": 0.0
+        },
+        {
+          "kind": "circle",
+          "r": 0.07,
+          "offset": [
+            "=p.ballast",
+            0.0
+          ],
+          "density": 120.0
+        }
+      ],
+      "material": {
+        "density": 8.0,
+        "friction": 0.6,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "glider"
+      ]
+    }
+  ],
+  "actuators": [
+    {
+      "kind": "aero",
+      "id": "air",
+      "label": "공기역학",
+      "body": "glider",
+      "density": 1.2,
+      "span": 1.0,
+      "aspect_ratio": 6.0,
+      "stall": 0.25,
+      "friction": 0.01
+    }
+  ],
+  "events": [
+    {
+      "id": "landed",
+      "label": "땅에 닿음",
+      "when": "contact(glider, tag.ground)",
+      "hold": 0.0
+    }
+  ],
+  "termination": [
+    {
+      "event": "landed",
+      "outcome": "neutral",
+      "label": "착지"
+    },
+    {
+      "event": "out_of_bounds",
+      "outcome": "neutral",
+      "label": "이탈"
+    },
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 초과"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "id": "s_dist",
+        "label": "비행 거리",
+        "weight": 1.0,
+        "kind": "progress",
+        "body": "glider",
+        "direction": 0.0
+      }
+    ],
+    "formula": null
+  },
+  "brain": {
+    "inputs": [],
+    "hidden": [],
+    "activation": "tanh",
+    "outputs": []
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {
+    "view": [
+      -4.0,
+      -2.0,
+      6.0,
+      24.0
+    ]
+  }
+}

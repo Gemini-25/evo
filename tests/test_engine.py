@@ -305,6 +305,21 @@ def test_gui_replay_matches_worker_score_and_trajectory(batch: Any) -> None:
         assert r.observations is not None and r.observations.shape == (r.result.steps, layout.brain.n_in)
         assert [a.shape[1] for a in r.activations] == [fo for _, fo in layout.brain.shapes]
         assert len(r.agent) == r.trajectory.poses.shape[1]
+    # v2.0(설계 T21): 점프 게임(정해진 움직임 장애물 줄, 점프)과 글라이더(공기역학, 뇌 없음)도 화면 재생 = 워커
+    v2_texts = {name: (paths.builtin_env_dir() / f"{name}.evoenv").read_text(encoding="utf-8") for name in ("jump", "glider")}
+    with WorkerPool(2) as pool:
+        for name, text in v2_texts.items():
+            spec2 = compile_env(text)
+            layout2 = layout_for(spec2)
+            genomes2 = layout2.initial()[None, :] + 0.5 * np.random.default_rng(5).standard_normal((3, layout2.dim))
+            pairs2 = [(i, t) for i in range(3) for t in seeds.train_trials(1, 0, 2)]
+            res2 = pool.evaluate(name, text, layout2, genomes2, pairs2, record=[True] * len(pairs2))
+            for k, (g, trial) in enumerate(pairs2):
+                r = replay(spec2, layout2, genomes2[g], trial, trace=True)
+                assert r.result.score == res2.scores[k], (name, k)
+                assert r.trajectory.poses.tobytes() == res2.trajectories[k].poses.tobytes(), (name, k)
+                assert r.trajectory.outputs.tobytes() == res2.trajectories[k].outputs.tobytes(), (name, k)
+                assert len(r.agent) == r.trajectory.poses.shape[1]
 
 
 def test_unfinished_generation_is_never_checkpointed(tmp_path: Path) -> None:

@@ -36,6 +36,7 @@ GROUP_LABELS = {
     "terrain": S.EDC_GROUP_TERRAIN,
     "joints": S.EDC_GROUP_JOINTS,
     "actuators": S.EDC_GROUP_ACTUATORS,
+    "motion": S.EDC_GROUP_MOTION,
     "sensors": S.EDC_GROUP_SENSORS,
     "regions": S.EDC_GROUP_REGIONS,
 }
@@ -44,6 +45,7 @@ _INSTANT_HINTS = {
     "hills_auto": S.EDC_HINT_HILLS_AUTO,
     "track_auto": S.EDC_HINT_TRACK_AUTO,
     "sensor_time": S.EDC_HINT_SENSOR_TIME,
+    "obstacles": S.EDC_HINT_OBSTACLES,
 }
 ICON_SIZE = 20
 
@@ -185,6 +187,43 @@ def _draw_icon(p: QPainter, tool_id: str, fg: QColor) -> None:
         p.drawEllipse(QPointF(8, 12), 4, 4)
         p.drawLine(QPointF(8, 12), QPointF(17, 4))
         p.drawPolyline(poly((13, 4), (17, 4), (17, 8)))
+    elif t == "path":  # 물체 하나와 그것이 지날 점선 길
+        use(fg, 1.2, QColor("#4c566a"))
+        p.drawRect(QRectF(2, 12, 5, 5))
+        dash = QPen(_YELLOW, 1.4)
+        dash.setStyle(Qt.PenStyle.DashLine)
+        dash.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(dash)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolyline(poly((7, 14), (11, 7), (17, 5)))
+        use(_YELLOW, 1.4)
+        p.drawPolyline(poly((14, 3.5), (17, 5), (15, 8)))
+    elif t == "obstacles":  # 땅 위 높이가 다른 장애물들과 다가오는 방향
+        use(fg, 1.0, QColor("#4c566a"))
+        p.drawRect(QRectF(7, 11, 3, 5))
+        p.drawRect(QRectF(13, 8, 3, 8))
+        p.drawRect(QRectF(11, 3, 4, 2.5))
+        use(fg, 1.4)
+        p.drawLine(QPointF(2, 16.5), QPointF(18, 16.5))
+        use(_YELLOW, 1.4)
+        p.drawLine(QPointF(2, 7), QPointF(7, 7))
+        p.drawPolyline(poly((4, 5), (2, 7), (4, 9)))
+    elif t == "jump":  # 물체와 위쪽 화살표
+        use(fg, 1.2, QColor("#4c566a"))
+        p.drawRect(QRectF(6, 11, 8, 6))
+        use(_FLAME, 1.8)
+        p.drawLine(QPointF(10, 9), QPointF(10, 2.5))
+        p.drawPolyline(poly((7, 5.5), (10, 2.5), (13, 5.5)))
+    elif t == "wing":  # 날개 단면(앞전이 오른쪽)
+        use(fg, 1.2, QColor("#4c566a"))
+        p.drawPolygon(poly((18, 10), (14, 7.5), (8, 7.8), (2, 10.5), (8, 11), (14, 11.2)))
+        use(_ACCENT, 1.6, _ACCENT)
+        p.drawEllipse(QPointF(17.5, 10), 1.2, 1.2)
+    elif t == "aero":  # 바람 줄기
+        use(_ACCENT, 1.4)
+        for y in (5.0, 10.0, 15.0):
+            path = QPolygonF([QPointF(2 + k, y + 1.6 * math.sin(k / 16 * 2 * math.pi)) for k in range(0, 17, 2)])
+            p.drawPolyline(path)
 
 
 def tool_icon(tool_id: str, fg: QColor | None = None) -> QIcon:

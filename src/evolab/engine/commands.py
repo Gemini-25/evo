@@ -335,16 +335,49 @@ def judge_command(args: Any) -> int:
         warn(str(exc))
         return 3
     success = sum(1 for o in res.outcomes if o == "success")
-    labels = {t.event: (t.label or t.event) for t in spec.terminations}
-    counts: dict[str, int] = {}
-    for e in res.end_events:
-        counts[labels.get(e, e)] = counts.get(labels.get(e, e), 0) + 1
-    say(S.JUDGE_RESULT.format(
-        gen=gen, n=len(trials), success=success, rate=100.0 * success / len(trials),
-        mean=float(res.scores.mean()), ends=", ".join(f"{k} {v}" for k, v in counts.items()),
-    ))
-    store.append_event("judge", gen, seeds=len(trials), success=success, mean_score=float(res.scores.mean()))
+    ends = ends_text(spec, res.end_events)
+    mean = float(res.scores.mean())
+    if has_success(spec):
+        say(S.JUDGE_RESULT.format(gen=gen, n=len(trials), success=success, rate=100.0 * success / len(trials),
+                                  mean=mean, ends=ends))
+    else:
+        # 성공 판정이 없는 환경(글라이더): 성공률 대신 평균 점수와 진행 거리 블록(v2.0 설계 4.10, D21)
+        say(S.JUDGE_RESULT_NO_SUCCESS.format(gen=gen, n=len(trials), mean=mean, ends=ends))
+        for line in progress_lines(spec, res.blocks):
+            say(line)
+    store.append_event("judge", gen, seeds=len(trials), success=success, mean_score=mean)
     return 0
+
+
+def ends_text(spec: Any, end_events: list[str]) -> str:
+    """종료 원인 글 「이름 수, 이름 수」(처음 나온 순서). 조립 실패 쌍(v2.0 설계 4.9)의 종료 사건은 빈 글이라
+    RT_BUILD_FAILED_END로 쓴다(timeout이 늘 종료 목록에 있어 다른 쌍은 빈 글이 없다)."""
+    labels = {"": S.RT_BUILD_FAILED_END} | {t.event: (t.label or t.event) for t in spec.terminations}
+    counts: dict[str, int] = {}
+    for e in end_events:
+        counts[labels.get(e, e)] = counts.get(labels.get(e, e), 0) + 1
+    return ", ".join(f"{k} {v}" for k, v in counts.items())
+
+
+def has_success(spec: Any) -> bool:
+    """종료 목록에 결과가 success인 줄이 있는가. 없으면(글라이더) 성공률 자리는 「—」(v2.0 설계 D21)."""
+    return any(t.outcome == "success" for t in spec.terminations)
+
+
+def progress_lines(spec: Any, blocks: np.ndarray) -> list[str]:
+    """진행 거리 블록마다 판정 시드들의 중앙값·하위 10% 한 줄(CLI_JUDGE_PROGRESS). blocks: (쌍 수, 블록 수) 가중치 전 값."""
+    out: list[str] = []
+    values = np.asarray(blocks, dtype=np.float64).reshape(len(blocks), -1)
+    for k, b in enumerate(spec.file.scoring.blocks):
+        if b.kind != "progress" or k >= values.shape[1]:
+            continue
+        col = values[:, k]
+        col = col[np.isfinite(col)]
+        if not col.size:
+            continue
+        out.append(S.CLI_JUDGE_PROGRESS.format(block=b.label or b.id, median=float(np.median(col)),
+                                               p10=float(np.percentile(col, 10))))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +468,45 @@ def bench_command(args: Any) -> int:
             say(S.BENCH_POOL.format(workers=w, sec=med, sps=steps_g / times[-1]))
     worst = pop * trials_n * math.ceil(spec.file.world.max_time / spec.file.world.dt)
     say(S.BENCH_WORST.format(steps=worst, sec=worst / (steps / el) / max(1, default_workers()), workers=default_workers()))
+    parts = v2_parts(spec, layout, genomes, pairs)
+    if parts is not None:
+        movers, edges, clamped = parts
+        say(S.BENCH_V2_PARTS.format(movers=movers, edges=edges, clamped=clamped))
     return 0
+
+
+def v2_parts(spec: Any, layout: Any, genomes: np.ndarray, pairs: list[tuple[int, Any]]) -> tuple[int, int, int] | None:
+    """bench의 v2 부품 줄(설계 D48): (정해진 움직임 물체 수, 공기역학 변 수, 한 스텝 상한이 걸린 스텝 수의 합).
+
+    물체·변 수는 처음 몸으로 센다. 둘 다 없는 환경(v1 환경)이면 None(줄을 쓰지 않는다). 상한 발동은 같은 쌍들을 화면
+    재생과 같은 길(Episode + 순전파, engine.replay와 같은 계산)로 다시 돌려 센다(조립할 수 없는 몸은 건너뜀). 공기역학이
+    없으면 늘 0이라 돌리지 않는다. 시간 측정이 끝난 뒤에 부른다."""
+    from evolab.policy.brain import unpack
+    from evolab.world.physics2d.episode import Episode, EpisodeBuildError
+
+    if not pairs:
+        return None
+    body = layout.body_values(genomes) if layout.n_body else None
+    ep = Episode(spec, None, pairs[0][1])
+    movers = sum(1 for g in ep.geometry().bodies if g.motion is not None)
+    edges = ep.aero_edge_count
+    if not movers and not edges:
+        return None
+    clamped = 0
+    if edges:
+        obs = np.zeros((1, layout.brain.n_in), dtype=np.float64)
+        for i, trial in pairs:
+            g = np.ascontiguousarray(genomes[i:i + 1], dtype=np.float64)
+            brain = unpack(layout.brain, layout.brain_params(g))
+            try:
+                ep = Episode(spec, body[i] if body is not None else None, trial)
+            except EpisodeBuildError:
+                continue
+            while not ep.done:
+                obs[0] = ep.observe()
+                ep.step(layout.to_actions(brain.forward(obs))[0])
+            clamped += ep.aero_clamped
+    return movers, edges, clamped
 
 
 # ---------------------------------------------------------------------------

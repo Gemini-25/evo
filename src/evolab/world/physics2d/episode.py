@@ -4,6 +4,11 @@
 관절의 누적 충격량과 접촉 캐시 때문에 결정성을 깬다), 난수는 시험 시드에서만 뽑는다.
 
 학습 워커, 직접 조종, 재생이 모두 이 클래스를 쓴다.
+
+v2.0 부품(설계 4.0~4.6)은 모두 "그 부품이 파일에 있을 때만" 지나가는 길이다: 정해진 움직임 물체(_kinematic), 점프
+추진기(_jumps), 공기역학(_aero)이 비어 있으면 v1과 같은 계산을 같은 순서로 한다(모양별 밀도가 없으면 모든 조각에
+물체 재질 밀도). 스텝 순서: 구동기(점프 → 추진기·모터·차량) → 힘(추진기·바람 항력) → 공기역학(한 스텝 상한) →
+정해진 움직임 물체에 다음 자세로 가는 속도 → space.step.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from evolab.spec import model as m
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvSpec, finite
 from evolab.world.physics2d import geometry as geo
+from evolab.world.physics2d.motion import MotionPlan, pose_at
 
 AGENT_GROUP = 1
 OBS_CLIP = 5.0
@@ -38,6 +44,29 @@ MAX_STEPS = 1e9
 SHUFFLE_ABOVE = 1000
 """정적 물체의 모양이 이보다 많으면 섞어서 넣는다(기본 예제는 이보다 적어 결과가 바뀌지 않는다)."""
 SHUFFLE_SEED = 0x5EED
+
+# 공기역학 모델 상수(설계 4.5). 형식에 넣지 않은 런타임 상수라 바꾸면 결과가 바뀐다: 바꿀 때는 형식 번호를 올리고
+# 옛 형식 파일은 옛 상수로 계산해야 한다(설계 11.1 R4). tests/test_aero.py가 계수를 지킨다.
+AERO_STALL_WIDTH = 0.035
+"""실속 시그모이드의 폭(rad): σ = 1 / (1 + exp(-(받음각 - stall) / 폭))."""
+AERO_CP_ATTACHED = 0.25
+"""붙은 흐름의 압력 중심(앞쪽 끝에서 변 길이 비율). 완전 실속이면 여기에 AERO_CP_STALL_SHIFT를 더한다."""
+AERO_CP_STALL_SHIFT = 0.25
+AERO_CD90_BASE = 1.11
+AERO_CD90_PER_AR = 0.018
+AERO_CD90_AR_CAP = 50.0
+AERO_CD90_2D = 1.98
+"""가로세로비 0(끝없이 긴 날개)의 평판 수직 힘 계수."""
+AERO_INDUCED_EFF = 0.9
+"""유도 항력 CL² / (e·π·AR)의 효율 e."""
+AERO_STALL_RANGE = (0.01, 1.5)
+AERO_MAX_DENSITY = 1e3
+AERO_MAX_SPAN = 1e4
+AERO_MAX_FRICTION = 10.0
+AERO_MIN_SPEED2 = 1e-12
+"""상대 바람 속력²이 이보다 작으면 그 변에는 힘이 없다."""
+JUMP_NEVER = -(10**9)
+"""아직 뛴 적 없는 점프 추진기의 '마지막 점프 스텝'(첫 스텝부터 뛸 수 있게)."""
 
 
 @dataclass(frozen=True)
@@ -91,6 +120,9 @@ class BodyGeom:
     shapes: list[ShapeGeom]
     pose: tuple[float, float, float]
     """시작 자세(정적 물체는 늘 이 자세)."""
+    motion: MotionPlan | None = None
+    """정해진 움직임 세계 물체(v2)면 그 움직임: 시각 t의 자세 = world.physics2d.motion.pose_at(motion, t).
+    궤적(moving_bodies)에는 들어가지 않으므로 화면은 이 함수로 그린다."""
 
 
 @dataclass
@@ -272,6 +304,47 @@ class _Motor:
 
 
 @dataclass
+class _Jump:
+    """점프 추진기(v2 설계 4.3)."""
+
+    channel_index: int
+    body: pymunk.Body
+    bid: str
+    speed: float
+    """뛰는 방향 속도(m/s, 0 이상)."""
+    dx: float
+    dy: float
+    """뛰는 방향 단위벡터(세계 좌표)."""
+    selectors: tuple[str, ...]
+    """땅으로 볼 것(물체 id, tag.<태그>). 비면 공중에서도 뛴다."""
+    cooldown_steps: int
+    """마지막으로 뛴 스텝에서 이만큼 지나야 다시 뛴다: ⌈cooldown / dt - 1e-9⌉(사건 hold와 같은 정수 규칙)."""
+    ground: _ContactChannel | None = None
+    """땅 접촉 채널(앞 스텝 값, 디바운스 적용). _setup_contacts 뒤에 _connect_jumps가 잇는다."""
+    last: int = JUMP_NEVER
+
+
+@dataclass
+class _AeroPart:
+    """공기역학 부품 하나(v2 설계 4.5): 물체 좌표의 테두리 변 목록과 계수."""
+
+    body: pymunk.Body
+    bid: str
+    edges: list[tuple[float, float, float, float, float, float, float]]
+    """변마다 (바깥 법선 x, y, 변 벡터 x1 - x0, y1 - y0, 변 가운데 - 무게중심 x, y, 길이), 물체 좌표(반시계).
+    무게중심은 만든 뒤 바뀌지 않으므로 스텝마다 다시 빼지 않는다(같은 값)."""
+    qk: float
+    """½ x 공기 밀도 x 날개 폭."""
+    slope: float
+    """붙은 흐름 양력 기울기 2π / (1 + 2 / AR)(AR = 0이면 2π)."""
+    cd90: float
+    stall: float
+    friction: float
+    induced: float
+    """유도 항력 계수 1 / (e·π·AR)(AR = 0이면 0)."""
+
+
+@dataclass
 class _Checkpoints:
     id: str
     lines: list[tuple[geo.Point, geo.Point]]
@@ -343,6 +416,9 @@ class Episode:
         self._agent_ids: list[str] = []
         self._drag: list[tuple[str, float]] = []
         self._start_pos: dict[str, geo.Point] = {}
+        self._kinematic: list[tuple[pymunk.Body, MotionPlan]] = []
+        """정해진 움직임 물체(v2): 장애물 줄(생성기 순서) 다음 kinematic 세계 물체(선언 순서)."""
+        self._aero_clamped = 0
 
         self._build_generators()
         self._build_env["world"] = {**self.randoms, **self.gen_values}
@@ -361,6 +437,7 @@ class Episode:
         self._build_joints()
         self._build_actuators()
         self._setup_contacts()
+        self._connect_jumps()
         self._build_checkpoints()
         self._values: dict[str, Any] = {}
         self._build_sensors()
@@ -422,6 +499,10 @@ class Episode:
 
         self._apply_actuators()
         self._apply_forces()
+        if self._aero:
+            self._apply_aero()
+        if self._kinematic:
+            self._drive_kinematic()
         self.space.step(self.dt)
         self._cache.clear()
         self._pos_cache.clear()
@@ -503,6 +584,24 @@ class Episode:
         return list(self._out_index)
 
     @property
+    def aero_clamped(self) -> int:
+        """공기힘 한 스텝 상한이 걸린 (공기역학 부품, 스텝) 수(v2 설계 D15). 보통 값에서는 0이다(테스트, bench용)."""
+        return self._aero_clamped
+
+    @property
+    def aero_edge_count(self) -> int:
+        """공기를 받는 테두리 변의 수(모든 공기역학 부품의 합, bench용)."""
+        return sum(len(a.edges) for a in self._aero)
+
+    def jump_ready(self, channel: str) -> bool:
+        """점프 추진기 채널(구동기 id)에 다음 step()에서 출력 1을 주면 뛰는가: 땅 접촉(앞 스텝 값, 디바운스 적용)과
+        냉각 조건만 본다(직접 조종 HUD 「점프 준비됨 / 공중」). 점프 추진기 채널이 아니면 False. 읽기 전용."""
+        for jp in self._jumps:
+            if self._u_names[jp.channel_index] == channel:
+                return self._jump_allowed(jp)
+        return False
+
+    @property
     def anchor_body(self) -> str | None:
         """궤적 밀도의 기준 물체: 움직이는 에이전트 물체 중 첫째(캔버스 꼬리와 같은 moving_bodies[0] 규칙). 없으면 None."""
         return next((g.id for g in self._geoms if g.moving and g.owner == "agent"), None)
@@ -529,6 +628,7 @@ class Episode:
         tags: list[str],
         owner: str,
         per_shape_tags: list[list[str]] | None = None,
+        motion: MotionPlan | None = None,
     ) -> None:
         self.bodies[body_id] = body
         pyshapes = [s for s, _ in shapes]
@@ -551,8 +651,10 @@ class Episode:
         moving = body.body_type == pymunk.Body.DYNAMIC
         self._geoms.append(
             BodyGeom(body_id, owner, moving, sorted(set(tags)), [g for _, g in shapes],
-                     (body.position.x, body.position.y, body.angle))
+                     (body.position.x, body.position.y, body.angle), motion)
         )
+        if motion is not None:
+            self._kinematic.append((body, motion))
 
     def _build_generators(self) -> None:
         self._cp_defs: list[tuple[str, list[tuple[geo.Point, geo.Point]], bool, str | None, Any]] = []
@@ -563,7 +665,40 @@ class Episode:
                 self._build_track(g)
             elif isinstance(g, m.HillGen):
                 self._build_hills(g)
+            elif isinstance(g, m.ObstacleGen):
+                self._build_obstacles(g)
         self._body_id: dict[pymunk.Body, str] = {}
+
+    def _build_obstacles(self, g: m.ObstacleGen) -> None:
+        """장애물 줄(v2 설계 4.2): 정해진 움직임 세계 물체 하나에 장애물 사각형을 줄지어 놓는다.
+
+        시드와 모든 칸은 생성기 단계(r.*)라 같은 시험의 모든 개체가 같은 줄을 본다. 물체는 세계 원점에 서고 줄 좌표가
+        곧 물체 좌표다. 움직임은 길 [(0, 0), length x (cos d, sin d)]을 speed·accel로 한 번 가는 MotionPlan이다."""
+        from evolab.generators.obstacles import generate_obstacles
+
+        num = lambda v: self._num(v, "generator")  # noqa: E731
+        pair = lambda r: (num(r[0]), num(r[1]))  # noqa: E731
+        speed, accel = max(0.0, num(g.speed)), num(g.accel)
+        row = generate_obstacles(
+            int(num(g.seed)), count=int(g.count), x=num(g.x), y=num(g.y), gap=pair(g.gap), width=pair(g.width),
+            height=pair(g.height), air_chance=_clamp(num(g.air_chance), 0.0, 1.0), air_y=pair(g.air_y),
+            air_height=pair(g.air_height), speed=speed, accel=accel,
+        )
+        body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+        friction = _clamp(num(g.friction), 0.0, 1e3)
+        shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
+        for x0, y0, x1, y1 in row.boxes:
+            pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            poly = pymunk.Poly(body, pts)
+            poly.friction = friction
+            shapes.append((poly, ShapeGeom("poly", pts)))
+        tags = [["obstacle", "air"] if a else ["obstacle"] for a in row.air]
+        d = num(g.direction)
+        plan = MotionPlan.path((0.0, 0.0), 0.0, [(0.0, 0.0), (row.length * math.cos(d), row.length * math.sin(d))],
+                               speed, accel, 0.0, "once", 0.0)
+        self._add_body(g.id, body, shapes, ["obstacle"], "world", tags, motion=plan)
+        self.gen_values.update({f"gen.{g.id}.speed": speed, f"gen.{g.id}.accel": accel,
+                                f"gen.{g.id}.length": row.length})
 
     def _build_hills(self, g: m.HillGen) -> None:
         from evolab.generators.terrain import generate_hills
@@ -734,7 +869,10 @@ class Episode:
             for piece in pieces:
                 out.append((pymunk.Poly(body, piece), ShapeGeom("poly", piece)))
 
+        own_density: list[tuple[int, int, float]] = []
+        """모양별 밀도(v2): (첫 조각, 끝 조각, 밀도). 모양 하나가 볼록 조각 여럿이 될 수 있다."""
         for s in b.shapes:
+            first = len(out)
             if isinstance(s, m.Box):
                 w, h = self._num(s.w, stage), self._num(s.h, stage)
                 if not (0 < w <= 1e5 and 0 < h <= 1e5):
@@ -748,6 +886,8 @@ class Episode:
                 out.append((pymunk.Circle(body, r, off), ShapeGeom("circle", [off], r)))
             elif isinstance(s, m.Poly):
                 poly([self._vec(p, stage) for p in s.points])
+            elif isinstance(s, m.Wing):
+                poly(self._wing_points(s, stage))
             elif isinstance(s, m.Radial):
                 radii = [_clamp(self._num(r, stage), 0.01, 1e5) for r in s.radii]
                 pts = geo.radial_points(radii, self._num(s.angle, stage))
@@ -761,12 +901,23 @@ class Episode:
                     pairs.append((pts[-1], pts[0]))
                 for a, c in pairs:
                     out.append((pymunk.Segment(body, a, c, s.radius), ShapeGeom("segment", [a, c], s.radius)))
-        for shape, _ in out:
+            own = getattr(s, "density", None)
+            if own is not None:
+                own_density.append((first, len(out), _clamp(self._num(own, stage), 1e-6, 1e9)))
+        densities = [density] * len(out)
+        for first, last, d in own_density:
+            densities[first:last] = [d] * (last - first)
+        for shape_density, (shape, _) in zip(densities, out, strict=True):
             shape.friction = friction
             shape.elasticity = elasticity
             if body.body_type == pymunk.Body.DYNAMIC:
-                shape.density = max(density, 1e-6)
+                shape.density = max(shape_density, 1e-6)
         return out
+
+    def _wing_points(self, s: m.Wing, stage: sy.BuildStage) -> list[geo.Point]:
+        """날개 모양의 꼭짓점 넷(물체 좌표). 공기역학의 테두리 변도 이 점들이다."""
+        return geo.wing_points(self._vec(s.le, stage), self._num(s.chord, stage), self._num(s.angle, stage),
+                               self._num(s.thick, stage), self._num(s.camber, stage))
 
     def _agent_poses(self) -> dict[str, tuple[geo.Point, float]]:
         """에이전트 좌표계의 자세. place_by가 있으면 부모 관절 앵커와 rest_angle에서 계산한다."""
@@ -820,11 +971,17 @@ class Episode:
             else:
                 body.position = lp
                 body.angle = la
+            plan = None
+            if b.type == "kinematic" and b.motion is not None and b.owner == "world":
+                plan = self._motion_plan(b.motion, lp, la)
+                px, py, pa = pose_at(plan, 0.0)
+                body.position = (px, py)
+                body.angle = pa
             shapes = self._make_shapes(body, b, stage)
             if b.owner == "agent":
                 for s, _ in shapes:
                     s.filter = pymunk.ShapeFilter(group=AGENT_GROUP)
-            self._add_body(b.id, body, shapes, list(b.tags), b.owner)
+            self._add_body(b.id, body, shapes, list(b.tags), b.owner, motion=plan)
             if b.owner == "agent" and b.type == "dynamic":
                 # 강체 전체가 함께 도는 시작: 속도는 무게중심 속도이므로 무게중심 위치로 계산한다.
                 c = body.local_to_world(body.center_of_gravity)
@@ -838,6 +995,29 @@ class Episode:
                 self._drag.append((b.id, k))
             self._start_pos[b.id] = (body.position.x, body.position.y)
         self._body_id = {v: k for k, v in self.bodies.items()}
+
+    def _motion_plan(self, mo: m.PathMotion | m.WaveMotion, pos: geo.Point, angle: float) -> MotionPlan:
+        """정해진 움직임의 수식을 세계 단계(r.*, gen.*)로 계산해 숫자로 굳힌다(설계 4.1)."""
+        num = lambda v: self._num(v, "world")  # noqa: E731
+        if isinstance(mo, m.PathMotion):
+            pts = [self._vec(q, "world") for q in mo.points]
+            return MotionPlan.path(pos, angle, pts, num(mo.speed), num(mo.accel), num(mo.start), mo.mode, num(mo.spin))
+        return MotionPlan.wave(pos, angle, self._vec(mo.amplitude, "world"), num(mo.period), num(mo.phase),
+                               num(mo.spin))
+
+    def _drive_kinematic(self) -> None:
+        """정해진 움직임 물체마다 다음 스텝 시각의 자세 pose_at((스텝 + 1) x dt)에 정확히 닿는 속도·각속도를 준다.
+
+        위치는 덮어쓰지 않는다: Chipmunk가 그 속도로 위치를 적분해 다음 자세에 닿고(오차가 쌓이지 않게 지금 위치에서
+        다시 계산), 접촉하는 물체는 실제 속도를 받아 발판에 실려 가며, 모양 경계 상자가 스텝 안에서 갱신되어 레이와 접촉이
+        그 스텝의 자세와 맞다(위치 순간 이동은 위에 올라탄 물체를 남기고 레이가 한 스텝 늦다: 설계 D8)."""
+        t1 = (self.steps + 1) * self.dt
+        inv = 1.0 / self.dt
+        for body, plan in self._kinematic:
+            x, y, a = pose_at(plan, t1)
+            p = body.position
+            body.velocity = ((x - p.x) * inv, (y - p.y) * inv)
+            body.angular_velocity = (a - body.angle) * inv
 
     def _build_joints(self) -> None:
         for j in self.env.joints:
@@ -899,6 +1079,15 @@ class Episode:
                                                  (f * math.cos(d), f * math.sin(d)), a.tank,
                                                  max(0.0, self._num(a.fuel_per_s, "agent"))))
         self._thruster_channels = {t.channel_index for t in self._thrusters}
+        self._jumps: list[_Jump] = []
+        for a in self.env.actuators:
+            if isinstance(a, m.Jump):
+                d = self._num(a.dir, "agent")
+                self._jumps.append(_Jump(
+                    index[a.id], self.bodies[a.body], a.body, _clamp(self._num(a.speed, "agent"), 0.0, FIELD_LIMIT),
+                    math.cos(d), math.sin(d), tuple(a.ground),
+                    max(0, math.ceil(min(float(a.cooldown) / self.dt, MAX_STEPS) - 1e-9)),
+                ))
         self._vehicles: list[_Vehicle] = []
         for a in self.env.actuators:
             if isinstance(a, m.Vehicle):
@@ -952,6 +1141,164 @@ class Episode:
                 self._force_bodies.append((bid, self.bodies[bid]))
             self._drag_slots.append((slot_of[bid], k))
         self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
+        self._build_aero()
+
+    def _connect_jumps(self) -> None:
+        """점프 추진기의 땅 접촉 채널을 만든다. 접촉 표(_setup_contacts)가 있어야 하므로 그 뒤에 부른다."""
+        for jp in self._jumps:
+            if jp.selectors:
+                jp.ground = self._contact_channel(jp.bid, jp.selectors)
+
+    def _jump_allowed(self, jp: _Jump) -> bool:
+        """땅 접촉(앞 스텝 값, 디바운스 안이면 땅을 떠난 뒤에도: 코요테 시간)과 정수 스텝 냉각."""
+        return (jp.ground is None or jp.ground.value) and self.steps - jp.last >= jp.cooldown_steps
+
+    # ------------------------------------------------------------------
+    # 공기역학 (v2 설계 4.5)
+    # ------------------------------------------------------------------
+
+    def _build_aero(self) -> None:
+        """공기역학 부품마다 물체 좌표의 테두리 변 목록을 한 번 만든다.
+
+        surfaces가 all이면 사각형·다각형·방사형·날개 모양, wings면 날개 모양만. 모양의 원래 꼭짓점을 쓰므로 볼록 분해
+        조각의 안쪽 변(방사형의 부채꼴 변 포함)은 세지 않는다. 반시계로 맞추고 바깥 법선을 둔다. 원과 선은 받지 않는다."""
+        self._aero: list[_AeroPart] = []
+        specs = {b.id: b for b in self.env.bodies}
+        for a in self.env.actuators:
+            if not isinstance(a, m.Aero) or a.body not in specs or a.body not in self.bodies:
+                continue
+            sb = specs[a.body]
+            stage: sy.BuildStage = "agent" if sb.owner == "agent" else "world"
+            edges: list[tuple[float, float, float, float, float, float, float]] = []
+            cog = self.bodies[a.body].center_of_gravity
+            gx, gy = cog.x, cog.y
+            for sh in sb.shapes:
+                if a.surfaces == "wings" and not isinstance(sh, m.Wing):
+                    continue
+                if isinstance(sh, m.Box):
+                    pts = geo.box_points(self._num(sh.w, stage), self._num(sh.h, stage), self._vec(sh.offset, stage),
+                                         self._num(sh.angle, stage))
+                elif isinstance(sh, m.Poly):
+                    pts = [self._vec(q, stage) for q in sh.points]
+                elif isinstance(sh, m.Wing):
+                    pts = self._wing_points(sh, stage)
+                elif isinstance(sh, m.Radial):
+                    pts = geo.radial_points([_clamp(self._num(r, stage), 0.01, 1e5) for r in sh.radii],
+                                            self._num(sh.angle, stage))
+                else:
+                    continue
+                if geo.signed_area(pts) < 0:
+                    pts = pts[::-1]
+                n = len(pts)
+                for i in range(n):
+                    (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % n]
+                    ln = math.hypot(x1 - x0, y1 - y0)
+                    if ln <= 1e-9:
+                        continue
+                    # 반시계 다각형의 바깥 법선 = 변 방향을 오른쪽으로 90도
+                    edges.append(((y1 - y0) / ln, -(x1 - x0) / ln, x1 - x0, y1 - y0,
+                                  (x0 + x1) * 0.5 - gx, (y0 + y1) * 0.5 - gy, ln))
+            ar = max(0.0, self._num(a.aspect_ratio, "agent"))
+            self._aero.append(_AeroPart(
+                body=self.bodies[a.body], bid=a.body, edges=edges,
+                qk=0.5 * _clamp(self._num(a.density, "agent"), 0.0, AERO_MAX_DENSITY)
+                * _clamp(self._num(a.span, "agent"), 0.0, AERO_MAX_SPAN),
+                slope=geo.TAU / (1.0 + 2.0 / ar) if ar > 0 else geo.TAU,
+                cd90=AERO_CD90_BASE + AERO_CD90_PER_AR * min(ar, AERO_CD90_AR_CAP) if ar > 0 else AERO_CD90_2D,
+                stall=_clamp(self._num(a.stall, "agent"), *AERO_STALL_RANGE),
+                friction=_clamp(self._num(a.friction, "agent"), 0.0, AERO_MAX_FRICTION),
+                induced=1.0 / (AERO_INDUCED_EFF * math.pi * ar) if ar > 0 else 0.0,
+            ))
+
+    def _apply_aero(self) -> None:
+        """변마다 평판 힘을 모아 물체 무게중심의 힘·토크로 더한다(세계 좌표, 추진기·바람 항력에 더함).
+
+        변 가운데에서 잰 상대 바람으로 표면 마찰과 받음각·실속 정도를 정하고, 압력 중심(흐름이 먼저 닿는 끝에서 변 길이
+        0.25 + 0.25σ)을 고른 뒤, 그 점에서 다시 잰 바람으로 붙은 흐름 양력·실속 평판 수직 힘·유도 항력을 계산해 그 점에
+        건다. 힘 거는 점과 바람 재는 점이 같아야 바람이 없을 때 모든 힘이 그 점의 속도에 수직(양력)이거나 반대(항력)라
+        일을 빼앗기만 한다(가운데에서 잰 바람으로 1/4 점에 걸면 도는 물체가 스스로 빨라졌다: 설계 측정).
+
+        한 스텝 상한(설계 D15): D = Σ_힘 (|F| / |u|) x (1/m + ((r x F) / |F|)² / I)이고 D x dt > 1이면 그 물체의 공기힘·토크를
+        1 / (D x dt)배로 줄인다(한 스텝의 공기힘 충격이 힘 거는 점의 상대 속도보다 크게 속도를 바꾸지 않게)."""
+        wx, wy = self.wind
+        exp, asin, sqrt, hypot = math.exp, math.asin, math.sqrt, math.hypot
+        width = AERO_STALL_WIDTH
+        for part in self._aero:
+            body = part.body
+            _x, _y, a, vx, vy, w = self._bstate(part.bid)
+            c, s_ = math.cos(a), math.sin(a)
+            qk, slope, cd90, stall, fric, induced = part.qk, part.slope, part.cd90, part.stall, part.friction, part.induced
+            fx = fy = tq = 0.0
+            dsum = 0.0
+            inv_m = 1.0 / body.mass
+            inv_i = 1.0 / body.moment
+            for nx_, ny_, dx, dy, mx, my, ln in part.edges:
+                nx, ny = nx_ * c - ny_ * s_, nx_ * s_ + ny_ * c
+                ex, ey = dx * c - dy * s_, dx * s_ + dy * c
+                rx, ry = mx * c - my * s_, mx * s_ + my * c
+                # 1) 변 가운데에서 잰 바람: 표면 마찰, 받음각·실속 정도, 압력 중심
+                ux, uy = wx - (vx - w * ry), wy - (vy + w * rx)
+                u2 = ux * ux + uy * uy
+                if u2 < AERO_MIN_SPEED2:
+                    continue
+                speed = sqrt(u2)
+                un = ux * nx + uy * ny
+                k = qk * speed * ln * fric  # 표면 마찰(모든 변): 변을 따라 흐르는 성분 쪽으로
+                ffx, ffy = k * (ux - un * nx), k * (uy - un * ny)
+                fx += ffx
+                fy += ffy
+                tq += rx * ffy - ry * ffx
+                fm = hypot(ffx, ffy)
+                if fm > 0.0:
+                    cr = (rx * ffy - ry * ffx) / fm
+                    dsum += fm / speed * (inv_m + cr * cr * inv_i)
+                if un >= 0.0:
+                    continue  # 바람을 등진 변
+                sa = min(1.0, -un / speed)
+                sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
+                xcp = AERO_CP_ATTACHED + AERO_CP_STALL_SHIFT * sig
+                f = xcp - 0.5 if ux * ex + uy * ey >= 0.0 else 0.5 - xcp  # 흐름이 먼저 닿는 끝에서 xcp
+                px, py = rx + ex * f, ry + ey * f
+                # 2) 압력 중심에서 다시 잰 바람으로 힘을 계산해 그 점에 건다
+                ux, uy = wx - (vx - w * py), wy - (vy + w * px)
+                u2 = ux * ux + uy * uy
+                if u2 < AERO_MIN_SPEED2:
+                    continue
+                speed = sqrt(u2)
+                un = ux * nx + uy * ny
+                if un >= 0.0:
+                    continue
+                sa = min(1.0, -un / speed)
+                ca = sqrt(1.0 - sa * sa)
+                sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
+                q = qk * u2 * ln
+                cl = slope * sa * ca
+                att = (1.0 - sig) * q
+                if ca > 1e-9:
+                    lx, ly = (-nx + un * ux / u2) / ca, (-ny + un * uy / u2) / ca  # -n의 흐름에 수직인 성분 방향
+                else:
+                    lx = ly = 0.0
+                fi = att * cl * cl * induced
+                fst = sig * q * cd90 * sa / (0.56 + 0.44 * sa)
+                force_x = att * cl * lx - fst * nx + fi * ux / speed
+                force_y = att * cl * ly - fst * ny + fi * uy / speed
+                fx += force_x
+                fy += force_y
+                tq += px * force_y - py * force_x
+                fm = hypot(force_x, force_y)
+                if fm > 0.0:
+                    cr = (px * force_y - py * force_x) / fm
+                    dsum += fm / speed * (inv_m + cr * cr * inv_i)
+            if dsum * self.dt > 1.0:
+                scale = 1.0 / (dsum * self.dt)
+                fx *= scale
+                fy *= scale
+                tq *= scale
+                self._aero_clamped += 1
+            if fx or fy or tq:
+                f0 = body.force
+                body.force = (f0.x + fx, f0.y + fy)
+                body.torque = body.torque + tq
 
     def _build_checkpoints(self) -> None:
         default = self._vehicles[0].bid if self._vehicles else (self._agent_ids[0] if self._agent_ids else None)
@@ -1038,6 +1385,19 @@ class Episode:
         applied = list(u)
         for i in self._thruster_channels:
             applied[i] = 0.0
+        for jp in self._jumps:
+            # 점프(설계 4.3): 출력 0.5 이상 + 땅 접촉 + 냉각이면 뛰는 방향 속도를 speed로 맞춘다(더 빠르면 그대로).
+            # 실제 출력은 뛴 스텝만 1(에너지 블록·행동 분포가 뛴 횟수를 센다).
+            i = jp.channel_index
+            applied[i] = 0.0
+            if u[i] >= 0.5 and self._jump_allowed(jp):
+                v = jp.body.velocity
+                vd = v.x * jp.dx + v.y * jp.dy
+                if vd < jp.speed:
+                    jp.body.velocity = (v.x + (jp.speed - vd) * jp.dx, v.y + (jp.speed - vd) * jp.dy)
+                    self._cache.pop(jp.bid, None)
+                jp.last = self.steps
+                applied[i] = 1.0
         dt = self.dt
         for t in self._thrusters:
             x = u[t.channel_index]

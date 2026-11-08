@@ -39,6 +39,21 @@ def builtin_env_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "environments"
 
 
+BUILTIN_ORDER: tuple[str, ...] = ("lander", "track_car", "hill_car", "jump", "glider")
+"""내장 예제의 정해진 순서(파일 이름에서 .evoenv를 뺀 것): 착륙선, 트랙 자동차, 언덕 넘는 자동차, 점프 게임, 글라이더."""
+
+
+def builtin_envs() -> list[Path]:
+    """내장 예제 환경 파일: BUILTIN_ORDER 순서로 있는 것, 그다음 나머지 *.evoenv를 이름순으로(v2 설계 D27).
+
+    에디터 「내장 예제에서 시작하기」, 실험실 환경 목록, 반복 실행 대화 상자, 자체 점검, 첫 실행 복사가 같은 순서를 쓴다.
+    """
+    folder = builtin_env_dir()
+    files = {p.stem: p for p in folder.glob("*.evoenv") if p.is_file()}
+    ordered = [files.pop(stem) for stem in BUILTIN_ORDER if stem in files]
+    return ordered + [files[stem] for stem in sorted(files)]
+
+
 def bundle_dir(name: str) -> Path:
     """배포본에 함께 들어가는 폴더(assets, licenses). exe로 묶이면 _MEIPASS 아래, 개발 중에는 저장소 안."""
     bundle = getattr(sys, "_MEIPASS", None)
@@ -132,7 +147,7 @@ def install_examples(target: Path | None = None) -> list[Path]:
     dest = target if target is not None else user_env_dir()
     dest.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
-    for src in sorted(builtin_env_dir().glob("*.evoenv")):
+    for src in builtin_envs():
         out = dest / src.name
         if not out.exists():
             shutil.copyfile(src, out)
