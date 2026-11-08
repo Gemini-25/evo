@@ -1,7 +1,8 @@
-"""v2.0 0단계: 환경 파일 형식 2 (설계 2.1·2.2·4.1·D25, 테스트 T1~T8).
+"""v2.0 0단계: 환경 파일 형식 2 (설계 2.1·2.2·4.1·D25, 테스트 T1~T8). v2.1(0'단계)에서 형식 3(물체의 있음 칸)을 더함.
 
 - 저장(dump_env)과 해시(env_hash)는 내용을 담을 수 있는 가장 낮은 형식으로 한다. v1 기능만 쓴 파일은 v1.2 코드가 쓴
-  글·해시와 바이트까지 같다(tests/data/v1_dump, tests/data/make_v1_reference.py로 v1.2 코드에서 떠 둠).
+  글·해시와 바이트까지 같다(tests/data/v1_dump, tests/data/make_v1_reference.py로 v1.2 코드에서 떠 둠). 형식 2 파일은
+  v2.0 코드가 쓴 글·해시와 같다(tests/data/v2_dump, tests/data/make_v2_reference.py로 v2.0 코드에서 떠 둠).
 - 모든 모델 칸 = v1 칸 목록(tests/data/schema_fields_v1.json) + 형식 표(FIELD_SINCE, KIND_SINCE)에 등록한 칸.
 - 움직임은 시간만의 함수(pose_at), 기본 보기(editor.view)는 해시를 바꾸지 않는다.
 """
@@ -41,6 +42,7 @@ from evolab.world.physics2d.motion import MotionPlan, path_length, period_of, po
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "tests" / "data"
 DUMP = DATA / "v1_dump"
+DUMP_V2 = DATA / "v2_dump"
 
 
 def _v1_files() -> list[tuple[str, str, Path]]:
@@ -115,7 +117,7 @@ def test_t2_v1_dump_text_is_byte_identical(stem: str, digest: str, src: Path) ->
     for body in data["bodies"]:
         assert "motion" not in body
         assert all("density" not in sh for sh in body["shapes"])
-    # 다시 읽어도 같은 글(v1 글은 읽을 때 형식 2로 변환되지만 쓸 때는 다시 1)
+    # 다시 읽어도 같은 글(v1 글은 읽을 때 지금 형식으로 변환되지만 쓸 때는 다시 1)
     again = parse_env(text)
     assert again.version == m.CURRENT_VERSION
     assert dump_env(again) == text and env_hash(again) == digest
@@ -175,6 +177,21 @@ def _pop_shape(d: dict[str, Any]) -> None:
     d["bodies"][HULL]["shapes"].pop()
 
 
+# 있음 칸(형식 3)은 뿌리가 아닌 에이전트 물체에만 쓴다(뿌리 hull에 쓰면 검사 오류): 관절로 붙은 바퀴를 더해 켜고 지워 끈다.
+POD = {"id": "pod", "pos": [0.0, 1.2], "exists": "=p.pod_on", "shapes": [{"kind": "circle", "r": 0.3}]}
+POD_JOINT = {"id": "pod_axle", "kind": "pivot", "a": "hull", "b": "pod", "anchor_a": [0.0, -0.8]}
+
+
+def _add_pod(d: dict[str, Any]) -> None:
+    d["bodies"].append(copy.deepcopy(POD))
+    d.setdefault("joints", []).append(copy.deepcopy(POD_JOINT))
+
+
+def _remove_pod(d: dict[str, Any]) -> None:
+    d["bodies"].pop()
+    d["joints"].pop()
+
+
 PATH = {"kind": "path", "points": [[0.0, 0.0], [0.0, 3.0]], "speed": 1.0, "mode": "pingpong"}
 WAVE = {"kind": "wave", "amplitude": [0.0, 0.5], "period": 2.0}
 
@@ -200,6 +217,7 @@ CASES: dict[tuple[Any, ...], tuple[Callable[[dict[str, Any]], None], Callable[[d
                        _pop_last("generators")),
     (m.PathMotion,): (_set(("bodies", LIFT, "motion"), PATH), _set(("bodies", LIFT, "motion"), None)),
     (m.WaveMotion,): (_set(("bodies", LIFT, "motion"), WAVE), _set(("bodies", LIFT, "motion"), None)),
+    (m.Body, "exists"): (_add_pod, _remove_pod),
 }
 
 
@@ -267,7 +285,7 @@ def test_t4_turning_a_feature_back_off_restores_text_and_hash(key: tuple[Any, ..
     data = json.loads(t0)
     on(data)
     t1 = dump_env(parse_env(data))
-    assert t1 != t0 and json.loads(t1)["version"] == 2
+    assert t1 != t0 and json.loads(t1)["version"] == _registered()[key]
     data = json.loads(t1)
     off(data)
     assert dump_env(parse_env(data)) == t0
@@ -349,11 +367,11 @@ def test_t6_newer_version_is_refused_with_the_update_message() -> None:
     with pytest.raises(EnvFileError) as exc:
         parse_env(data)
     assert exc.value.issues[0].message == S.SPEC_NEWER_VERSION.format(version=m.CURRENT_VERSION + 1)
-    assert "(파일 버전 3)" in exc.value.issues[0].message
+    assert "(파일 버전 4)" in exc.value.issues[0].message
 
 
 def test_t6_older_versions_are_migrated_without_changing_the_dict() -> None:
-    assert m.CURRENT_VERSION == 2
+    assert m.CURRENT_VERSION == 3
     assert sorted(MIGRATIONS) == list(range(1, m.CURRENT_VERSION))
     original = json.loads((DUMP / "lander.json").read_text(encoding="utf-8"))
     for v, step in MIGRATIONS.items():
@@ -385,6 +403,32 @@ def test_t6_v2_features_in_a_file_labelled_version_1_are_saved_as_version_2() ->
     data["actuators"].append({"kind": "jump", "id": "jump", "body": "hull"})
     env = parse_env(data)
     assert json.loads(dump_env(env))["version"] == 2
+
+
+def _v2_files() -> list[tuple[str, str, Path]]:
+    """(이름, v2.0 코드의 env_hash, 원본 파일). tests/data/v2_dump/env_hash.txt에서."""
+    out = []
+    for line in (DUMP_V2 / "env_hash.txt").read_text(encoding="utf-8").splitlines():
+        stem, digest, rel = line.split()
+        out.append((stem, digest, ROOT / rel))
+    return out
+
+
+V2_FILES = _v2_files()
+
+
+@pytest.mark.parametrize(("stem", "digest", "src"), V2_FILES, ids=[f[0] for f in V2_FILES])
+def test_t3_v2_files_keep_the_v20_text_and_hash(stem: str, digest: str, src: Path) -> None:
+    """T3 (v2.1 추가): 형식 3 칸(exists)이 기본값인 형식 2 파일의 글·해시가 v2.0 코드가 쓴 것과 바이트까지 같다."""
+    assert {s for s, _, _ in V2_FILES} == {"jump", "glider", "all_v2_features"}
+    env = parse_env(src.read_bytes())
+    assert feature_version(env) == 2
+    text = dump_env(env)
+    assert text.encode("utf-8") == (DUMP_V2 / f"{stem}.json").read_bytes()
+    assert env_hash(env) == digest
+    assert json.loads(text)["version"] == 2 and '"exists"' not in text
+    again = parse_env(text)
+    assert dump_env(again) == text and env_hash(again) == digest
 
 
 def test_motion_error_path_hides_the_kind_tag() -> None:

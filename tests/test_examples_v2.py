@@ -18,7 +18,7 @@ from evolab.engine import seeds
 from evolab.engine.evaluate import evaluate
 from evolab.engine.pool import default_workers
 from evolab.policy.genome import layout_for
-from evolab.spec.io import load_env
+from evolab.spec.io import feature_version, load_env
 
 ENVS = paths.builtin_env_dir()
 JUMP = ENVS / "jump.evoenv"
@@ -31,7 +31,9 @@ def test_examples_compile_without_warnings() -> None:
     glider = load_env(GLIDER)
     assert jump.issues == []
     assert [(i.severity, i.message) for i in glider.issues] == [("info", S.SPEC_BRAINLESS)]
-    assert jump.file.version == glider.file.version == 2
+    # 형식 2 파일이다(읽은 모델의 version은 지금 형식으로 변환된 값이라 v2.1부터 3: 파일 글과 가장 낮은 형식으로 본다)
+    assert feature_version(jump.file) == feature_version(glider.file) == 2
+    assert json.loads(JUMP.read_bytes())["version"] == json.loads(GLIDER.read_bytes())["version"] == 2
     assert len(jump.inputs) == 11 and jump.outputs == ["jump"] and layout_for(jump).dim == 209
     assert layout_for(glider).dim == 8 and jump.file.evaluation.trials == 5 and glider.file.evaluation.trials == 3
     assert "Space" in jump.file.actuators[0].keys

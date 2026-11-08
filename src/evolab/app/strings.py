@@ -389,6 +389,7 @@ DASH_TILE_TITLES: Final = {
     "density": "궤적 밀도",
     "actions": "행동 분포",
     "body": "몸 수치 추이",
+    "structure": "몸 구조",  # v2.1
 }
 DASH_AXIS_LABEL: Final = "가로축"
 DASH_AXIS_NAMES: Final = {"generation": "세대", "evaluations": "누적 시험 횟수", "elapsed": "경과 시간(초)"}
@@ -1013,6 +1014,8 @@ EDP_FIELD_NAMES: Final = {
     "ObstacleGen.accel": "빨라지는 정도(초당)", "ObstacleGen.direction": "미는 방향(라디안)",
     # 물체의 type 칸은 「움직임 종류」(SPEC_MOTION_NOT_KINEMATIC 문구와 같게, 움직임 칸 「움직임」과 구별)
     "Body.type": "움직임 종류",
+    # v2.1 몸 구조 진화
+    "exists": "있음",
 }
 EDP_FIELD_TIPS: Final = {
     # 칸 도움말(모델 설명 앞에 붙는다). "모델.칸"이 있으면 그것이 먼저다.
@@ -1099,6 +1102,8 @@ EDP_FIELD_TIPS: Final = {
     "ObstacleGen.friction": "장애물 표면의 마찰입니다.",
     "Jump.body": "점프 추진기를 다는 에이전트 물체입니다. 이 물체가 땅에 닿아 있을 때 뜁니다.",
     "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
+    # v2.1 몸 구조 진화
+    "exists": "0.5보다 크면 이 물체를 만듭니다. 진화를 켜면 생기고 없어지는 것까지 진화합니다. 없으면 붙은 관절·구동기·센서도 없습니다.",
 }
 EDP_VALUE_NAMES: Final = {
     # 고르기 칸의 값 -> 화면 이름. "칸.값"이 있으면 그것이 먼저다.
@@ -1423,6 +1428,9 @@ DASH_TILE_HELP: Final = {
                 "추진기를 얼마나 세게, 얼마나 자주 켜는지 보입니다."),
     "body": ("진화하는 몸 수치(바퀴 크기, 다리 길이 등)의 집단 평균(선)과 가장 작은 값~가장 큰 값(띠)입니다. 띠가 좁아지면 "
              "집단이 한 몸 모양으로 모인 것입니다."),
+    # v2.1: 설계 6절의 STRUCT_TIP과 같은 글(대시보드는 「보는 재미」 타일 제목의 풍선 도움말을 이 사전에서 읽는다)
+    "structure": ("세대마다 개체들이 어떤 몸 구조(있는 부품 모음)를 가졌는지 비율로 쌓아 보여 줍니다. 아래는 보는 세대 챔피언의 "
+                  "몸입니다."),
 }
 DASH_LOADING: Final = "기록을 읽는 중… ({done}/{total}세대)"
 DASH_OLD_RUN_NOTE: Final = "v1.2보다 먼저 학습한 세대라 집단 기록이 없어 세대 대표만 보입니다."
@@ -1684,3 +1692,47 @@ SPEC_AERO_TWICE: Final = "물체 '{body}'에 공기역학이 이미 있습니다
 CMP_NO_SUCCESS_RATE: Final = "성공 판정이 없는 환경의 실행은 성공률이 없어 그리지 않았습니다."
 EDP_WING_CHORD: Final = "시위 {c:.2f}m (공기역학을 붙이면 양력이 생깁니다)"
 PLAY_SAVE_WATCH_ONLY: Final = "조종하지 않는 환경이라 입력 기록을 저장하지 않습니다."
+
+# ---------------------------------------------------------------------------
+# v2.1 몸 구조 진화: 바퀴 고르는 언덕차, 구조 뒤집기, 에디터 「구조」 탭, 「몸 구조」 타일 (0'단계: 설계 6절 v2.1 전체 목록)
+# 에디터 칸 이름·도움말 "exists"는 위 EDP_FIELD_NAMES·EDP_FIELD_TIPS에, 타일 제목 "structure"는 DASH_TILE_TITLES에,
+# 타일 풍선 도움말은 DASH_TILE_HELP["structure"]에 더했다(STRUCT_TIP은 그 글).
+# ---------------------------------------------------------------------------
+# v2.1 환경 파일 검사 (spec/compiled.py)
+SPEC_EXISTS_WORLD: Final = "'있음'은 에이전트 물체에만 쓸 수 있습니다 ('{id}')."
+SPEC_EXISTS_ROOT: Final = "몸통 '{id}'(첫 에이전트 물체)는 없앨 수 없습니다. '있음'을 비우세요."
+SPEC_EXISTS_REF: Final = "'{body}'는 진화로 없어질 수 있어 {where}에서 쓸 수 없습니다(접촉만 쓸 수 있습니다)."
+
+# v2.1 명령줄 (cli.py)
+CLI_HELP_STRUCTURE_FLIP: Final = "유전 알고리즘·담금질이 '있음' 유전자를 뒤집을 확률(구조 진화 환경의 새 실행 기본 0.05)"
+
+# v2.1 에디터 (app/editor/view.py, structure.py, tabs.py, forms.py, tools.py)
+ED_BUILTIN_WHEELS: Final = "바퀴 고르는 언덕차"
+ED_TAB_STRUCTURE: Final = "구조"
+ED_STRUCT_EMPTY: Final = "진화로 생기고 없어지는 부품이 없습니다. 물체의 '있음' 옆 진화를 켜거나 '배열로 늘리기'를 쓰세요."
+ED_STRUCT_COLUMNS: Final = ("물체", "있음", "진화", "처음 상태", "함께 사라지는 부품")
+ED_STRUCT_ON: Final = "있음"
+ED_STRUCT_OFF: Final = "없음"
+ED_STRUCT_ROOT_LOCKED: Final = "몸통은 없앨 수 없습니다."
+ED_STRUCT_SHOW_ABSENT: Final = "없는 부품도 보기"
+ED_REPLICATE: Final = "배열로 늘리기…"
+ED_REPLICATE_TITLE: Final = "배열로 늘리기"
+ED_REPLICATE_COUNT: Final = "개수"
+ED_REPLICATE_LAYOUT: Final = {"line": "직선", "circle": "원", "mirror": "좌우 거울"}
+ED_REPLICATE_EVOLVE: Final = "있음/없음도 진화"
+ED_REPLICATE_ONE_COUNT: Final = "개수를 몸 수치 하나로 묶기"
+ED_REPLICATE_DONE: Final = "'{id}'를 {n}개로 늘렸습니다."
+ED_REPLICATE_NEED_AGENT: Final = "에이전트 물체를 하나 고르세요."
+ED_PARAM_ON_LABEL: Final = "{label} 있음"
+ED_PARAM_COUNT_LABEL: Final = "{label} 개수"
+
+# v2.1 실험실·대시보드 (app/lab/structure_tile.py, view.py)
+STRUCT_TIP: Final = DASH_TILE_HELP["structure"]
+STRUCT_EMPTY: Final = "이 환경에는 진화로 생기고 없어지는 부품이 없습니다. 에디터에서 부품의 '있음' 진화를 켜 보세요."
+STRUCT_OTHER: Final = "기타"
+STRUCT_COUNT: Final = "{name} {n}개"
+STRUCT_COUNT_WHICH: Final = "{name} {n}개: {which}"
+STRUCT_NONE: Final = "없음"
+STRUCT_CHAMPION: Final = "{gen}세대 챔피언의 몸"
+INSPECT_ABSENT: Final = "(없음)"
+LAB_GA_NO_STRUCTURE: Final = "이 실행은 구조 뒤집기가 꺼져 있어 유전 알고리즘·담금질이 몸 구조를 거의 바꾸지 못합니다."

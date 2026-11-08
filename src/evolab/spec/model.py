@@ -16,8 +16,9 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 """환경 파일 형식 번호. 1: v1.x. 2: v2.0(정해진 움직임 물체, 장애물 줄, 점프 추진기, 공기역학, 날개 모양, 모양별 밀도).
+3: v2.1(몸 구조 진화: 물체의 있음 칸 exists).
 
 칸·종류·값마다 생긴 형식을 spec/io.py의 FIELD_SINCE·KIND_SINCE·VALUE_SINCE에 적고, 저장과 해시는 그 내용을 담을 수
 있는 가장 낮은 형식으로 한다(v1 기능만 쓴 파일은 v1.x가 쓴 글과 글자까지 같다). 새 칸은 반드시 다음 형식 번호로
@@ -215,6 +216,10 @@ class Body(_Model):
     """바람에 대한 선형 항력 계수 N/(m/s)."""
     motion: Motion | None = None
     """정해진 움직임(type이 kinematic인 세계 물체만, 형식 2). 수식은 r.*과 gen.*만 쓸 수 있다."""
+    exists: Num | None = None
+    """있음(에이전트 물체만, 형식 3). 값이 0.5보다 크면 이 물체를 만들고, 비우면 늘 있다. 수식은 p.*(몸 수치)만 쓸 수 있어
+    몸 구조는 몸 유전자만의 함수다. 뿌리 물체(선언 순서 첫 에이전트 물체)에는 쓸 수 없다. 없는 물체와, 그 때문에 관절로
+    뿌리와 이어지지 않게 된 물체는 만들지 않고, 거기 붙은 관절·모터·구동기·센서도 없다(spec/structure.py)."""
 
 
 class Joint(_Model):

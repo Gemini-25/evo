@@ -1,0 +1,385 @@
+{
+  "version": 2,
+  "name": "v2.0 features",
+  "description": "",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "wind": [
+      0.0,
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 20.0,
+    "bounds": [
+      -50.0,
+      -10.0,
+      50.0,
+      50.0
+    ],
+    "contact_debounce": 0.1
+  },
+  "params": [
+    {
+      "id": "wing_x",
+      "label": "",
+      "value": 0.2,
+      "evolve": true,
+      "min": -0.5,
+      "max": 0.5
+    }
+  ],
+  "randomize": [
+    {
+      "id": "oseed",
+      "label": "",
+      "dist": "int",
+      "low": 0.0,
+      "high": 1000000.0,
+      "mean": null,
+      "std": null,
+      "values": null
+    }
+  ],
+  "generators": [
+    {
+      "kind": "obstacles",
+      "id": "obs",
+      "label": "",
+      "seed": "=r.oseed",
+      "count": 12,
+      "x": 20.0,
+      "y": 0.0,
+      "gap": [
+        1.4,
+        3.0
+      ],
+      "width": [
+        0.6,
+        1.4
+      ],
+      "height": [
+        0.5,
+        1.2
+      ],
+      "air_chance": 0.25,
+      "air_y": [
+        1.3,
+        1.6
+      ],
+      "air_height": [
+        0.5,
+        0.8
+      ],
+      "speed": 6.0,
+      "accel": 0.15,
+      "direction": 3.141592653589793,
+      "friction": 0.5
+    }
+  ],
+  "agent": {
+    "spawn": {
+      "x": 0.0,
+      "y": 0.0,
+      "angle": 0.0,
+      "vx": 0.0,
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "ground",
+      "label": "",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 60.0,
+          "h": 1.0,
+          "offset": [
+            0.0,
+            -0.5
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "ground"
+      ],
+      "drag": 0.0,
+      "motion": null
+    },
+    {
+      "id": "lift",
+      "label": "",
+      "owner": "world",
+      "type": "kinematic",
+      "pos": [
+        5.0,
+        1.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 2.0,
+          "h": 0.2,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": {
+        "kind": "path",
+        "points": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            3.0
+          ]
+        ],
+        "speed": 1.0,
+        "accel": 0.0,
+        "start": 0.0,
+        "mode": "pingpong",
+        "spin": 0.0
+      }
+    },
+    {
+      "id": "bob",
+      "label": "",
+      "owner": "world",
+      "type": "kinematic",
+      "pos": [
+        -5.0,
+        2.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": 0.4,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": {
+        "kind": "wave",
+        "amplitude": [
+          0.0,
+          0.5
+        ],
+        "period": 2.0,
+        "phase": 0.25,
+        "spin": 0.0
+      }
+    },
+    {
+      "id": "hull",
+      "label": "",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        2.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 1.0,
+          "h": 1.0,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": 30.0
+        },
+        {
+          "kind": "circle",
+          "r": 0.3,
+          "offset": [
+            0.0,
+            0.6
+          ],
+          "density": "=2 * 60"
+        },
+        {
+          "kind": "poly",
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0
+            ]
+          ],
+          "density": 0.5
+        },
+        {
+          "kind": "radial",
+          "radii": [
+            0.5,
+            0.6,
+            0.7
+          ],
+          "angle": 0.0,
+          "density": 2.5
+        },
+        {
+          "kind": "wing",
+          "le": [
+            "=p.wing_x",
+            0.1
+          ],
+          "chord": 1.2,
+          "angle": 0.0,
+          "thick": 0.04,
+          "camber": 0.03,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": null
+    }
+  ],
+  "joints": [],
+  "actuators": [
+    {
+      "kind": "thruster",
+      "id": "main",
+      "label": "",
+      "body": "hull",
+      "at": [
+        0.0,
+        0.0
+      ],
+      "dir": 1.5707963267948966,
+      "max_force": 100.0,
+      "tank": null,
+      "fuel_per_s": 0.0,
+      "keys": [
+        "Up"
+      ]
+    },
+    {
+      "kind": "jump",
+      "id": "jump",
+      "label": "",
+      "body": "hull",
+      "speed": 6.0,
+      "dir": 1.5707963267948966,
+      "ground": [
+        "tag.ground"
+      ],
+      "cooldown": 0.25,
+      "keys": [
+        "Space"
+      ]
+    },
+    {
+      "kind": "aero",
+      "id": "air",
+      "label": "",
+      "body": "hull",
+      "density": 1.2,
+      "span": 1.0,
+      "aspect_ratio": 6.0,
+      "stall": 0.25,
+      "friction": 0.01,
+      "surfaces": "wings"
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "time_left",
+      "id": "tl",
+      "label": ""
+    }
+  ],
+  "regions": [],
+  "checkpoints": [],
+  "events": [],
+  "termination": [],
+  "scoring": {
+    "blocks": [],
+    "formula": null
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {
+    "view": [
+      -3.0,
+      -1.0,
+      22.0,
+      6.0
+    ]
+  }
+}

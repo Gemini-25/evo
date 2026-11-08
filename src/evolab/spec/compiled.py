@@ -152,6 +152,8 @@ def _stage_of(env: m.EnvFile, path: str) -> sy.BuildStage:
     if path.startswith("generators"):
         return "generator"
     if path.startswith("bodies["):
+        if path.split(".", 1)[1:] == ["exists"]:
+            return "structure"  # 있음 칸(v2.1): p.*만(spec/structure.present가 같은 단계로 계산한다)
         return "agent" if env.bodies[_index(path, "bodies[")].owner == "agent" else "world"
     if path.startswith("joints["):
         return sy.joint_stage(env, env.joints[_index(path, "joints[")])
@@ -569,7 +571,7 @@ class _Compiler:
 
     def _compile_formulas(self) -> dict[tuple[str, sy.BuildStage], Compiled]:
         out: dict[tuple[str, sy.BuildStage], Compiled] = {}
-        tables = {st: sy.build_symbols(self.env, st) for st in ("generator", "world", "agent")}
+        tables = {st: sy.build_symbols(self.env, st) for st in ("generator", "world", "agent", "structure")}
         for path, source in iter_formulas(self.env, ""):
             stage = _stage_of(self.env, path)
             key = (source, stage)

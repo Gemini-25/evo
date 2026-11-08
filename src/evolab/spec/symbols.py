@@ -4,7 +4,8 @@
 같은 뜻이 된다.
 
 단계:
-- build: 만들기 단계. p.<매개변수>, r.<랜덤 값>, gen.<생성기 값>, pi. 칸마다 쓸 수 있는 묶음이 다르다.
+- build: 만들기 단계. p.<매개변수>, r.<랜덤 값>, gen.<생성기 값>, pi. 칸마다 쓸 수 있는 묶음이 다르다
+  (만들기 단계 BuildStage: generator, world, agent, structure).
 - step: 매 스텝. 물체 상태(<물체>.x 등), 센서 채널, 구동기 출력, 연료, 사건, time, 질의 함수.
 - end: 종료 시. 위의 모든 것 + 점수 블록 id, success / failure / neutral.
 """
@@ -45,7 +46,8 @@ KEY_NAMES: frozenset[str] = frozenset(
        "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Apostrophe", "QuoteLeft"}
 ) - CONTROL_KEYS
 
-BuildStage = Literal["generator", "world", "agent"]
+BuildStage = Literal["generator", "world", "agent", "structure"]
+"""만들기 단계. structure(v2.1)는 물체의 있음 칸(exists)만 쓰고 이름은 p.*뿐이다(몸 구조 = 몸 유전자만의 함수)."""
 
 NUM_BUILD = Sym("num", "build")
 NUM_STEP = Sym("num", "step")
@@ -292,7 +294,10 @@ def build_symbols(env: m.EnvFile, stage: BuildStage) -> dict[str, Sym]:
     generator: r.* (생성기는 모든 개체가 같은 세계를 쓰도록 p.*를 못 쓴다)
     world: r.*, gen.* (세계 설정, 세계 물체, 영역)
     agent: p.*, r.*, gen.* (에이전트 물체, 관절, 구동기, 센서, 시작 위치)
+    structure: p.* (물체의 있음 칸, v2.1. 구조가 시험·세대와 무관해 화면·에디터가 시뮬레이션 없이 계산한다)
     """
+    if stage == "structure":
+        return {f"p.{p.id}": NUM_BUILD for p in env.params}
     out: dict[str, Sym] = {f"r.{v.id}": NUM_BUILD for v in env.randomize}
     if stage in ("world", "agent"):
         for g in env.generators:

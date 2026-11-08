@@ -35,6 +35,7 @@ def _fields_added_only(data: dict[str, Any]) -> dict[str, Any]:
 # MIGRATIONS[n]은 version n 파일을 version n+1로 바꾼다.
 MIGRATIONS: dict[int, Migration] = {
     1: _fields_added_only,  # 1 -> 2 (v2.0): 정해진 움직임, 장애물 줄, 점프, 공기역학, 날개 모양, 모양별 밀도
+    2: _fields_added_only,  # 2 -> 3 (v2.1): 물체의 있음 칸(exists)
 }
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ MIGRATIONS: dict[int, Migration] = {
 FIELD_SINCE: dict[tuple[type[BaseModel], str], int] = {
     (m.Box, "density"): 2, (m.Circle, "density"): 2, (m.Poly, "density"): 2, (m.Radial, "density"): 2,
     (m.Body, "motion"): 2,
+    (m.Body, "exists"): 3,  # v2.1
 }
 """옛 모델에 더한 칸(모델, 파이썬 칸 이름) -> 생긴 형식. 기본값이 아니면 그 형식이 필요하고, 그보다 낮은 형식 글에서는
 지운다. 새로 더하는 칸은 반드시 다음 형식 번호로(이미 나간 형식에 더하면 그 형식 파일들의 해시가 바뀐다)."""
