@@ -247,6 +247,32 @@ def test_t37_path_tool_world_body_three_points_enter_and_one_undo(qtbot: Any) ->
     c.grab()
 
 
+def test_path_tool_double_click_on_a_body_only_picks_it(qtbot: Any) -> None:
+    """물체를 두 번 눌러 고르면 고른 채로 둔다(점 없음, 문서 그대로). 전에는 고르자마자 한 점(0.5m)짜리 길로 끝났다."""
+    doc = base_doc()
+    c = make_canvas(qtbot, doc)
+    before = json.dumps(doc.data, sort_keys=True)
+    c.set_tool("path")
+    QTest.mouseClick(c, LEFT, NO, pt(c, 5.6, 0.2))  # 실제 두 번 누르기: 누름·뗌·두 번 누름·뗌
+    QTest.mouseDClick(c, LEFT, NO, pt(c, 5.6, 0.2))
+    assert c.tool.busy() and body(doc, "block").get("type", "static") == "static"
+    assert json.dumps(doc.data, sort_keys=True) == before
+    p = pt(c, 5.6, 0.2)  # 두 번째 누름이 누름으로도 오는 순서: 같은 자리에 찍힌 점도 지운다
+    c.tool.cancel()
+    QTest.mousePress(c, LEFT, NO, p)
+    QTest.mouseRelease(c, LEFT, NO, p)
+    QTest.mousePress(c, LEFT, NO, p)
+    QTest.mouseDClick(c, LEFT, NO, p)
+    QTest.mouseRelease(c, LEFT, NO, p)
+    assert c.tool.busy() and json.dumps(doc.data, sort_keys=True) == before
+    # 고른 뒤 다른 자리를 누르고 두 번 누르면 지금처럼 끝(고른 자리 가까이 돌아와도)
+    click(c, 5.0, 3.0)
+    QTest.mouseDClick(c, LEFT, NO, pt(c, 5.6, 0.2))
+    b = body(doc, "block")
+    assert b["type"] == "kinematic" and b["motion"]["points"] == [[0.0, 0.0], [0.0, 3.0], [0.5, 0.0]]
+    assert not c.tool.busy()
+
+
 def test_path_points_are_drawn_and_draggable_with_the_select_tool(qtbot: Any) -> None:
     doc = base_doc()
     T.make_moving(doc, "block", [(5.0, 2.0), (8.0, 2.0)])
@@ -433,8 +459,9 @@ def test_t39_property_texts(qtbot: Any) -> None:
     assert jump_height_text({"world": {"gravity": [0.0, 0.0]}}, {"kind": "jump"}) is None
     assert wing_area_text(data, {"id": "g"}, {"kind": "wing", "chord": "=p.c"}) == S.EDP_WING_AREA.format(
         a=1.2, c=0.8, s=1.5)
-    assert wing_area_text(data, {"id": "other"}, {"kind": "wing", "chord": 2.0}) == S.EDP_WING_AREA.format(
-        a=2.0, c=2.0, s=1.0)  # 공기역학이 없으면 폭 1m(시위만)
+    # 공기역학이 없으면 날개가 공기힘을 받지 않는다: 면적·폭 대신 시위만(공기역학을 붙이라는 안내)
+    assert wing_area_text(data, {"id": "other"}, {"kind": "wing", "chord": 2.0}) == S.EDP_WING_CHORD.format(c=2.0)
+    assert wing_area_text(data, {"id": "other"}, {"kind": "wing", "chord": "=p.nope"}) is None
     pp = {"kind": "path", "points": [[0, 0], [0, 3]], "speed": 1.0, "mode": "pingpong"}
     assert path_info_text(data, pp) == S.EDP_PATH_INFO.format(length=3.0, period=6.0)
     assert path_info_text(data, {**pp, "mode": "loop"}) == S.EDP_PATH_INFO.format(length=6.0, period=6.0)

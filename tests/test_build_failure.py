@@ -415,6 +415,46 @@ def test_t54_nan_validation_candidate_cannot_become_champion() -> None:
         t.load_state_dict(pickle.loads(pickle.dumps(t.state_dict())))
 
 
+def trial_width_lander() -> str:
+    """선체 폭이 몸 수치와 시험 난수의 합(=p.w + r.k)인 착륙선 글. w가 작으면 시험에 따라 폭이 0 이하가 되어 조립되지 않는다
+    (실패가 몸 수치와 시험 둘 다의 함수: 설계 D22). 처음 몸 w = 1.5는 늘 조립된다."""
+    d = json.loads(LANDER_TEXT)
+    d["world"]["max_time"] = 1.0
+    d["params"].append({"id": "w", "label": "w", "value": 1.5, "evolve": True, "min": 0.05, "max": 2.0})
+    d["randomize"].append({"id": "k", "dist": "uniform", "low": -1.0, "high": 1.0})
+    d["bodies"][0]["shapes"][0]["w"] = "=p.w + r.k"
+    return json.dumps(d, ensure_ascii=False)
+
+
+def test_champion_that_fails_some_compare_courses_gets_the_mean_of_the_built_ones(tmp_path: Path) -> None:
+    """검증 시험에서는 모두 조립되어 챔피언이 된 몸이 비교 코스 몇 개에서 조립되지 않아도 비교 점수는 조립된 코스들의
+    평균이다(판정 평균과 같은 규칙). 성공률은 실패 코스를 실패로 세어 32로 나눈다."""
+    text = trial_width_lander()
+    spec = compile_env(text)
+    config = TrainConfig(method="cmaes", run_seed=4, popsize=4, trials=2, validate_every=10**6, validation_seeds=3,
+                         validation_candidates=1, checkpoint_every=0)
+    store = create_run(tmp_path / "runs", text, spec, config, 0)
+    with WorkerPool(0) as pool:
+        t = Trainer(text, config, pool, store)
+        g = gene(t.layout, {"w": 0.85})
+        assert all(builds(spec, t.layout, g, tr) for tr in seeds.validation_trials(3))
+        courses = seeds.compare_trials()
+        res = pool.evaluate(t.env_version, t.env_text, t.layout, g[None, :], [(0, tr) for tr in courses])
+        failed = np.isnan(res.scores)
+        assert 0 < int(failed.sum()) < len(courses)  # 비교 코스 일부만 조립 실패(테스트가 헛돌지 않게)
+        t.learner.best = lambda: g.copy()  # type: ignore[method-assign]
+        v = t._validate(g[None, :], np.array([0.0]))
+        assert math.isfinite(v) and t.state.champion.genome is not None
+        want = float(res.scores[~failed].mean())
+        assert t.state.compare_score == want and math.isfinite(want)
+        assert t.state.compare_success == sum(1 for o in res.outcomes if o == "success") / len(courses)
+        row = t.step()
+    assert row["compare_score"] == want
+    assert float(store.read_stats()[-1]["compare_score"]) == want
+    champ = store.load_champion(0, "champion")
+    assert float(champ["compare_score"]) == want
+
+
 class _InfiniteFirstPair:
     """학습 시험의 첫 쌍 점수만 +무한대로 바꾸는 평가기(NaN 없음)."""
 

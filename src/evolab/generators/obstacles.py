@@ -12,6 +12,11 @@ scrolled⁻¹(x)), 다음 장애물은 t_k = t_{k-1} + U(gap)(최소 0.05초)에
 결정성: 난수는 np.random.default_rng(seed) 하나에서 정해진 순서로만 뽑는다: 장애물마다 (간격 →) 폭 → 공중인가 → (공중이면
 두께 → 높이, 아니면 높이). scrolled⁻¹는 이분법 60번이다. 같은 인자는 프로세스와 상관없이 같은 줄을 낸다.
 
+미는 방향(direction = d): 줄 좌표는 방향 π(오른쪽에서 왼쪽으로, 선수는 x = 0)일 때의 세계 좌표다. 다른 방향이면
+place_boxes가 장애물마다 줄 좌표 x(선수 자리까지 남은 거리 s)를 장애물이 오는 쪽 u = (−cos d, −sin d)로 s만큼 옮긴 자리에
+똑바로 선 사각형으로 놓는다(돌리지 않음). 그래서 어느 방향이든 장애물 k는 t_k에 바닥 높이 그대로 선수 자리(x = 0)를 지난다.
+방향이 정확히 π이면 줄 좌표 그대로다(내장 점프 게임과 비트 단위로 같음: sin π = 1.2e−16만큼도 옮기지 않는다).
+
 줄이 멈추는 경우(accel < 0으로 속력이 0이 되거나, speed와 accel이 모두 0 이하): 멈추기 전에 x = 0에 닿을 수 없는
 장애물(t_k가 멈춤 시각 이상)은 만들지 않는다(그런 장애물은 영영 오지 않는다. 모두 멈춘 자리에 쌓아 두면 선수 자리에서
 멈춘 장애물 더미가 된다). 첫 장애물은 늘 x에 만든다.
@@ -119,4 +124,23 @@ def generate_obstacles(seed: int, *, count: int, x: float, y: float, gap: tuple[
     return ObstacleRow(boxes, air, xk + w + LENGTH_TAIL)
 
 
-__all__ = ["LENGTH_TAIL", "MIN_GAP", "MIN_SIZE", "ObstacleRow", "generate_obstacles", "scrolled_distance"]
+def place_boxes(row: ObstacleRow, direction: float) -> list[tuple[float, float, float, float]]:
+    """줄 물체 좌표의 장애물 사각형(x0, y0, x1, y1). 줄은 (cos d, sin d)로 밀린다(d = direction).
+
+    줄 좌표(방향 π 기준)의 장애물 (x0, y0, x1, y1)은 앞 모서리가 x0이고 선수 자리(x = 0)까지 s = x0 남았다. 방향 d이면 앞
+    모서리를 (0, y0) + s·u(u = (−cos d, −sin d): 장애물이 오는 쪽)에 두고, 폭은 오는 쪽으로 편다(왼쪽에서 오면 좌우를 뒤집음).
+    줄이 s만큼 밀리면 앞 모서리가 정확히 (0, y0)에 닿는다. 방향이 정확히 π이면 줄 좌표 그대로 돌려준다."""
+    if direction == math.pi:
+        return list(row.boxes)
+    ux, uy = -math.cos(direction), -math.sin(direction)
+    out: list[tuple[float, float, float, float]] = []
+    for x0, y0, x1, y1 in row.boxes:
+        s, w, h = x0, x1 - x0, y1 - y0
+        lx, ly = s * ux, y0 + s * uy
+        xa, xb = (lx, lx + w) if ux >= 0.0 else (lx - w, lx)
+        out.append((xa, ly, xb, ly + h))
+    return out
+
+
+__all__ = ["LENGTH_TAIL", "MIN_GAP", "MIN_SIZE", "ObstacleRow", "generate_obstacles", "place_boxes",
+           "scrolled_distance"]

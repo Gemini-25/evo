@@ -2285,15 +2285,16 @@ def jump_height_text(data: Any, jump: Any) -> str | None:
 
 
 def wing_area_text(data: Any, body: Any, wing: Any) -> str | None:
-    """날개 면적 = 시위 x 공기역학 폭(그 물체의 첫 공기역학. 없으면 폭 기본값 1m)."""
+    """날개 면적 = 시위 x 공기역학 폭(그 물체의 첫 공기역학). 그 물체에 공기역학이 없으면 날개가 공기힘을 받지 않으므로
+    면적 대신 시위만(EDP_WING_CHORD: 공기역학을 붙이라는 안내와 함께, 설계 5.1 「공기역학이 없으면 시위만」)."""
     if not isinstance(wing, dict) or not isinstance(body, dict):
         return None
     c = plain_number(data, wing.get("chord", spec_for(m.Wing, "chord").default))  # type: ignore[union-attr]
-    span: float | None = float(spec_for(m.Aero, "span").default)  # type: ignore[union-attr]
-    for a in _items(data, "actuators"):
-        if a.get("kind") == "aero" and a.get("body") == body.get("id"):
-            span = plain_number(data, a.get("span", span))
-            break
+    aero = next((a for a in _items(data, "actuators") if a.get("kind") == "aero" and a.get("body") == body.get("id")),
+                None)
+    if aero is None:
+        return None if c is None else S.EDP_WING_CHORD.format(c=c)
+    span = plain_number(data, aero.get("span", spec_for(m.Aero, "span").default))  # type: ignore[union-attr]
     if c is None or span is None:
         return None
     return S.EDP_WING_AREA.format(a=c * span, c=c, s=span)

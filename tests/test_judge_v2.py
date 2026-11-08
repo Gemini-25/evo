@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStore
-from evolab.spec.io import compile_env, load_env
+from evolab.spec.io import compile_env, env_hash, load_env
 from evolab.world.physics2d.episode import Episode
 
 ENV = paths.builtin_env_dir()
@@ -132,6 +133,30 @@ def test_t53_compare_table_shows_a_dash_for_runs_without_success(qtbot: Any, run
     assert lander_row.split(",")[-2] != ""
 
 
+def test_compare_chart_success_rate_leaves_out_runs_without_success(qtbot: Any, runs: dict[str, RunStore],
+                                                                     tmp_path: Path) -> None:
+    """성공률 그래프는 성공 판정이 없는 환경(글라이더)의 실행을 그리지 않는다(통계의 0%가 0% 선으로 보이지 않게, 표의
+    「—」와 같은 규칙). 범례는 남기고 안내를 보인다. 비교 점수 그래프는 그대로 둘 다 그린다."""
+    from evolab.app.compare.view import CompareView
+
+    base = runs["glider"].root.parent
+    view = CompareView(lambda: base, settings=QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(view)
+    view.resize(1280, 800)
+    view.show()
+    view.set_selected_runs([runs["glider"].root, runs["lander"].root])
+    qtbot.waitUntil(lambda: len(view.rows) == 2, timeout=10000)
+    view.set_y_metric("compare_success")
+    by_path = {s.entries[0].path: s for s in view.shown}
+    glider, lander = by_path[runs["glider"].root], by_path[runs["lander"].root]
+    assert len(glider.y) == 0 and np.isfinite(lander.y).any()
+    assert view.note_label.isVisible() and view.note_label.text() == S.CMP_NO_SUCCESS_RATE
+    assert glider.name in view.legend.text()
+    view.set_y_metric("compare_score")
+    by_path = {s.entries[0].path: s for s in view.shown}
+    assert np.isfinite(by_path[runs["glider"].root].y).any() and not view.note_label.isVisible()
+
+
 def test_t53_race_text_and_records_have_no_success_rate_for_the_glider(qtbot: Any, runs: dict[str, RunStore],
                                                                        tmp_path: Path) -> None:
     """경주 칸 글·결과 글과 기록 화면은 성공률을 보이지 않는다(끝 이름·점수·순위만): 「0%」가 나올 자리가 없다."""
@@ -184,6 +209,44 @@ def test_bench_prints_the_v2_parts_line(capsys: pytest.CaptureFixture[str]) -> N
     edges = Episode(load_env(GLIDER), None, seeds.display_trial()).aero_edge_count
     assert out[-1] == S.BENCH_V2_PARTS.format(movers=0, edges=edges, clamped=0)
     assert out[-2].startswith(S.BENCH_WORST.split("{")[0])
+
+
+def test_judge_progress_line_leaves_out_build_failed_pairs(tmp_path: Path,
+                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    """조립 실패가 시험에 따라 달라지는 몸(꼭짓점 = 0.1·(p.twist + r.k))의 판정: 진행 거리 줄도 평균 점수처럼 실패 쌍을
+    뺀다(실패 쌍의 블록 0m가 중앙값·하위 10%를 끌어내리지 않게). 실패 수는 끝 원인 글이 알린다."""
+    d = json.loads(GLIDER.read_text(encoding="utf-8"))
+    d["world"]["max_time"] = 2.0
+    d["randomize"].append({"id": "k", "label": "k", "dist": "uniform", "low": -1.0, "high": 1.0})
+    d["params"].append({"id": "twist", "label": "twist", "value": 0.5, "evolve": True, "min": -3.0, "max": 1.0})
+    glider = next(b for b in d["bodies"] if b["id"] == "glider")
+    glider["shapes"].append({"kind": "poly", "points": [[-0.1, -0.05], [0.1, -0.05], ["=0.1 * (p.twist + r.k)", 0.05],
+                                                        [-0.1, 0.05]]})
+    text = json.dumps(d, ensure_ascii=False)
+    spec = compile_env(text)
+    layout = layout_for(spec)
+    x = layout.initial().copy()
+    gb = layout.body[-1]
+    assert gb.id == "twist"
+    x[-1] = 2.0 * (-0.8 - gb.low) / (gb.high - gb.low) - 1.0
+    config = TrainConfig(popsize=4, trials=1)
+    store = create_run(tmp_path / "runs", text, spec, config, 0)
+    store.save_champion(1, "champion", x, score=1.0, compare_score=1.0, env_version=env_hash(spec.file)[:16], learner=0)
+    assert commands.judge_command(argparse.Namespace(run=str(store.root), seeds=12, generation=None, workers=0)) == 0
+    out = capsys.readouterr().out.strip().split("\n")
+    res = evaluate(spec, layout, x[None, :], [(0, t) for t in seeds.judge_trials(12)])
+    failed = np.isnan(res.scores)
+    assert 0 < int(failed.sum()) < 12 and not res.blocks[failed].any()  # 실패 쌍의 블록은 0m
+    dist = res.blocks[~failed, 0]
+    assert out[-1] == S.CLI_JUDGE_PROGRESS.format(block="비행 거리", median=float(np.median(dist)),
+                                                  p10=float(np.percentile(dist, 10)))
+    assert any(S.RT_BUILD_FAILED_END in line for line in out[:-1])
+    # 실패 표시가 없으면 모든 쌍(지금까지의 계산), 실패가 없으면 같은 결과
+    every = commands.progress_lines(spec, res.blocks)
+    assert every == [S.CLI_JUDGE_PROGRESS.format(block="비행 거리", median=float(np.median(res.blocks[:, 0])),
+                                                 p10=float(np.percentile(res.blocks[:, 0], 10)))]
+    none = np.zeros(len(res.scores), dtype=bool)
+    assert commands.progress_lines(spec, res.blocks, failed=none) == every
 
 
 def test_judge_mean_leaves_out_failed_pairs() -> None:

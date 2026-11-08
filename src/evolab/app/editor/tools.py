@@ -160,6 +160,8 @@ ANGLE_SNAP = math.pi / 12
 MAX_POLY_POINTS = 64
 MAX_PATH_POINTS = 256
 """움직임 길의 점 수 상한(모델 PathMotion.points와 같다)."""
+PICK_DOUBLE_PX = 6.0
+"""길 그리기: 물체를 고른 누름에서 이 화면 거리(px, 가로+세로) 안의 두 번 누르기는 고르기의 일부로 본다."""
 PATH_MOTION: dict[str, Any] = {"speed": 1.0, "mode": "pingpong"}
 """길 그리기로 만드는 움직임의 기본값(설계 5.1: 속력 1, 왕복)."""
 WAVE_MOTION: dict[str, Any] = {"period": 2.0}
@@ -910,8 +912,15 @@ def add_jump(doc: EnvDocument, body: str, angle: float = math.pi / 2) -> Ref:
 
 
 def add_aero(doc: EnvDocument, body: str) -> Ref:
-    """공기역학: 물체 테두리가 공기를 받는다(모든 칸 기본값: 공기 밀도 1.2, 폭 1m, 가로세로비 6 ...)."""
+    """공기역학: 물체 테두리가 공기를 받는다(모든 칸 기본값: 공기 밀도 1.2, 폭 1m, 가로세로비 6 ...).
+
+    그 물체에 공기역학이 이미 있으면 새로 더하지 않고 있는 것을 고른다(같은 테두리를 두 번 세어 공기힘이 겹치지 않게)."""
     _need_agent_part_body(doc, body)
+    for a in doc.items("actuators"):
+        if a.get("kind") == "aero" and a.get("body") == body and isinstance(a.get("id"), str):
+            ref = ("actuators", a["id"])
+            doc.select([ref])
+            return ref
     item = {"kind": "aero", "id": "air", "label": S.EDC_TOOL_AERO, "body": body}
     return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
 
@@ -1876,7 +1885,10 @@ def wing_outline(le: Point, chord: float, angle: float, thick: float, camber: fl
 
 class PathTool(Tool):
     """길 그리기: 세계 물체를 누른 뒤 지날 점을 차례로 누른다(격자 맞춤). 두 번 누르기나 Enter로 끝, Backspace로 마지막
-    점 지우기, Esc로 취소. 끝내면 그 물체가 정해진 움직임(길, 왕복)이 된다(make_moving)."""
+    점 지우기, Esc로 취소. 끝내면 그 물체가 정해진 움직임(길, 왕복)이 된다(make_moving).
+
+    물체를 두 번 눌러 고르면(두 번째 누름이 고른 자리 근처) 점을 더하지 않고 고른 채로 둔다: 고르는 누름 다음의 두 번
+    누르기는 「끝」이 아니다(전에는 고르자마자 0.5m짜리 길로 끝났다)."""
 
     tool_id = "path"
 
@@ -1886,6 +1898,8 @@ class PathTool(Tool):
         """(물체 id, 길이 시작하는 세계 점 = 물체의 시작 자리)"""
         self.points: list[Point] = []
         self.hover: Point | None = None
+        self._pick_screen: QPointF | None = None
+        """물체를 고른 누름의 화면 자리. 그 뒤 누름이 모두 이 근처인 동안만 있다(두 번 눌러 고르기를 알아보는 데 씀)."""
 
     def start_with(self, body_id: str) -> bool:
         """이 물체의 길을 그리기 시작한다(속성 패널의 「캔버스에서 길 그리기」). 세계 물체가 아니면 안내만."""
@@ -1921,8 +1935,11 @@ class PathTool(Tool):
                 return
             self.body = (hit.id, self._origin(b, hit.pose))
             self.points = []
+            self._pick_screen = QPointF(e.screen)
             self.canvas.update()
             return
+        if not self._near_pick(e):
+            self._pick_screen = None
         q = self.canvas.snap(e.world, e)
         prev = self.points[-1] if self.points else self.body[1]
         if math.dist(prev, q) <= 1e-9:
@@ -1938,9 +1955,18 @@ class PathTool(Tool):
             self.hover = self.canvas.snap(e.world, e)
             self.canvas.update()
 
+    def _near_pick(self, e: CanvasEvent) -> bool:
+        """이 누름이 물체를 고른 누름의 자리 근처인가(두 번 누르기 거리 안)."""
+        return self._pick_screen is not None and (e.screen - self._pick_screen).manhattanLength() <= PICK_DOUBLE_PX
+
     def double_click(self, e: CanvasEvent) -> None:
         if self.body is None:
             self.press(e)
+            return
+        if self._near_pick(e):
+            # 물체를 고른 두 번 누르기의 두 번째 누름: 그사이 같은 자리에 찍힌 점도 지우고 고른 채로 둔다
+            self.points = []
+            self.canvas.update()
             return
         self.press(e)
         if self.points:
@@ -1969,6 +1995,7 @@ class PathTool(Tool):
             self.body = None
             self.points = []
             self.hover = None
+            self._pick_screen = None
         self.canvas.update()
 
     def busy(self) -> bool:
@@ -1978,6 +2005,7 @@ class PathTool(Tool):
         self.body = None
         self.points = []
         self.hover = None
+        self._pick_screen = None
         self.canvas.update()
 
     def overlay(self, p: QPainter) -> None:

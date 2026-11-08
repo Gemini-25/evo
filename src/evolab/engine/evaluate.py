@@ -273,6 +273,19 @@ def build_failed_result(spec: EnvSpec) -> EpisodeResult:
     )
 
 
+def mean_of_built(scores: np.ndarray) -> float:
+    """조립된 쌍들의 평균 점수. 조립 실패 쌍(점수 NaN, 설계 4.9)은 빼고 평균하고, 모두 실패면 NaN.
+
+    판정 평균(commands.judge_mean)과 챔피언 비교 점수(Trainer._compare)가 함께 쓰는 규칙이다. NaN이 없으면
+    float(scores.mean())과 같은 계산이라 v1·v1.2 결과와 비트 단위로 같다.
+    """
+    s = np.asarray(scores)
+    nan = np.isnan(s)
+    if nan.any() and not nan.all():
+        return float(s[~nan].mean())
+    return float(s.mean())
+
+
 def _empty_trajectory(spec: EnvSpec, every: int) -> Trajectory:
     """조립 실패 쌍의 궤적: 프레임 0개(물체 0개, 출력 열은 구동기 채널 수), 끝난 스텝 0."""
     u = len(spec.actuator_channels)

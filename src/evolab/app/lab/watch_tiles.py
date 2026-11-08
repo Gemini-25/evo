@@ -1029,6 +1029,7 @@ class DensityTile(_WatchTile):
         self.canvas.setMinimumSize(160, 110)
         self.canvas.set_follow("fit")
         self.canvas.set_wheel_needs_ctrl(True)
+        self.canvas.set_show_movers(False)  # 여러 시각을 합친 그림: 장애물 줄을 0초 자리에 그리지 않는다
         self.canvas.setMouseTracking(True)
         self.canvas.installEventFilter(self)
         self.gradient = _GradientBar()

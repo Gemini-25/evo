@@ -422,6 +422,10 @@ class _Compiler:
         if not sy.actuator_channels(env) and sy.evolved_params(env):
             # 뇌 없는 환경(v2 설계 D20): 출력이 없고 몸 수치가 진화하면 일부러 만든 환경이라 경고 대신 안내 하나.
             self.info("brain", S.SPEC_BRAINLESS)
+            if env.brain.hidden:
+                # 은닉층이 남아 있으면 출력이 없어도 그 가중치가 유전자에 들어가 헛되이 진화한다(D20: 유전자 = 몸 수치).
+                # 배치를 바꾸면 이미 있는 실행의 유전자 길이가 달라지므로 고치지 않고 알리기만 한다.
+                self.warn("brain.hidden", S.SPEC_BRAINLESS_HIDDEN)
         else:
             if not env.sensors:
                 self.warn("sensors", S.SPEC_NO_SENSORS)
@@ -491,12 +495,16 @@ class _Compiler:
             if getattr(r.shape, "density", None) is not None:
                 self.warn(f"regions[{i}].shape.density", S.SPEC_REGION_DENSITY.format(id=r.id))
         own = {b.id: b for b in env.bodies}
+        aero_bodies: set[str] = set()
         for i, a in enumerate(env.actuators):
             where = f"actuators[{i}]"
             if isinstance(a, m.Jump):
                 if _below(a.speed, 0.0):
                     self.error(f"{where}.speed", S.SPEC_NEGATIVE.format(name="speed"))
             elif isinstance(a, m.Aero):
+                if a.body in aero_bodies:  # 같은 테두리를 두 번 센다(상한은 물체마다라 터지지는 않지만 힘이 겹침)
+                    self.warn(f"{where}.body", S.SPEC_AERO_TWICE.format(body=a.body))
+                aero_bodies.add(a.body)
                 for name in ("density", "span", "aspect_ratio", "friction"):
                     if _below(getattr(a, name), 0.0):
                         self.error(f"{where}.{name}", S.SPEC_AERO_RANGE.format(id=a.id, name=name))
@@ -512,12 +520,36 @@ class _Compiler:
             where = f"generators[{i}]"
             if _below(g.gap[0], 0.0, strict=False) or _below(g.gap[1], 0.0, strict=False):
                 self.error(f"{where}.gap", S.SPEC_OBSTACLES_GAP.format(id=g.id))
-            values = [_number(v) for v in (g.x, g.y, g.direction, env.agent.spawn.x, env.agent.spawn.y)]
-            if sy.agent_body_ids(env) and all(v is not None for v in values):
-                x, y, d, sx, sy_ = (float(v) for v in values)  # type: ignore[arg-type]
-                # 줄이 다가오는 쪽(-direction)으로 잰 첫 장애물까지의 거리. 방향 π면 x - 에이전트 시작 x.
-                if (x - sx) * -math.cos(d) + (y - sy_) * -math.sin(d) < OBSTACLES_MIN_LEAD:
+            values = [_number(v) for v in (g.x, g.y, g.direction)]
+            starts = self._agent_starts()
+            if starts and all(v is not None for v in values):
+                x, y, d = (float(v) for v in values)  # type: ignore[arg-type]
+                # 첫 장애물의 앞 모서리는 (0, y) + x·u에서 출발한다(u = (−cos d, −sin d): 줄이 오는 쪽, generators/
+                # obstacles.place_boxes). 에이전트 물체의 시작점마다 u 쪽으로 잰 거리 중 가장 짧은 것. 방향 π면 x − 시작 x.
+                ux, uy = -math.cos(d), -math.sin(d)
+                lead = min(x + (0.0 - px) * ux + (y - py) * uy for px, py in starts)
+                if lead < OBSTACLES_MIN_LEAD:
                     self.warn(f"{where}.x", S.SPEC_OBSTACLES_START.format(id=g.id))
+
+    def _agent_starts(self) -> list[tuple[float, float]]:
+        """에이전트 물체마다 숫자로 알 수 있는 세계 시작점(런타임 배치: 시작 위치 + 시작 각도로 돌린 pos). 관절로 놓는
+        물체(place_by)나 pos·시작 각도가 수식이면 시작 위치. 시작 위치가 수식이거나 에이전트 물체가 없으면 빈 목록."""
+        env = self.env
+        sp = env.agent.spawn
+        sx, sy_, sa = _number(sp.x), _number(sp.y), _number(sp.angle)
+        if sx is None or sy_ is None:
+            return []
+        out: list[tuple[float, float]] = []
+        for b in env.bodies:
+            if b.owner != "agent":
+                continue
+            bx, by = _number(b.pos[0]), _number(b.pos[1])
+            if b.place_by is not None or bx is None or by is None or sa is None:
+                out.append((sx, sy_))
+                continue
+            c, s_ = math.cos(sa), math.sin(sa)
+            out.append((sx + bx * c - by * s_, sy_ + bx * s_ + by * c))
+        return out
 
     def _check_motion(self, where: str, b: m.Body) -> None:
         mo = b.motion

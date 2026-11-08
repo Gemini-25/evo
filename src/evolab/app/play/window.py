@@ -76,6 +76,9 @@ DUST_SECONDS = 0.35
 DUST_PUFFS = 6
 VIEW_EDGE = 0.2
 """기본 보기 카메라: 따라갈 물체가 보이는 범위의 가장자리에서 이 비율(반폭·반높이 기준) 안쪽을 넘으면 따라간다."""
+VIEW_LEAD = 0.3
+"""가로로 따라가기 시작하면 따라갈 물체를 화면 가운데에서 반폭의 이 비율 자리에 둔다(0.3: 화면 폭의 65%·35%). 가는 쪽이
+더 보이게 하려는 것으로, 넘은 뒤 잠깐 카메라가 물체보다 빨리 움직여 이 자리로 옮긴다(세로는 가장자리 그대로)."""
 VIEW_SCALE = (1.0, 400.0)
 """기본 보기 카메라 배율 범위(px/m)."""
 
@@ -163,10 +166,30 @@ def uses_space(bindings: list[KeyBinding]) -> bool:
     return any(space in kb.keys for kb in bindings)
 
 
+def _follow_axis(c: float, p: float, edge: float, hold: float) -> float:
+    """카메라 한 축의 중심. 점 p가 c ± edge 안이면 c. 넘으면 넘은 거리 e만큼 옮기고, 가장자리보다 안쪽 자리(hold < edge)에
+    두려면 e가 0..D(= 2(edge − hold))인 동안 그 차이를 부드럽게 더한다(카메라 속도가 점의 1배 → 2배 → 1배). e ≥ D부터는 점이
+    c' ± hold에 머문다. p만의 연속 함수라 시각을 되돌려도 같은 화면이다. hold == edge면 넘은 만큼만(v2.0 첫 규칙)."""
+    if p > c + edge:
+        e, sign = p - (c + edge), 1.0
+    elif p < c - edge:
+        e, sign = (c - edge) - p, -1.0
+    else:
+        return c
+    extra = edge - hold
+    if extra <= 0.0:
+        return p - sign * edge
+    d = 2.0 * extra
+    if e >= d:
+        return p - sign * hold
+    return c + sign * (e + 0.5 * (e - d / (2.0 * math.pi) * math.sin(2.0 * math.pi * e / d)))
+
+
 def view_camera(box: ViewBox, follow: tuple[float, float] | None, width: float, height: float,
                 zoom: float = 1.0) -> tuple[tuple[float, float], float]:
     """기본 보기 카메라 (중심, 배율 px/m): 상자가 화면에 들어오는 배율로 상자 가운데를 보다가, 따라갈 점이 보이는
-    범위의 가장자리(VIEW_EDGE 안쪽)를 넘으면 넘은 만큼만 옮긴다. 따라갈 점만의 함수라 시각을 되돌려도 같다."""
+    범위의 가장자리(VIEW_EDGE 안쪽)를 넘으면 따라간다. 가로는 따라가기 시작한 뒤 점을 화면 폭의 65%(VIEW_LEAD) 자리로
+    옮겨 가는 쪽이 보이게 하고, 세로는 넘은 만큼만 옮긴다(_follow_axis). 따라갈 점만의 함수라 시각을 되돌려도 같다."""
     x0, y0, x1, y1 = box
     w, h = max(float(width), 100.0), max(float(height), 100.0)
     fit = min(w / (x1 - x0), h / (y1 - y0))
@@ -176,14 +199,8 @@ def view_camera(box: ViewBox, follow: tuple[float, float] | None, width: float, 
         px, py = follow
         hw = (1.0 - VIEW_EDGE) * w / (2.0 * scale)
         hh = (1.0 - VIEW_EDGE) * h / (2.0 * scale)
-        if px > cx + hw:
-            cx = px - hw
-        elif px < cx - hw:
-            cx = px + hw
-        if py > cy + hh:
-            cy = py - hh
-        elif py < cy - hh:
-            cy = py + hh
+        cx = _follow_axis(cx, px, hw, min(hw, VIEW_LEAD * w / (2.0 * scale)))
+        cy = _follow_axis(cy, py, hh, hh)
     return (cx, cy), scale
 
 
@@ -569,6 +586,8 @@ class PlayWindow(QWidget):
         row2 = QHBoxLayout()
         self.save_button = button(S.PLAY_SAVE_RECORD, self.save_record)
         self.save_button.setEnabled(False)  # 끝난 기록만 저장한다(결과가 있어야 재생 검증이 된다)
+        if not self.spec.outputs:  # 지켜보기만 하는 환경(글라이더): 사람의 입력이 없어 「내 기록」이 아니다
+            self.save_button.setToolTip(S.PLAY_SAVE_WATCH_ONLY)
         row2.addWidget(self.save_button)
         row2.addWidget(button(S.PLAY_LOAD_RECORD, self.load_record))
         side.addLayout(row2)
@@ -702,7 +721,7 @@ class PlayWindow(QWidget):
         self.record.score = res.score
         self.record.outcome = res.outcome
         self.record.steps = res.steps
-        self.save_button.setEnabled(True)
+        self.save_button.setEnabled(bool(self.spec.outputs))
         if self.replaying is not None and self.replaying.score is not None:
             if res.score == self.replaying.score and res.steps == self.replaying.steps:
                 QMessageBox.information(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_SAME.format(score=res.score))

@@ -684,7 +684,7 @@ class _SceneBuilder:
 
     def _obstacles(self, gid: str, g: dict[str, Any]) -> None:
         """장애물 줄(숫자만으로, 런타임과 같은 생성기). 검사 오류로 런타임 미리보기에서 빠졌을 때만 쓴다."""
-        from evolab.generators.obstacles import generate_obstacles
+        from evolab.generators.obstacles import generate_obstacles, place_boxes
 
         ev = self.ev
 
@@ -702,8 +702,9 @@ class _SceneBuilder:
             width=pair("width", (0.6, 1.4)), height=pair("height", (0.5, 1.2)),
             air_chance=ev.num(g.get("air_chance", 0.25), 0.25), air_y=pair("air_y", (1.3, 1.6)),
             air_height=pair("air_height", (0.5, 0.8)), speed=speed, accel=accel)
-        shapes = [ShapeGeom("poly", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]) for x0, y0, x1, y1 in row.boxes]
         d = ev.num(g.get("direction", math.pi), math.pi)
+        shapes = [ShapeGeom("poly", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+                  for x0, y0, x1, y1 in place_boxes(row, d)]
         plan = MotionPlan.path((0.0, 0.0), 0.0, [(0.0, 0.0), (row.length * math.cos(d), row.length * math.sin(d))],
                                speed, accel, 0.0, "once", 0.0)
         self.scene.bodies.append(BodyItem(gid, ("generators", gid), "world", False, ["obstacle"], shapes,

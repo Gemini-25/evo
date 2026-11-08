@@ -1011,6 +1011,8 @@ EDP_FIELD_NAMES: Final = {
     "ObstacleGen.width": "폭 범위", "ObstacleGen.height": "높이 범위", "air_chance": "공중 장애물 비율",
     "air_y": "공중 장애물 높이", "air_height": "공중 장애물 두께", "ObstacleGen.speed": "처음 속도",
     "ObstacleGen.accel": "빨라지는 정도(초당)", "ObstacleGen.direction": "미는 방향(라디안)",
+    # 물체의 type 칸은 「움직임 종류」(SPEC_MOTION_NOT_KINEMATIC 문구와 같게, 움직임 칸 「움직임」과 구별)
+    "Body.type": "움직임 종류",
 }
 EDP_FIELD_TIPS: Final = {
     # 칸 도움말(모델 설명 앞에 붙는다). "모델.칸"이 있으면 그것이 먼저다.
@@ -1079,7 +1081,10 @@ EDP_FIELD_TIPS: Final = {
     "Aero.friction": "공기가 표면을 스치며 생기는 마찰 계수입니다. 보통 0.01 안팎입니다.",
     "ObstacleGen.seed": "장애물 줄을 뽑는 시드입니다. 랜덤 값(=r.이름)을 쓰면 시험마다 다른 줄이 나옵니다.",
     "ObstacleGen.count": "줄에 놓을 장애물 수입니다.",
-    "ObstacleGen.x": "첫 장애물이 출발하는 x 위치입니다. 선수 시작 위치에서 2m 넘게 떨어뜨리세요.",
+    "ObstacleGen.x": (
+        "첫 장애물이 출발하는 자리입니다. 선수 자리(x = 0)에서 장애물이 오는 쪽으로 잰 거리로, 방향이 3.14면 곧 x 위치입니다. "
+        "선수 시작 위치에서 2m 넘게 떨어뜨리세요."
+    ),
     "ObstacleGen.y": "장애물이 놓이는 바닥 높이입니다.",
     "ObstacleGen.width": "장애물 폭을 이 범위(최소, 최대)에서 뽑습니다.",
     "ObstacleGen.height": "땅 장애물 높이를 이 범위(최소, 최대)에서 뽑습니다.",
@@ -1087,7 +1092,10 @@ EDP_FIELD_TIPS: Final = {
     "air_height": "공중 장애물 두께 범위입니다.",
     "ObstacleGen.speed": "장애물 줄이 처음 다가오는 속도(m/s)입니다.",
     "ObstacleGen.accel": "초마다 장애물 줄이 이만큼 빨라집니다. 음수면 느려지다 멈춥니다.",
-    "ObstacleGen.direction": "장애물 줄을 미는 방향(라디안)입니다. 3.14면 왼쪽(선수 쪽)입니다.",
+    "ObstacleGen.direction": (
+        "장애물 줄을 미는 방향(라디안)입니다. 3.14면 오른쪽에서 왼쪽으로, 0이면 왼쪽에서 오른쪽으로 밉니다. "
+        "어느 방향이든 장애물은 바닥 높이 그대로 선수 자리(x = 0)를 지납니다."
+    ),
     "ObstacleGen.friction": "장애물 표면의 마찰입니다.",
     "Jump.body": "점프 추진기를 다는 에이전트 물체입니다. 이 물체가 땅에 닿아 있을 때 뜁니다.",
     "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
@@ -1117,7 +1125,7 @@ EDP_VALUE_NAMES: Final = {
     "x": "x 위치", "y": "y 위치", "vx": "x 속도", "vy": "y 속도", "speed": "속력", "angle": "각도",
     "omega": "각속도", "v_fwd": "앞뒤 속도", "v_lat": "옆 속도",
     # v2.0 움직이는 세계와 공기 ("kinematic": "정해진 움직임"은 위에 있음). all은 다른 칸("전부")과 겹치지 않게 칸 이름을 붙임
-    "path": "경로", "wave": "흔들기", "once": "한 번", "loop": "돌기", "pingpong": "왕복",
+    "path": "길", "wave": "흔들기", "once": "한 번", "loop": "돌기", "pingpong": "왕복",
     "jump": "점프 추진기", "aero": "공기역학", "wing": "날개", "obstacles": "장애물 줄",
     "surfaces.all": "모든 모양", "surfaces.wings": "날개 모양만",
 }
@@ -1669,3 +1677,10 @@ LAB_BUILD_FAILED_N: Final = "이 세대에 몸을 만들 수 없는 개체가 {n
 DASH_EMPTY_NO_BRAIN: Final = "이 환경은 뇌가 없습니다. 몸만 진화합니다."
 DASH_EMPTY_NO_OUTPUTS: Final = "구동기 출력이 없습니다."
 DASH_END_BUILD_FAILED: Final = "조립 실패"
+
+# ---- v2.0 검토 결과 고침 묶음 (검사·에디터·비교·직접 조종) ----
+SPEC_BRAINLESS_HIDDEN: Final = "출력이 없어 은닉층이 쓰이지 않습니다. 뇌 탭에서 은닉층을 비우세요."
+SPEC_AERO_TWICE: Final = "물체 '{body}'에 공기역학이 이미 있습니다. 하나만 두세요(공기힘이 겹쳐 커집니다)."
+CMP_NO_SUCCESS_RATE: Final = "성공 판정이 없는 환경의 실행은 성공률이 없어 그리지 않았습니다."
+EDP_WING_CHORD: Final = "시위 {c:.2f}m (공기역학을 붙이면 양력이 생깁니다)"
+PLAY_SAVE_WATCH_ONLY: Final = "조종하지 않는 환경이라 입력 기록을 저장하지 않습니다."

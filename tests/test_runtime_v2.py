@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +27,7 @@ from evolab.engine import seeds
 from evolab.engine import trainer as trainer_mod
 from evolab.engine.evaluate import OBSERVE_POSITIONS, evaluate
 from evolab.engine.pool import WorkerPool
-from evolab.engine.runsetup import create_run
+from evolab.engine.runsetup import create_run, platform_info
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.policy.genome import layout_for
 from evolab.runs.bundle import compare_stats, export_bundle, reproduce
@@ -114,6 +113,54 @@ def test_bundle_reproduces_identical_stats(name: str, tmp_path: Path) -> None:
     new = reproduce(bundle, tmp_path / "다시", workers=0)
     assert compare_stats(store.read_stats(), RunStore.open(new).read_stats()) is None
     assert len(store.read_stats()) == 3
+
+
+def test_v1_run_that_gains_v2_parts_mid_run_reproduces_and_resumes(tmp_path: Path) -> None:
+    """v1 착륙선 실행이 학습 중에 v2 부품(움직이는 발판, 공기역학, 모양별 밀도)을 얻는다: 환경 사본은 형식 1 → 형식 2,
+    체크포인트에서 이어 가기와 재현 묶음이 같은 통계를 내고, 유전자 배치를 바꾸는 점프 추진기는 거절한다(설계 3.5)."""
+    from evolab.app import strings as S
+    from evolab.engine.trainer import TrainerChangeError
+    from evolab.spec.io import dump_env
+
+    v1 = json.loads((ENVS / "lander.evoenv").read_text(encoding="utf-8"))
+    v1["world"]["max_time"] = 3.0  # 빠른 테스트(여전히 v1 칸만: 형식 1)
+    text1 = dump_env(parse_env(json.dumps(v1, ensure_ascii=False)))
+    assert json.loads(text1)["version"] == 1
+    config = TrainConfig(popsize=6, trials=2, validate_every=24, validation_seeds=3, checkpoint_every=2, run_seed=9,
+                         max_generations=4)
+    store = create_run(tmp_path / "원래", text1, compile_env(text1), config, 0)
+    data = json.loads(text1)
+    hull = data["bodies"][0]["id"]
+    data["bodies"].append({"id": "lift", "owner": "world", "type": "kinematic", "pos": [20.0, 5.0],
+                           "shapes": [{"kind": "box", "w": 4.0, "h": 0.4}],
+                           "motion": {"kind": "path", "points": [[0, 0], [0, 6]], "speed": 1.0, "mode": "pingpong"}})
+    data["actuators"].append({"kind": "aero", "id": "air", "body": hull})
+    data["bodies"][0]["shapes"][0]["density"] = 30.0
+    text2 = dump_env(parse_env(json.dumps(data, ensure_ascii=False)))
+    assert json.loads(text2)["version"] == 2
+    with WorkerPool(0) as pool:
+        t = Trainer(text1, config, pool, store)
+        t.step()
+        t.step()
+        t.replace_env(text2)
+        store.append_event("env_change", 2, version=store.add_env_version(text2, 2))
+        version = t.env_version
+        jump = json.loads(text2)
+        jump["actuators"].append({"kind": "jump", "id": "hop", "body": hull, "ground": []})
+        with pytest.raises(TrainerChangeError) as refused:
+            t.replace_env(dump_env(parse_env(json.dumps(jump, ensure_ascii=False))))
+        assert str(refused.value) == S.TRAIN_ENV_LAYOUT_CHANGED and t.env_version == version
+        while t.state.generation < 4:
+            t.step()
+        t.checkpoint()
+    versions = store.read_run_info()["env_versions"]
+    assert [json.loads(store.env_text(v["id"]))["version"] for v in versions] == [1, 2]
+    again = RunStore.open(reproduce(export_bundle(store.root, tmp_path / "묶음.zip"), tmp_path / "다시", workers=0))
+    assert compare_stats(store.read_stats(), again.read_stats()) is None and len(again.read_stats()) == 4
+    with WorkerPool(0) as pool:
+        resumed = Trainer.resume(store, pool, None, max_generations=6)
+        resumed.run()
+    assert resumed.state.generation == 6 and len(store.read_stats()) == 6
 
 
 def _digest(text: str, genome_rows: list[list[float]], trial_seed: int) -> str:
@@ -248,6 +295,36 @@ def test_no_outputs_without_body_params_still_warns() -> None:
     assert ("info", S.SPEC_BRAINLESS) not in msgs
 
 
+def test_brainless_env_with_hidden_layers_warns_about_the_dead_brain_genes() -> None:
+    """출력이 없는데 은닉층이 남아 있으면(새 에디터 환경의 기본 은닉층 16) 그 가중치가 헛되이 진화한다: 경고. 유전자
+    배치는 그대로(이미 있는 실행과 같은 길이)."""
+    data = json.loads(GLIDER_TEXT)
+    del data["brain"]  # 모델 기본값: 은닉층 [16]
+    found = issues_of(data)
+    assert ("info", "brain", S.SPEC_BRAINLESS) in found
+    assert ("warning", "brain.hidden", S.SPEC_BRAINLESS_HIDDEN) in found
+    assert layout_for(compile_env(json.dumps(data))).dim == 8 + 16  # 배치는 바꾸지 않는다(정책 코드 그대로)
+    assert ("warning", "brain.hidden", S.SPEC_BRAINLESS_HIDDEN) not in issues_of(glider_data())
+
+
+def test_second_aero_part_on_the_same_body_is_a_warning() -> None:
+    data = glider_data()
+    data["actuators"].append(dict(data["actuators"][0], id="air2"))
+    assert ("warning", "actuators[1].body", S.SPEC_AERO_TWICE.format(body="glider")) in issues_of(data)
+    assert not any(m == S.SPEC_AERO_TWICE.format(body="glider") for _s, _w, m in issues_of(glider_data()))
+
+
+def test_editor_aero_tool_selects_the_existing_part_instead_of_adding_a_second() -> None:
+    from evolab.app.editor import tools as T
+    from evolab.app.editor.document import EnvDocument
+
+    doc = EnvDocument()
+    doc.from_builtin("glider.evoenv")
+    n = len(doc.items("actuators"))
+    ref = T.add_aero(doc, "glider")
+    assert ref == ("actuators", "air") and len(doc.items("actuators")) == n and doc.selection == [ref]
+
+
 # ---------------------------------------------------------------------------
 # T27, T28: 검사 규칙
 # ---------------------------------------------------------------------------
@@ -375,6 +452,24 @@ def test_obstacles_start_uses_the_direction() -> None:
     assert issues_of(data) == []
 
 
+def test_obstacles_start_counts_where_each_agent_body_starts() -> None:
+    """시작 위치만이 아니라 에이전트 물체의 pos(시작 각도로 돌린 것)까지 본다: 물체를 첫 장애물 가까이 옮겨도 경고."""
+    start = ("warning", "generators[0].x", S.SPEC_OBSTACLES_START.format(id="obs"))
+    data = jump_data()
+    assert issues_of(data) == []
+    data["bodies"][1]["pos"] = [19.0, 0.5]  # 선수 물체를 첫 장애물(x = 20) 1m 앞으로
+    assert start in issues_of(data)
+    data["agent"]["spawn"]["angle"] = math.pi  # 시작 각도로 돌리면 물체는 x = −19에 선다: 39m 앞
+    assert start not in issues_of(data)
+    data["agent"]["spawn"]["angle"] = "=0"  # 시작 각도가 수식이면 시작 위치로 잰다
+    assert start not in issues_of(data)
+    data = jump_data()
+    data["generators"][0]["direction"] = 0.0  # 왼쪽에서 오는 줄: 첫 장애물은 x = −20
+    assert issues_of(data) == []
+    data["bodies"][1]["pos"] = [-19.0, 0.5]
+    assert start in issues_of(data)
+
+
 def test_moving_bodies_with_spin_or_formulas_are_not_still() -> None:
     for motion in ({"kind": "path", "points": [[1, 1], [1, 1]], "spin": 1.0},
                    {**PATH, "speed": "=r.v"}, {**PATH, "speed": 0.0, "accel": 0.5}):
@@ -444,16 +539,22 @@ def test_v1_files_skip_the_new_code_paths(name: str) -> None:
 
 
 def _same_platform(data: Any) -> bool:
-    return str(data["platform"]) == f"{sys.platform}-{platform.machine()}"
+    """자료를 만든 플랫폼과 같은가: v1.0·v1.1 실행 자료 테스트(test_restart.same_platform)와 같은 규칙으로
+    runsetup.platform_info의 python, numpy, pymunk, cma, cpu가 모두 같아야 한다(npz의 platform_info, JSON)."""
+    if "platform_info" not in data.files:
+        return False
+    made = json.loads(str(data["platform_info"]))
+    now = platform_info(0)
+    return all(made.get(k) == now[k] for k in ("python", "numpy", "pymunk", "cma", "cpu"))
 
 
 def test_v1_results_match_the_v12_reference() -> None:
     """T29: 착륙선·트랙·언덕차 무작위 유전자 8 x 시험 3의 점수·스텝·블록·궤적이 v1.2 코드로 만든 값과 같다.
 
-    명세 「정답 해시를 박지 않음」: 숫자 비교는 자료를 만든 플랫폼(npz의 platform)에서만 한다."""
+    명세 「정답 해시를 박지 않음」: 숫자 비교는 자료를 만든 플랫폼(npz의 platform_info, _same_platform)에서만 한다."""
     data = np.load(REGRESS, allow_pickle=False)
     if not _same_platform(data):
-        pytest.skip(f"reference made on {data['platform']}")
+        pytest.skip(f"reference made on {data['platform']} {data['platform_info'] if 'platform_info' in data else ''}")
     trials = [Trial(int(s)) for s in data["trial_seeds"]]
     for name in ("lander", "track_car", "hill_car"):
         text = str(data[f"{name}.env_text"])
@@ -511,3 +612,59 @@ def test_obstacle_row_observation_frame_is_clipped_to_the_world() -> None:
     off = evaluate(spec, layout, genomes, pairs)
     on = evaluate(spec, layout, genomes, pairs, observe=[OBSERVE_POSITIONS] * len(pairs), frame=frame.as_array())
     assert on.scores.tobytes() == off.scores.tobytes() and on.steps.tolist() == off.steps.tolist()
+
+
+# ---------------------------------------------------------------------------
+# 스텝 비용 줄이기(v2.0 M2): 레이 첫 맞음 질의를 C 함수로 바로 부르는 길. 결과는 공개 API와 비트 단위로 같아야 한다.
+# ---------------------------------------------------------------------------
+
+
+def test_direct_ray_query_gives_the_public_alpha_hit_or_miss() -> None:
+    """_segment_first_c로 부른 질의의 비율 = space.segment_query_first의 alpha(맞지 않으면 1.0). 맞음·빗나감을 섞은
+    순서로 같은 결과 구조체를 다시 써도 앞 질의 값이 남지 않는다(C 함수가 질의마다 처음 값으로 채운다)."""
+    from evolab.world.physics2d import episode as episode_mod
+
+    assert episode_mod._CP_FAST  # 고정한 pymunk(uv.lock)에서는 빠른 길이 쓰여야 한다
+    ep = Episode(compile_env(JUMP_TEXT), None, Trial(11))
+    for _ in range(90):
+        ep.step([0.0])
+    filt = ep._ray_filter(["tag.obstacle"])
+    fast = episode_mod._segment_first_c(ep.space, filt)
+    assert fast is not None
+    query, raw, cfilt, _owner, info = fast
+    rng = np.random.default_rng(5)
+    hits = misses = 0
+    for _ in range(2000):
+        a = (float(rng.uniform(-5.0, 30.0)), float(rng.uniform(-0.5, 3.0)))
+        b = (float(rng.uniform(-5.0, 30.0)), float(rng.uniform(-0.5, 3.0)))
+        hit = ep.space.segment_query_first(a, b, 0.0, filt)
+        query(raw, a, b, 0.0, cfilt, info)
+        assert info.alpha == (hit.alpha if hit is not None else 1.0)
+        hits += hit is not None
+        misses += hit is None
+    assert hits > 200 and misses > 200
+
+
+@pytest.mark.parametrize("name", ["jump", "track_car"])
+def test_fast_ray_path_gives_the_same_results_as_the_public_api(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """레이가 있는 점프 게임(v2)과 트랙 자동차(v1): C 함수 길과 공개 API 길의 점수·스텝·종료·블록·궤적이 비트 단위로 같다."""
+    from evolab.world.physics2d import episode as episode_mod
+
+    spec = compile_env((ENVS / f"{name}.evoenv").read_text(encoding="utf-8"))
+    layout = layout_for(spec)
+    genomes = layout.initial()[None, :] + 0.5 * np.random.default_rng(3).standard_normal((4, layout.dim))
+    pairs = [(g, t) for g in range(4) for t in seeds.validation_trials(2)]
+
+    def run() -> Any:
+        return evaluate(spec, layout, genomes, pairs, record=[True] * len(pairs), every=1)
+
+    fast = run()
+    monkeypatch.setattr(episode_mod, "_CP_FAST", False)
+    public = run()
+    assert fast.scores.tobytes() == public.scores.tobytes()
+    assert fast.steps.tolist() == public.steps.tolist() and int(fast.steps.sum()) > 500
+    assert fast.end_events == public.end_events and fast.blocks.tobytes() == public.blocks.tobytes()
+    assert fast.trajectories is not None and public.trajectories is not None
+    for x, y in zip(fast.trajectories, public.trajectories, strict=True):
+        assert x is not None and y is not None
+        assert x.poses.tobytes() == y.poses.tobytes() and x.outputs.tobytes() == y.outputs.tobytes()

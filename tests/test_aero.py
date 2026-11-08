@@ -141,6 +141,8 @@ def test_aero_is_passive_without_wind() -> None:
             emax = max(emax, energy(body))
         if emax > e0 * 1.01:
             bad.append((k, f"energy +{100 * (emax / e0 - 1):.2f}%"))
+        if ep.aero_clamped:
+            bad.append((k, f"clamped {ep.aero_clamped}"))  # 보통 몸에서는 한 스텝 상한이 걸리지 않는다(설계 9.1: 0회)
     assert bad == []
 
 
@@ -187,15 +189,53 @@ def test_clamp_never_acts_on_the_builtin_glider_judge_20() -> None:
     assert total == 0 and steps > 100_000
 
 
-def test_clamp_keeps_extreme_values_finite() -> None:
-    """T23: 폭 30·공기 밀도 10·재질 밀도 0.5(상한이 없으면 몇 스텝 만에 10⁸m/s 넘게 폭주)에서 3,600스텝 동안 유한하고
-    속력·각속도 < 10³, 상한이 걸린다."""
+def extreme_glider(parts: int = 1) -> dict[str, Any]:
+    """폭 30·공기 밀도 10·재질 밀도 0.5(상한이 없으면 몇 스텝 만에 10⁸m/s 넘게 폭주)인 글라이더. 땅·착지 사건을 빼고 경계를
+    아주 넓혀 착지·이탈로 일찍 끝나지 않는다(60초 = 3,600스텝을 다 난다). parts: 같은 물체에 단 같은 공기역학 부품 수."""
     data = json.loads(GLIDER_TEXT)
-    data["actuators"][0].update({"span": 30.0, "density": 10.0})
-    data["bodies"][1]["material"]["density"] = 0.5
+    air = data["actuators"][0]
+    air.update({"span": 30.0, "density": 10.0})
+    data["actuators"] = [dict(air, id=f"air{k}" if k else air["id"]) for k in range(parts)]
+    data["bodies"] = [b for b in data["bodies"] if b["id"] != "ground"]
+    data["bodies"][0]["material"]["density"] = 0.5
+    data["events"] = []
+    data["termination"] = [t for t in data["termination"] if t["event"] != "landed"]
     data["world"]["max_time"] = 60.0
-    spec = compile_env(json.dumps(data))
+    data["world"]["bounds"] = [-1e6, -1e6, 1e6, 1e6]
+    return data
+
+
+def test_clamp_keeps_extreme_values_finite() -> None:
+    """T23: 극단 값(extreme_glider)에서 3,600스텝 동안 유한하고 속력·각속도 < 10³, 상한이 걸린다(판정 시드 셋)."""
+    spec = compile_env(json.dumps(extreme_glider()))
     layout = layout_for(spec)
-    clamped, steps, vmax, wmax = fly(spec, layout.body_values(layout.initial()), seeds.judge_trials(1)[0], cap=3600)
-    assert clamped > 0 and steps > 10
-    assert vmax < 1e3 and wmax < 1e3
+    for trial in seeds.judge_trials(3):
+        clamped, steps, vmax, wmax = fly(spec, layout.body_values(layout.initial()), trial, cap=3600)
+        assert steps == 3600 and 0 < clamped <= steps
+        assert vmax < 1e3 and wmax < 1e3
+
+
+def test_clamp_is_per_body_when_one_body_has_several_aero_parts() -> None:
+    """설계 D15: 상한은 물체마다다. 한 물체에 같은 공기역학 부품을 여럿 달아도 그 물체의 공기힘을 모두 더한 뒤 한 번 줄이고,
+    발동은 (물체, 스텝)마다 한 번 센다. 부품마다 따로 줄이면 부품 셋에서 속력이 10⁴m/s를 넘어 경계를 벗어났다(검토 측정).
+    보통 값에서는 상한이 걸리지 않아 부품 둘이면 첫 스텝의 공기힘이 정확히 두 배다."""
+    trial = seeds.judge_trials(1)[0]
+    for parts in (1, 2, 3):
+        spec = compile_env(json.dumps(extreme_glider(parts)))
+        layout = layout_for(spec)
+        clamped, steps, vmax, wmax = fly(spec, layout.body_values(layout.initial()), trial, cap=3600)
+        assert steps == 3600 and 0 < clamped <= steps, parts
+        assert vmax < 1e3 and wmax < 1e3, parts
+    dv = []
+    for parts in (1, 2):
+        data = json.loads(GLIDER_TEXT)
+        data["world"]["gravity"] = [0.0, 0.0]
+        data["actuators"] = [dict(data["actuators"][0], id=f"air{k}") for k in range(parts)]
+        spec = compile_env(json.dumps(data))
+        ep = Episode(spec, None, trial)
+        body = ep.bodies["glider"]
+        v0 = body.velocity
+        ep.step([])
+        assert ep.aero_clamped == 0
+        dv.append((body.velocity.x - v0.x, body.velocity.y - v0.y))
+    assert dv[1][0] == pytest.approx(2.0 * dv[0][0], rel=1e-9) and dv[1][1] == pytest.approx(2.0 * dv[0][1], rel=1e-9)

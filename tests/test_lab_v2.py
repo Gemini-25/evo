@@ -209,7 +209,7 @@ def test_t49_default_view_widens_only_when_agents_leave_the_box(qtbot: QtBot) ->
     assert r[0] <= box[0] and r[1] <= box[1] and r[2] >= box[2] and r[3] >= box[3]  # 상자를 품고 넓어짐
     xs = c._poses[:, 0]
     assert r[2] >= xs.max()
-    # 챔피언 따라가기: 상자 배율 그대로, 챔피언이 가장자리를 넘은 만큼 옮김
+    # 챔피언 따라가기: 상자 배율 그대로, 챔피언이 가장자리를 넘으면 따라감(가는 쪽이 보이게 화면 폭의 65% 자리로)
     c.set_follow("champion")
     (cx, _cy), s = c.camera()
     assert s == pytest.approx(min(W / (box[2] - box[0]), H / (box[3] - box[1])))
@@ -217,7 +217,9 @@ def test_t49_default_view_widens_only_when_agents_leave_the_box(qtbot: QtBot) ->
     assert slot is not None
     px = float(c._poses[c._offsets[slot], 0])
     hw = (1.0 - play_window.VIEW_EDGE) * W / (2.0 * s)
-    assert px <= cx + hw + 1e-9 and (cx == (box[0] + box[2]) / 2.0 or abs(px - (cx + hw)) < 1e-6)
+    assert px <= cx + hw + 1e-9
+    py = float(c._poses[c._offsets[slot], 1])
+    assert c.camera()[0] == pytest.approx(play_window.view_camera(box, (px, py), W, H)[0])  # 직접 조종과 같은 카메라
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +600,49 @@ def test_density_camera_shows_the_visited_cells_of_a_wide_world(qtbot: QtBot) ->
     small[3, 4] = 9
     (lx, ly), lscale, w, h = camera(LANDER, small, (-70.0, -20.0, 140.0, 90.0))
     assert (lx, ly) == (0.0, 25.0) and lscale == pytest.approx(min(w / 140.0, h / 90.0))
+
+
+def test_density_tile_does_not_draw_the_obstacle_row_frozen_at_zero_seconds(qtbot: QtBot, tmp_path: Path) -> None:
+    """궤적 밀도 타일은 여러 시각을 합친 그림이라 장애물 줄(정해진 움직임 물체)을 그리지 않는다(전에는 0초 자리에 멈춘
+    장애물이 그려졌다). 관전 캔버스는 그대로 그린다."""
+    from test_dashboard import make_dashboard
+
+    from evolab.app.lab.watch_tiles import density_image
+
+    spec = load_env(JUMP)
+    geometry = Episode(spec, None, seeds.display_trial()).geometry()
+    counts = np.zeros((8, 16))
+    counts[2, 3] = 4
+    dash = make_dashboard(qtbot, tmp_path)
+    tile = dash.tile("density")
+    spectator = SpectatorCanvas()
+    qtbot.addWidget(spectator)
+    for c, drawn in ((tile.canvas, False), (spectator, True)):  # type: ignore[attr-defined]
+        c.resize(400, 200)
+        c.set_scene(geometry, None, None)
+        c.set_density(density_image(counts), (-10.0, -2.0, 64.0, 32.0), fit=True)
+        c.mover_poses = []
+        c.grab()
+        assert [mv.id for mv in c._movers] == ["obs"]
+        assert bool(c.mover_poses) == drawn
+
+
+def test_inspect_panel_of_a_brainless_glider_says_there_is_no_brain(qtbot: QtBot) -> None:
+    """뇌 없는 글라이더 개체를 눌러 들여다보면 빈 제목(센서·신경망 활성화·출력) 대신 「뇌가 없습니다」 안내."""
+    from evolab.app.lab.view import InspectPanel
+
+    panel = InspectPanel()
+    qtbot.addWidget(panel)
+    spec = load_env(GLIDER)
+    layout = layout_for(spec)
+    rep = replay(spec, layout, layout.initial(), seeds.display_trial(), trace=True)
+    assert rep.inputs == [] and rep.channels == []
+    panel.set_replay(3, rep)
+    panel.show_time(2.0)
+    assert panel.body.text() == S.DASH_EMPTY_NO_BRAIN
+    lander = load_env(LANDER)
+    ll = layout_for(lander)
+    panel.set_replay(1, replay(lander, ll, ll.initial(), seeds.display_trial(), trace=True))
+    panel.show_time(0.5)
+    text = panel.body.text()
+    assert S.LAB_INSPECT_SENSORS in text and S.LAB_INSPECT_OUTPUTS in text and S.DASH_EMPTY_NO_BRAIN not in text

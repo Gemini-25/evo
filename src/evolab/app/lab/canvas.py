@@ -333,6 +333,8 @@ class SpectatorCanvas(QWidget):
         self._wheel_needs_ctrl = False
         self._movers: list[_Mover] = []
         """정해진 움직임 세계 물체(정적 그림 캐시 밖, 프레임마다 그 시각의 자세로)."""
+        self._show_movers = True
+        """정해진 움직임 세계 물체를 그리는가(set_show_movers). 시각이 없는 그림(궤적 밀도 타일)은 끈다."""
         self.mover_poses: list[tuple[float, float, float]] = []
         """마지막으로 그린 정해진 움직임 물체의 자세(_movers 순서). 테스트가 읽는다."""
         self.mover_time = 0.0
@@ -550,6 +552,12 @@ class SpectatorCanvas(QWidget):
     def density_layer(self) -> tuple[QImage, QRectF] | None:
         """지금 밀도 층(그림, 세계 좌표 사각형) 또는 None."""
         return self._density
+
+    def set_show_movers(self, on: bool) -> None:
+        """정해진 움직임 세계 물체(장애물 줄 등)를 그릴지. 궤적 밀도 타일처럼 한 시각이 아닌 그림은 끈다: 끄지 않으면
+        장애물 줄이 0초 자리에 멈춘 채로 그려져 개체가 닿지 않은 정적 장애물처럼 보인다."""
+        self._show_movers = bool(on)
+        self.update()
 
     def set_wheel_needs_ctrl(self, on: bool) -> None:
         """True면 Ctrl+휠일 때만 확대·축소하고 그냥 휠은 부모(대시보드 스크롤)에 넘긴다(대시보드 그래프와 같은 규칙)."""
@@ -881,7 +889,7 @@ class SpectatorCanvas(QWidget):
         s, ox, oy = self._base()
         base = QTransform(s, 0.0, 0.0, -s, ox, oy)
         self._paint_static(p, base, s, ox, oy)
-        if self._movers:
+        if self._movers and self._show_movers:
             self._draw_movers(p, base)
         if self._agents:
             mats, visible = self._body_transforms(s, ox, oy)

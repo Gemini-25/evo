@@ -21,7 +21,7 @@ from evolab import paths
 from evolab.app import strings as S
 from evolab.engine import observe as observing
 from evolab.engine import seeds
-from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS
+from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, mean_of_built
 from evolab.engine.pool import PoolError, WorkerPool, default_workers
 from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import (
@@ -343,7 +343,7 @@ def judge_command(args: Any) -> int:
     else:
         # 성공 판정이 없는 환경(글라이더): 성공률 대신 평균 점수와 진행 거리 블록(v2.0 설계 4.10, D21)
         say(S.JUDGE_RESULT_NO_SUCCESS.format(gen=gen, n=len(trials), mean=mean, ends=ends))
-        for line in progress_lines(spec, res.blocks):
+        for line in progress_lines(spec, res.blocks, failed=np.isnan(res.scores)):
             say(line)
     store.append_event("judge", gen, seeds=len(trials), success=success, mean_score=mean)
     return 0
@@ -360,12 +360,10 @@ def ends_text(spec: Any, end_events: list[str]) -> str:
 
 
 def judge_mean(scores: np.ndarray) -> float:
-    """판정 평균 점수. 조립 실패 쌍(점수 NaN, v2.0 설계 4.9)은 빼고 평균한다(모두 실패면 NaN). 실패가 없으면 v1과 같은 계산."""
-    s = np.asarray(scores, dtype=np.float64)
-    nan = np.isnan(s)
-    if nan.any() and not nan.all():
-        return float(s[~nan].mean())
-    return float(s.mean())
+    """판정 평균 점수. 조립 실패 쌍(점수 NaN, v2.0 설계 4.9)은 빼고 평균한다(모두 실패면 NaN). 실패가 없으면 v1과 같은 계산.
+
+    챔피언 비교 점수(Trainer._compare)와 같은 규칙(evaluate.mean_of_built)."""
+    return mean_of_built(scores)
 
 
 def has_success(spec: Any) -> bool:
@@ -373,10 +371,15 @@ def has_success(spec: Any) -> bool:
     return any(t.outcome == "success" for t in spec.terminations)
 
 
-def progress_lines(spec: Any, blocks: np.ndarray) -> list[str]:
-    """진행 거리 블록마다 판정 시드들의 중앙값·하위 10% 한 줄(CLI_JUDGE_PROGRESS). blocks: (쌍 수, 블록 수) 가중치 전 값."""
+def progress_lines(spec: Any, blocks: np.ndarray, failed: np.ndarray | None = None) -> list[str]:
+    """진행 거리 블록마다 판정 시드들의 중앙값·하위 10% 한 줄(CLI_JUDGE_PROGRESS). blocks: (쌍 수, 블록 수) 가중치 전 값.
+
+    failed: 쌍마다 조립 실패 여부(점수 NaN). 실패 쌍의 블록은 0이라(evaluate.build_failed_result) 평균 점수(judge_mean)처럼
+    빼고 센다. 없으면(None) 모든 쌍을 센다(실패가 없으면 같은 결과)."""
     out: list[str] = []
     values = np.asarray(blocks, dtype=np.float64).reshape(len(blocks), -1)
+    if failed is not None:
+        values = values[~np.asarray(failed, dtype=bool)]
     for k, b in enumerate(spec.file.scoring.blocks):
         if b.kind != "progress" or k >= values.shape[1]:
             continue

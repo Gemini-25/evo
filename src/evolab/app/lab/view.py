@@ -287,15 +287,14 @@ class InspectPanel(QWidget):
         dt = rep.trajectory.dt
         k = int(min(len(rep.observations) - 1, max(0, math.floor(t / dt + 1e-9))))
         self.time_label.setText(S.LAB_INSPECT_TIME.format(t=k * dt, total=rep.result.steps * dt))
-        lines = [S.LAB_INSPECT_SENSORS]
-        raw = rep.raw[k] if rep.raw else {}
-        for i, name in enumerate(rep.inputs):
-            v = float(rep.observations[k, i])
-            r = raw.get(name)
-            lines.append(f"{name:<14} {'' if r is None else f'{r:9.3f}'} → {v:+6.2f} {_bar(v / 5.0)}")
-        lines.append("")
-        lines.append(S.LAB_INSPECT_LAYERS)
         acts = rep.activations or []
+        if not rep.channels and all(a.shape[1] == 0 for a in acts[-1:]):
+            # 뇌 없는 환경(출력 없음, v2.0 설계 D20): 빈 제목 대신 안내(센서가 있으면 센서 값은 보인다)
+            sensors = self._sensor_lines(rep, k) if rep.inputs else []
+            self.body.setText("\n".join([*sensors, S.DASH_EMPTY_NO_BRAIN]))
+            return
+        lines = self._sensor_lines(rep, k)
+        lines.append(S.LAB_INSPECT_LAYERS)
         for li, a in enumerate(acts):
             last = li == len(acts) - 1
             lines.append(S.LAB_INSPECT_OUTPUTS if last else S.LAB_INSPECT_LAYER.format(k=li + 1, n=a.shape[1]))
@@ -304,6 +303,18 @@ class InspectPanel(QWidget):
             for name, v in zip(names, row, strict=True):
                 lines.append(f"  {name:<12} {float(v):+5.2f} {_bar(float(v))}")
         self.body.setText("\n".join(lines))
+
+    @staticmethod
+    def _sensor_lines(rep: Replay, k: int) -> list[str]:
+        """센서 제목과 센서마다 (정규화 전 → 신경망 입력) 한 줄, 끝에 빈 줄."""
+        lines = [S.LAB_INSPECT_SENSORS]
+        raw = rep.raw[k] if rep.raw else {}
+        for i, name in enumerate(rep.inputs):
+            v = float(rep.observations[k, i])
+            r = raw.get(name)
+            lines.append(f"{name:<14} {'' if r is None else f'{r:9.3f}'} → {v:+6.2f} {_bar(v / 5.0)}")
+        lines.append("")
+        return lines
 
 
 def _bar(v: float, width: int = 10) -> str:
@@ -2324,7 +2335,11 @@ def _spin(lo: int, hi: int, value: int, special: str | None = None) -> QSpinBox:
 
 
 def my_best_score(spec: EnvSpec) -> float | None:
-    """직접 조종 기록(.evoplay, 예전 .json) 가운데 같은 환경(내용 해시)의 최고 점수. 데이터 폴더를 바꾸기 전 기록도 본다."""
+    """직접 조종 기록(.evoplay, 예전 .json) 가운데 같은 환경(내용 해시)의 최고 점수. 데이터 폴더를 바꾸기 전 기록도 본다.
+
+    조종할 출력이 없는 환경(글라이더: 직접 조종 창에서 지켜보기만)은 사람의 기록이 없으므로 None(예전에 저장한 것도 쓰지 않음)."""
+    if not spec.outputs:
+        return None
     try:
         from evolab.app.play.record import best_record_score
         from evolab.app.play.window import record_dirs

@@ -163,6 +163,51 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# pymunk C 함수 바로 부르기 (레이 질의, 정해진 움직임 물체)
+# ---------------------------------------------------------------------------
+
+try:
+    # pymunk의 cffi 바인딩(공개 API가 아님). pymunk의 공개 API는 같은 C 함수를 부른 뒤 결과를 파이썬 객체로 감싼다:
+    # Space.segment_query_first는 객체 넷(모양 찾기, Vec2d 둘, SegmentQueryInfo), Body.position은 Vec2d, 속성 쓰기는
+    # mypy용 __setattr__ 한 겹을 더 지난다. 레이 하나에 그 감싸기가 C 질의의 2~5배라 레이 7개와 정해진 움직임 물체가 있는
+    # 점프 게임 스텝 비용의 큰 몫이었다(v2.0 M2). 같은 C 함수를 같은 인수로 바로 부르므로 결과는 비트 단위로 같다
+    # (레이: C 함수가 결과를 {모양 없음, alpha 1.0}으로 시작해 더 가까운 맞음만 덮어쓰므로, 맞지 않으면 alpha가 공개 API
+    # 길이 쓰는 1.0 그대로다). 이 판의 pymunk에 없으면 공개 API로 돌아간다(tests/test_runtime_v2.py가 두 길의 결과가
+    # 같은지와 고정한 pymunk에서 빠른 길이 쓰이는지를 지킨다).
+    from pymunk._chipmunk_cffi import ffi as _CP_FFI
+    from pymunk._chipmunk_cffi import lib as _CP_LIB
+
+    _CP_SEGMENT_FIRST: Any = _CP_LIB.cpSpaceSegmentQueryFirst
+    _CP_GET_POSITION: Any = _CP_LIB.cpBodyGetPosition
+    _CP_GET_ANGLE: Any = _CP_LIB.cpBodyGetAngle
+    _CP_SET_VELOCITY: Any = _CP_LIB.cpBodySetVelocity
+    _CP_SET_ANGULAR_VELOCITY: Any = _CP_LIB.cpBodySetAngularVelocity
+    _CP_FAST = True
+except (ImportError, AttributeError):  # pragma: no cover - pymunk 내부가 바뀐 판
+    _CP_FAST = False
+"""C 함수를 바로 부르는 길을 쓰는가. Episode를 만들 때 읽는다(테스트는 False로 바꿔 공개 API 길과 비교한다)."""
+
+
+def _segment_first_c(space: pymunk.Space, filt: pymunk.ShapeFilter) -> tuple[Any, Any, Any, Any, Any] | None:
+    """space.segment_query_first(시작, 끝, 0.0, filt)와 같은 C 질의를 감싸기 없이 부를 재료:
+    (C 함수, cpSpace, 필터 구조체, 필터 구조체의 주인, 결과 구조체). 쓸 수 없으면 None(공개 API를 쓴다).
+
+    부르는 법: query(raw, 시작, 끝, 0.0, cfilt, info) 뒤 info.alpha가 맞은 비율(맞지 않으면 1.0). 결과 구조체는 이 레이
+    센서만 쓴다(질의마다 C 함수가 처음 값으로 다시 채운다). 주인을 함께 붙잡아 필터 구조체 메모리가 살아 있게 한다."""
+    raw = getattr(space, "_space", None) if _CP_FAST else None
+    if raw is None:
+        return None
+    owner = _CP_FFI.new("cpShapeFilter *", (filt.group, filt.categories, filt.mask))
+    return _CP_SEGMENT_FIRST, raw, owner[0], owner, _CP_FFI.new("cpSegmentQueryInfo *")
+
+
+def _body_c(body: pymunk.Body) -> Any:
+    """body의 cpBody 포인터(C 함수에 바로 넘길 것). 쓸 수 없으면 None(공개 API를 쓴다). 포인터 객체가 C 메모리의 주인이라
+    붙잡고 있는 동안 물체가 풀리지 않는다."""
+    return getattr(body, "_body", None) if _CP_FAST else None
+
+
+# ---------------------------------------------------------------------------
 # 만들기 단계 도우미
 # ---------------------------------------------------------------------------
 
@@ -418,6 +463,8 @@ class Episode:
         self._start_pos: dict[str, geo.Point] = {}
         self._kinematic: list[tuple[pymunk.Body, MotionPlan]] = []
         """정해진 움직임 물체(v2): 장애물 줄(생성기 순서) 다음 kinematic 세계 물체(선언 순서)."""
+        self._kinematic_drive: list[tuple[pymunk.Body, Any, MotionPlan, bool]] = []
+        """_kinematic과 같은 순서로 (물체, cpBody 포인터 또는 None, 움직임, 도는가). _drive_kinematic이 쓴다."""
         self._aero_clamped = 0
 
         self._build_generators()
@@ -585,7 +632,7 @@ class Episode:
 
     @property
     def aero_clamped(self) -> int:
-        """공기힘 한 스텝 상한이 걸린 (공기역학 부품, 스텝) 수(v2 설계 D15). 보통 값에서는 0이다(테스트, bench용)."""
+        """공기힘 한 스텝 상한이 걸린 (물체, 스텝) 수(v2 설계 D15·7.3). 보통 값에서는 0이다(테스트, bench용)."""
         return self._aero_clamped
 
     @property
@@ -655,6 +702,10 @@ class Episode:
         )
         if motion is not None:
             self._kinematic.append((body, motion))
+            # 돌지 않는 움직임(spin 0, 물체 각도 = 움직임 각도)이면 각도가 늘 같아 _drive_kinematic의 각속도가 늘 0.0이다.
+            # 처음 각속도가 0.0이고 그 물체의 각속도를 바꾸는 것이 없으므로 그때는 각속도 쓰기를 건너뛰어도 같다.
+            turns = not (motion.spin == 0.0 and body.angle == pose_at(motion, 0.0)[2] and body.angular_velocity == 0.0)
+            self._kinematic_drive.append((body, _body_c(body), motion, turns))
 
     def _build_generators(self) -> None:
         self._cp_defs: list[tuple[str, list[tuple[geo.Point, geo.Point]], bool, str | None, Any]] = []
@@ -672,9 +723,10 @@ class Episode:
     def _build_obstacles(self, g: m.ObstacleGen) -> None:
         """장애물 줄(v2 설계 4.2): 정해진 움직임 세계 물체 하나에 장애물 사각형을 줄지어 놓는다.
 
-        시드와 모든 칸은 생성기 단계(r.*)라 같은 시험의 모든 개체가 같은 줄을 본다. 물체는 세계 원점에 서고 줄 좌표가
-        곧 물체 좌표다. 움직임은 길 [(0, 0), length x (cos d, sin d)]을 speed·accel로 한 번 가는 MotionPlan이다."""
-        from evolab.generators.obstacles import generate_obstacles
+        시드와 모든 칸은 생성기 단계(r.*)라 같은 시험의 모든 개체가 같은 줄을 본다. 물체는 세계 원점에 서고, 장애물은
+        place_boxes가 미는 방향 d에 맞춰 놓은 물체 좌표 사각형이다(방향 π면 줄 좌표 그대로). 움직임은 길
+        [(0, 0), length x (cos d, sin d)]을 speed·accel로 한 번 가는 MotionPlan이다."""
+        from evolab.generators.obstacles import generate_obstacles, place_boxes
 
         num = lambda v: self._num(v, "generator")  # noqa: E731
         pair = lambda r: (num(r[0]), num(r[1]))  # noqa: E731
@@ -687,13 +739,13 @@ class Episode:
         body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
         friction = _clamp(num(g.friction), 0.0, 1e3)
         shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
-        for x0, y0, x1, y1 in row.boxes:
+        d = num(g.direction)
+        for x0, y0, x1, y1 in place_boxes(row, d):
             pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
             poly = pymunk.Poly(body, pts)
             poly.friction = friction
             shapes.append((poly, ShapeGeom("poly", pts)))
         tags = [["obstacle", "air"] if a else ["obstacle"] for a in row.air]
-        d = num(g.direction)
         plan = MotionPlan.path((0.0, 0.0), 0.0, [(0.0, 0.0), (row.length * math.cos(d), row.length * math.sin(d))],
                                speed, accel, 0.0, "once", 0.0)
         self._add_body(g.id, body, shapes, ["obstacle"], "world", tags, motion=plan)
@@ -1013,11 +1065,18 @@ class Episode:
         그 스텝의 자세와 맞다(위치 순간 이동은 위에 올라탄 물체를 남기고 레이가 한 스텝 늦다: 설계 D8)."""
         t1 = (self.steps + 1) * self.dt
         inv = 1.0 / self.dt
-        for body, plan in self._kinematic:
+        for body, raw, plan, turns in self._kinematic_drive:
             x, y, a = pose_at(plan, t1)
-            p = body.position
-            body.velocity = ((x - p.x) * inv, (y - p.y) * inv)
-            body.angular_velocity = (a - body.angle) * inv
+            if raw is not None:  # 공개 API와 같은 C 함수(_body_c)
+                p = _CP_GET_POSITION(raw)
+                _CP_SET_VELOCITY(raw, ((x - p.x) * inv, (y - p.y) * inv))
+                if turns:
+                    _CP_SET_ANGULAR_VELOCITY(raw, (a - _CP_GET_ANGLE(raw)) * inv)
+            else:
+                p = body.position
+                body.velocity = ((x - p.x) * inv, (y - p.y) * inv)
+                if turns:
+                    body.angular_velocity = (a - body.angle) * inv
 
     def _build_joints(self) -> None:
         for j in self.env.joints:
@@ -1209,6 +1268,12 @@ class Episode:
                 friction=_clamp(self._num(a.friction, "agent"), 0.0, AERO_MAX_FRICTION),
                 induced=1.0 / (AERO_INDUCED_EFF * math.pi * ar) if ar > 0 else 0.0,
             ))
+        # 한 스텝 상한은 물체마다(설계 D15): 한 물체에 공기역학 부품이 여럿이어도 그 물체의 모든 부품의 힘을 한데 모아
+        # 한 번 줄인다. 물체는 처음 나온 부품 순서, 부품은 선언 순서(부품이 하나뿐이면 부품마다 계산하던 것과 같은 계산).
+        groups: dict[str, tuple[pymunk.Body, str, list[_AeroPart]]] = {}
+        for part in self._aero:
+            groups.setdefault(part.bid, (part.body, part.bid, []))[2].append(part)
+        self._aero_bodies: list[tuple[pymunk.Body, str, list[_AeroPart]]] = list(groups.values())
 
     def _apply_aero(self) -> None:
         """변마다 평판 힘을 모아 물체 무게중심의 힘·토크로 더한다(세계 좌표, 추진기·바람 항력에 더함).
@@ -1219,76 +1284,78 @@ class Episode:
         일을 빼앗기만 한다(가운데에서 잰 바람으로 1/4 점에 걸면 도는 물체가 스스로 빨라졌다: 설계 측정).
 
         한 스텝 상한(설계 D15): D = Σ_힘 (|F| / |u|) x (1/m + ((r x F) / |F|)² / I)이고 D x dt > 1이면 그 물체의 공기힘·토크를
-        1 / (D x dt)배로 줄인다(한 스텝의 공기힘 충격이 힘 거는 점의 상대 속도보다 크게 속도를 바꾸지 않게)."""
+        1 / (D x dt)배로 줄인다(한 스텝의 공기힘 충격이 힘 거는 점의 상대 속도보다 크게 속도를 바꾸지 않게). 합과 상한은 물체마다:
+        한 물체에 단 공기역학 부품들의 변을 모두 더한 뒤 한 번 줄이고, 발동 수도 (물체, 스텝)마다 한 번 센다."""
         wx, wy = self.wind
         exp, asin, sqrt, hypot = math.exp, math.asin, math.sqrt, math.hypot
         width = AERO_STALL_WIDTH
-        for part in self._aero:
-            body = part.body
-            _x, _y, a, vx, vy, w = self._bstate(part.bid)
+        for body, bid, parts in self._aero_bodies:
+            _x, _y, a, vx, vy, w = self._bstate(bid)
             c, s_ = math.cos(a), math.sin(a)
-            qk, slope, cd90, stall, fric, induced = part.qk, part.slope, part.cd90, part.stall, part.friction, part.induced
             fx = fy = tq = 0.0
             dsum = 0.0
             inv_m = 1.0 / body.mass
             inv_i = 1.0 / body.moment
-            for nx_, ny_, dx, dy, mx, my, ln in part.edges:
-                nx, ny = nx_ * c - ny_ * s_, nx_ * s_ + ny_ * c
-                ex, ey = dx * c - dy * s_, dx * s_ + dy * c
-                rx, ry = mx * c - my * s_, mx * s_ + my * c
-                # 1) 변 가운데에서 잰 바람: 표면 마찰, 받음각·실속 정도, 압력 중심
-                ux, uy = wx - (vx - w * ry), wy - (vy + w * rx)
-                u2 = ux * ux + uy * uy
-                if u2 < AERO_MIN_SPEED2:
-                    continue
-                speed = sqrt(u2)
-                un = ux * nx + uy * ny
-                k = qk * speed * ln * fric  # 표면 마찰(모든 변): 변을 따라 흐르는 성분 쪽으로
-                ffx, ffy = k * (ux - un * nx), k * (uy - un * ny)
-                fx += ffx
-                fy += ffy
-                tq += rx * ffy - ry * ffx
-                fm = hypot(ffx, ffy)
-                if fm > 0.0:
-                    cr = (rx * ffy - ry * ffx) / fm
-                    dsum += fm / speed * (inv_m + cr * cr * inv_i)
-                if un >= 0.0:
-                    continue  # 바람을 등진 변
-                sa = min(1.0, -un / speed)
-                sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
-                xcp = AERO_CP_ATTACHED + AERO_CP_STALL_SHIFT * sig
-                f = xcp - 0.5 if ux * ex + uy * ey >= 0.0 else 0.5 - xcp  # 흐름이 먼저 닿는 끝에서 xcp
-                px, py = rx + ex * f, ry + ey * f
-                # 2) 압력 중심에서 다시 잰 바람으로 힘을 계산해 그 점에 건다
-                ux, uy = wx - (vx - w * py), wy - (vy + w * px)
-                u2 = ux * ux + uy * uy
-                if u2 < AERO_MIN_SPEED2:
-                    continue
-                speed = sqrt(u2)
-                un = ux * nx + uy * ny
-                if un >= 0.0:
-                    continue
-                sa = min(1.0, -un / speed)
-                ca = sqrt(1.0 - sa * sa)
-                sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
-                q = qk * u2 * ln
-                cl = slope * sa * ca
-                att = (1.0 - sig) * q
-                if ca > 1e-9:
-                    lx, ly = (-nx + un * ux / u2) / ca, (-ny + un * uy / u2) / ca  # -n의 흐름에 수직인 성분 방향
-                else:
-                    lx = ly = 0.0
-                fi = att * cl * cl * induced
-                fst = sig * q * cd90 * sa / (0.56 + 0.44 * sa)
-                force_x = att * cl * lx - fst * nx + fi * ux / speed
-                force_y = att * cl * ly - fst * ny + fi * uy / speed
-                fx += force_x
-                fy += force_y
-                tq += px * force_y - py * force_x
-                fm = hypot(force_x, force_y)
-                if fm > 0.0:
-                    cr = (px * force_y - py * force_x) / fm
-                    dsum += fm / speed * (inv_m + cr * cr * inv_i)
+            for part in parts:
+                qk, slope, cd90 = part.qk, part.slope, part.cd90
+                stall, fric, induced = part.stall, part.friction, part.induced
+                for nx_, ny_, dx, dy, mx, my, ln in part.edges:
+                    nx, ny = nx_ * c - ny_ * s_, nx_ * s_ + ny_ * c
+                    ex, ey = dx * c - dy * s_, dx * s_ + dy * c
+                    rx, ry = mx * c - my * s_, mx * s_ + my * c
+                    # 1) 변 가운데에서 잰 바람: 표면 마찰, 받음각·실속 정도, 압력 중심
+                    ux, uy = wx - (vx - w * ry), wy - (vy + w * rx)
+                    u2 = ux * ux + uy * uy
+                    if u2 < AERO_MIN_SPEED2:
+                        continue
+                    speed = sqrt(u2)
+                    un = ux * nx + uy * ny
+                    k = qk * speed * ln * fric  # 표면 마찰(모든 변): 변을 따라 흐르는 성분 쪽으로
+                    ffx, ffy = k * (ux - un * nx), k * (uy - un * ny)
+                    fx += ffx
+                    fy += ffy
+                    tq += rx * ffy - ry * ffx
+                    fm = hypot(ffx, ffy)
+                    if fm > 0.0:
+                        cr = (rx * ffy - ry * ffx) / fm
+                        dsum += fm / speed * (inv_m + cr * cr * inv_i)
+                    if un >= 0.0:
+                        continue  # 바람을 등진 변
+                    sa = min(1.0, -un / speed)
+                    sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
+                    xcp = AERO_CP_ATTACHED + AERO_CP_STALL_SHIFT * sig
+                    f = xcp - 0.5 if ux * ex + uy * ey >= 0.0 else 0.5 - xcp  # 흐름이 먼저 닿는 끝에서 xcp
+                    px, py = rx + ex * f, ry + ey * f
+                    # 2) 압력 중심에서 다시 잰 바람으로 힘을 계산해 그 점에 건다
+                    ux, uy = wx - (vx - w * py), wy - (vy + w * px)
+                    u2 = ux * ux + uy * uy
+                    if u2 < AERO_MIN_SPEED2:
+                        continue
+                    speed = sqrt(u2)
+                    un = ux * nx + uy * ny
+                    if un >= 0.0:
+                        continue
+                    sa = min(1.0, -un / speed)
+                    ca = sqrt(1.0 - sa * sa)
+                    sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
+                    q = qk * u2 * ln
+                    cl = slope * sa * ca
+                    att = (1.0 - sig) * q
+                    if ca > 1e-9:
+                        lx, ly = (-nx + un * ux / u2) / ca, (-ny + un * uy / u2) / ca  # -n의 흐름에 수직인 성분 방향
+                    else:
+                        lx = ly = 0.0
+                    fi = att * cl * cl * induced
+                    fst = sig * q * cd90 * sa / (0.56 + 0.44 * sa)
+                    force_x = att * cl * lx - fst * nx + fi * ux / speed
+                    force_y = att * cl * ly - fst * ny + fi * uy / speed
+                    fx += force_x
+                    fy += force_y
+                    tq += px * force_y - py * force_x
+                    fm = hypot(force_x, force_y)
+                    if fm > 0.0:
+                        cr = (px * force_y - py * force_x) / fm
+                        dsum += fm / speed * (inv_m + cr * cr * inv_i)
             if dsum * self.dt > 1.0:
                 scale = 1.0 / (dsum * self.dt)
                 fx *= scale
@@ -1677,23 +1744,35 @@ class Episode:
         memo: list[Any] = [-1, ()]
         # 에이전트 물체는 질의 필터(에이전트 그룹)로 이미 빠진다. 세계 물체에 단 레이는 자기 모양을 직접 건너뛴다.
         own = None if bid in self._agent_ids else set(self.bodies[bid].shapes)
+        # 첫 맞음 질의는 C 함수를 바로 부른다(_segment_first_c, 결과는 공개 API와 비트 단위로 같다). 레이마다 같은 식
+        # (각도 a + ang의 cos·sin)으로 끝점을 구하는 것은 그대로다.
+        fast = _segment_first_c(space, filt) if own is None else None
+        cos, sin = math.cos, math.sin
 
         def rays() -> tuple[float, ...]:
             if memo[0] == self.steps:
                 return memo[1]
             x, y, a, *_ = self._bstate(bid)
-            c, si = math.cos(a), math.sin(a)
+            c, si = cos(a), sin(a)
             px, py = x + ox * c - oy * si, y + ox * si + oy * c
+            start = (px, py)
             out = []
-            for ang in angles:
-                th = a + ang
-                end = (px + length * math.cos(th), py + length * math.sin(th))
-                if own is None:
-                    hit = space.segment_query_first((px, py), end, 0.0, filt)
-                    out.append(hit.alpha if hit is not None else 1.0)
-                else:
-                    alphas = [h.alpha for h in space.segment_query((px, py), end, 0.0, filt) if h.shape not in own]
-                    out.append(min(alphas) if alphas else 1.0)
+            if fast is not None:
+                query, raw, cfilt, _owner, info = fast
+                for ang in angles:
+                    th = a + ang
+                    query(raw, start, (px + length * cos(th), py + length * sin(th)), 0.0, cfilt, info)
+                    out.append(info.alpha)
+            else:
+                for ang in angles:
+                    th = a + ang
+                    end = (px + length * cos(th), py + length * sin(th))
+                    if own is None:
+                        hit = space.segment_query_first(start, end, 0.0, filt)
+                        out.append(hit.alpha if hit is not None else 1.0)
+                    else:
+                        alphas = [h.alpha for h in space.segment_query(start, end, 0.0, filt) if h.shape not in own]
+                        out.append(min(alphas) if alphas else 1.0)
             memo[0], memo[1] = self.steps, tuple(out)
             return memo[1]
 

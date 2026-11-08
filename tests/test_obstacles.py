@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from evolab import paths
-from evolab.generators.obstacles import LENGTH_TAIL, MIN_GAP, generate_obstacles, scrolled_distance
+from evolab.generators.obstacles import LENGTH_TAIL, MIN_GAP, generate_obstacles, place_boxes, scrolled_distance
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import compile_env
 from evolab.world.physics2d.episode import Episode, Trial
@@ -126,3 +126,32 @@ def test_obstacle_seed_must_be_a_world_value() -> None:
     data["generators"][0]["seed"] = "=p.k"  # 생성기 단계는 r.*만: 개체마다 다른 줄이 되면 안 된다
     with pytest.raises(EnvFileError):
         compile_env(json.dumps(data))
+
+
+def test_place_boxes_keeps_direction_pi_exact_and_mirrors_direction_zero() -> None:
+    row = generate_obstacles(31, **ROW)  # type: ignore[arg-type]
+    assert place_boxes(row, math.pi) == row.boxes  # 내장 점프 게임: 줄 좌표 그대로(sin π만큼도 옮기지 않음)
+    assert place_boxes(row, 0.0) == [(-x1, y0, -x0, y1) for x0, y0, x1, y1 in row.boxes]  # 왼쪽에서 옴: 좌우 뒤집기
+
+
+@pytest.mark.parametrize("direction", [math.pi, 0.0, 3.14, math.pi - 0.3, 0.2, -math.pi])
+def test_every_obstacle_passes_the_runner_spot_at_floor_height_in_any_direction(direction: float) -> None:
+    """미는 방향이 π가 아니어도 장애물마다 앞 모서리가 줄 좌표 거리 s만큼 밀린 시각에 바닥 높이 그대로 선수 자리(x = 0)를
+    지난다. 전에는 줄 좌표를 방향 π로만 놓아 다른 방향이면 첫 장애물 말고는 선수 자리에 오지 않았다(검토 측정 0~1/6)."""
+    data = jump_data()
+    data["generators"][0].update({"direction": direction, "count": 6})
+    spec = compile_env(json.dumps(data))
+    assert [i for i in spec.issues if i.severity != "info"] == []  # x = 20: 어느 방향이든 선수에서 20m
+    ep = Episode(spec, None, Trial(7))
+    geo = next(g for g in ep.geometry().bodies if g.id == "obs")
+    assert geo.motion is not None and len(geo.shapes) == 6
+    ux = -math.cos(direction)  # 장애물이 오는 쪽의 x 성분(양수면 오른쪽에서 옴)
+    for shape in geo.shapes:
+        xs, ys = [p[0] for p in shape.points], [p[1] for p in shape.points]
+        lead = min(xs) if ux >= 0.0 else max(xs)  # 앞 모서리
+        s = lead / ux  # 선수 자리까지 줄을 따라 남은 거리
+        assert s >= 20.0 - 1e-9
+        px, py, _ = pose_at(geo.motion, arrival(s, 6.0, 0.25))
+        assert lead + px == pytest.approx(0.0, abs=1e-6)
+        floor = min(ys) + py
+        assert floor == pytest.approx(0.0, abs=1e-6) or 1.25 - 1e-6 <= floor <= 1.5 + 1e-6  # 땅 또는 공중 장애물

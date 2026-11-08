@@ -16,7 +16,8 @@
   유전자 = layout.initial() + N(0, 0.5), np.random.default_rng(20261107)에서 환경 순서(lander, track_car, hill_car)대로
   뽑는다. 시험 = Trial(seeds.derive(9, k)), k = 0, 1, 2(태그 9는 학습·검증·비교·판정·학습 방법 어느 공간에도 없음).
   유전자와 환경 글도 함께 담아 테스트가 같은 입력을 쓴다. 숫자 비교는 자료를 만든 플랫폼에서만 한다
-  (명세 "정답 해시를 박지 않음"): 만든 플랫폼은 npz의 "platform" 칸.
+  (명세 "정답 해시를 박지 않음"): 만든 플랫폼은 npz의 "platform" 칸(사람이 읽는 OS-기계)과 "platform_info" 칸(JSON:
+  runsetup.platform_info의 python, numpy, pymunk, cma, cpu: v1.0·v1.1 자료 테스트의 same_platform과 같은 규칙).
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ import typing
 from pathlib import Path
 
 import numpy as np
+
+
+PLATFORM_KEYS = ("python", "numpy", "pymunk", "cma", "cpu")
+"""v1_regress.npz의 platform_info에 담는 runsetup.platform_info 칸(같으면 숫자를 비교한다)."""
 
 
 def model_field_names(root: type) -> list[str]:
@@ -64,6 +69,7 @@ def main() -> None:
     assert Path(evolab.__file__).resolve().is_relative_to(base), evolab.__file__
     from evolab.engine import seeds
     from evolab.engine.evaluate import evaluate
+    from evolab.engine.runsetup import platform_info
     from evolab.policy.genome import layout_for
     from evolab.spec import model as m
     from evolab.spec.io import compile_env, dump_env, env_hash, parse_env
@@ -78,7 +84,9 @@ def main() -> None:
                    ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
     # T1, T2: v1 파일의 정규 글과 해시. 원본은 저장소의 파일(사본 폴더가 아니라)이다.
-    sources = {p.stem: p for p in sorted((repo / "environments").glob("*.evoenv"))}
+    # v2 이후의 예제(형식 2 이상: 점프 게임, 글라이더)는 v1 파일이 아니다(옛 코드는 읽지도 못함).
+    sources = {p.stem: p for p in sorted((repo / "environments").glob("*.evoenv"))
+               if json.loads(p.read_bytes()).get("version", 1) <= m.CURRENT_VERSION}
     for run_env in sorted((repo / "tests" / "data").glob("*/run/envs/v000.evoenv")):
         sources[run_env.parents[2].name] = run_env
     dump_dir = out_dir / "v1_dump"
@@ -95,6 +103,7 @@ def main() -> None:
     trials = [Trial(seeds.derive(9, k)) for k in range(3)]
     arrays: dict[str, np.ndarray] = {
         "platform": np.array(f"{sys.platform}-{platform.machine()}"),
+        "platform_info": np.array(json.dumps({k: platform_info(0)[k] for k in PLATFORM_KEYS}, sort_keys=True)),
         "trial_seeds": np.array([t.seed for t in trials], dtype=np.uint64),
     }
     for name in ("lander", "track_car", "hill_car"):

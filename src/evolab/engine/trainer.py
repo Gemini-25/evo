@@ -41,7 +41,7 @@ import numpy as np
 
 from evolab.engine import observe as observing
 from evolab.engine import seeds
-from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, EvalResult
+from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, EvalResult, mean_of_built
 from evolab.learners.base import Learner, sanitize_scores
 from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec.compiled import EnvSpec
@@ -703,13 +703,19 @@ class Trainer:
         return v
 
     def _compare(self, genome: np.ndarray) -> None:
-        """새 챔피언을 비교 평가 세트로 잰다(명세: 공정한 비교). 이 시험은 누적 시험 횟수와 따로 센다."""
+        """새 챔피언을 비교 평가 세트로 잰다(명세: 공정한 비교). 이 시험은 누적 시험 횟수와 따로 센다.
+
+        비교 점수는 조립된 코스들의 평균이다(판정 평균과 같은 규칙, evaluate.mean_of_built). 조립 실패는 (환경, 몸, 시험)의
+        함수라(설계 D22) 검증 시험에서 조립된 챔피언도 비교 코스 몇 개에서는 조립되지 않을 수 있다. 실패한 코스가 없으면
+        float(scores.mean())과 같아 v1·v1.2와 비트 단위로 같고, 경주 코스 1..32 점수의 평균과 같다는 정확성
+        고리(app/race/model.py)도 그때 성립한다. 성공률은 실패 코스를 실패로 세어 32로 나눈다(판정과 같음).
+        """
         s = self.state
         trials = seeds.compare_trials()
         pairs = [(0, t) for t in trials]
         res = self.evaluator.evaluate(self.env_version, self.env_text, self.layout, genome[None, :], pairs)
         s.compare_evaluations += len(pairs)
-        s.compare_score = float(res.scores.mean())
+        s.compare_score = mean_of_built(res.scores)
         s.compare_success = sum(1 for o in res.outcomes if o == "success") / len(pairs)
 
     # ------------------------------------------------------------------

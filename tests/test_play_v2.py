@@ -8,6 +8,7 @@ import typing
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QImage
@@ -182,6 +183,30 @@ def test_t46_glider_is_watch_only(qtbot: QtBot) -> None:
     assert w.paused
 
 
+def test_watch_only_glider_does_not_save_a_record_or_draw_my_best(qtbot: QtBot, tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """지켜보기만 하는 글라이더는 끝나도 「입력 기록 저장」이 꺼져 있고(사람의 입력이 없음), 예전에 저장한 기록도
+    실험실 「내 최고 기록」 선이 되지 않는다."""
+    from evolab.app.lab import view as lab_view
+
+    w = make_window(qtbot, GLIDER)
+    assert not w.save_button.isEnabled() and w.save_button.toolTip() == S.PLAY_SAVE_WATCH_ONLY
+    finish(w)
+    assert w.last_result is not None and not w.save_button.isEnabled()
+    jump = make_window(qtbot, JUMP)
+    assert jump.save_button.toolTip() == ""
+    records = tmp_path / "records"
+    records.mkdir()
+    monkeypatch.setattr(paths, "records_dir", lambda: records)
+    monkeypatch.setattr(paths, "default_records_dir", lambda: tmp_path / "없음")
+    glider = load_env(GLIDER)
+    old = new_record(glider, 123)
+    old.score, old.outcome, old.steps = w.last_result.score, w.last_result.outcome, w.last_result.steps
+    old.save(records / "글라이더.evoplay")
+    assert best_record_score(glider, [records]) == w.last_result.score  # 기록은 있지만
+    assert lab_view.my_best_score(glider) is None  # 「내 최고 기록」으로 쓰지 않는다
+
+
 # ---------------------------------------------------------------------------
 # 그리기: 움직이는 장애물, 땅, 기본 보기 카메라
 def _color_near(img: QImage, x: float, y: float, color: QColor, tol: int = 12) -> bool:
@@ -228,11 +253,25 @@ def test_view_camera_is_a_pure_function_that_moves_only_past_the_edge() -> None:
     # 보이는 범위의 가장자리(VIEW_EDGE 안쪽) 안에서는 그대로
     hw = (1.0 - play_window.VIEW_EDGE) * 1000 / (2 * s)
     assert view_camera(box, (6.0 + hw - 0.01, 0.5), 1000, 700)[0] == (6.0, 2.5)
-    # 넘으면 넘은 만큼만(배율 그대로)
-    (cx2, cy2), s2 = view_camera(box, (6.0 + hw + 3.0, 0.5), 1000, 700)
-    assert cx2 == pytest.approx(9.0) and cy2 == 2.5 and s2 == s
-    (cx3, _), _ = view_camera(box, (6.0 - hw - 2.0, 0.5), 1000, 700)
-    assert cx3 == pytest.approx(4.0)
+    # 가로로 넘으면 따라가며 점을 화면 폭의 65%(VIEW_LEAD) 자리로 옮긴다(배율 그대로): 넘은 직후에는 넘은 만큼 남짓,
+    # 넘은 거리가 2(가장자리 − 65% 자리)를 지나면 점이 그 자리에 머문다. 왼쪽으로 가면 35% 자리.
+    lead = play_window.VIEW_LEAD * 1000 / (2 * s)
+    d = 2.0 * (hw - lead)
+    (cx2, cy2), s2 = view_camera(box, (6.0 + hw + 0.001, 0.5), 1000, 700)
+    assert cx2 == pytest.approx(6.001, abs=1e-6) and cy2 == 2.5 and s2 == s
+    for e in (d, d + 3.0, d + 40.0):
+        (cx2, _), _ = view_camera(box, (6.0 + hw + e, 0.5), 1000, 700)
+        assert cx2 == pytest.approx(6.0 + hw + e - lead)
+        (cx3, _), _ = view_camera(box, (6.0 - hw - e, 0.5), 1000, 700)
+        assert cx3 == pytest.approx(6.0 - hw - e + lead)
+    # 연속이고 카메라가 점보다 두 배 넘게 빨리 움직이지 않는다(시각을 되돌려도 같은 화면: 점만의 함수)
+    xs = [6.0 + hw + d * k / 200.0 for k in range(-10, 220)]
+    cs = [view_camera(box, (x, 0.5), 1000, 700)[0][0] for x in xs]
+    steps = np.diff(cs) / np.diff(xs)
+    assert (steps >= 0.0).all() and steps.max() <= 2.0 + 1e-6
+    # 세로는 넘은 만큼만
+    hh = (1.0 - play_window.VIEW_EDGE) * 700 / (2 * s)
+    assert view_camera(box, (6.0, 2.5 + hh + 1.5), 1000, 700)[0][1] == pytest.approx(4.0)
     # 확대는 배율만
     assert view_camera(box, (0.0, 0.5), 1000, 700, zoom=2.0)[1] == pytest.approx(2 * s)
 
@@ -260,7 +299,9 @@ def test_play_camera_starts_at_the_default_view_and_follows_the_glider(qtbot: Qt
     gx = g.episode.bodies["glider"].position.x
     assert xs[-1] > 1.0 and xs == sorted(xs)  # 멀리 날아가면 따라간다
     hw = (1.0 - play_window.VIEW_EDGE) * g.canvas.width() / (2 * g.canvas.scale)
+    lead = play_window.VIEW_LEAD * g.canvas.width() / (2 * g.canvas.scale)
     assert gx <= g.canvas.center[0] + hw + 1e-9
+    assert gx == pytest.approx(g.canvas.center[0] + lead)  # 따라가는 동안 글라이더는 화면 폭의 65% 자리(앞이 보이게)
 
     lander = make_window(qtbot, LANDER)
     assert lander.view is None and lander.canvas.view_box is None  # 기본 보기가 없으면 지금 규칙

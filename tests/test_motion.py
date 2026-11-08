@@ -154,3 +154,72 @@ def test_spinning_wave_angle_is_linear_in_time() -> None:
         ep.step([])
     assert ep.bodies["m"].angle == pytest.approx(0.2 + 0.7 * 90 * ep.dt, abs=1e-9)
     assert math.isfinite(np.float64(ep.bodies["m"].position.y))
+
+
+# ---------------------------------------------------------------------------
+# 스텝 비용 줄이기(v2.0 M2): C 함수를 바로 부르는 길, 돌지 않는 물체의 각속도 쓰기 건너뛰기. 결과는 비트 단위로 같아야 한다.
+# ---------------------------------------------------------------------------
+
+
+def body_states(ep: Episode) -> list[tuple[float, ...]]:
+    """모든 물체의 (x, y, 각도, vx, vy, 각속도), 공개 API로 읽음."""
+    out = []
+    for b in ep.bodies.values():
+        p, v = b.position, b.velocity
+        out.append((p.x, p.y, b.angle, v.x, v.y, b.angular_velocity))
+    return out
+
+
+def riding_env() -> Any:
+    """MOTIONS의 모든 움직임(각도가 있는 것 포함) + 돌지 않는 발판 위 상자 + 그 상자의 레이."""
+    bodies = [mover(name, [6.0 * k, 3.0], mo, angle=0.3 * k) for k, (name, mo) in enumerate(MOTIONS.items())]
+    bodies.append(mover("plat", [-10.0, 1.0], {"kind": "path", "points": [[0, 0], [4, 0]], "speed": 2.0,
+                                                "mode": "pingpong"}, w=3.0, h=0.2, friction=1.0))
+    bodies.append({"id": "box", "owner": "agent", "pos": [-10.0, 1.3], "shapes": [{"kind": "box", "w": 0.4, "h": 0.4}],
+                   "material": {"density": 2.0, "friction": 1.0}})
+    rays = {"kind": "rays", "id": "eye", "body": "box", "origin": [0.0, 0.0], "count": 15, "spread": 0.5,
+            "center": 0.12, "length": 30.0, "hits": list(MOTIONS)}
+    return env(bodies, sensors=[rays])
+
+
+def test_skipping_the_angular_velocity_of_non_turning_bodies_changes_nothing() -> None:
+    """돌지 않는 움직임(spin 0)은 각속도 쓰기를 건너뛴다. 늘 쓰는 옛 계산과 모든 물체 상태가 비트 단위로 같다."""
+    for spec, trial, action in ((riding_env(), Trial(1), []), (compile_env(JUMP_TEXT), Trial(7), [0.0])):
+        fast = Episode(spec, None, trial)
+        old = Episode(spec, None, trial)
+        old._kinematic_drive = [(b, raw, plan, True) for b, raw, plan, _ in old._kinematic_drive]
+        spins = [plan.spin != 0.0 for _, _, plan, _ in fast._kinematic_drive]
+        assert [turns for *_, turns in fast._kinematic_drive] == spins
+        assert False in spins  # 건너뛰는 물체가 실제로 있다
+        for k in range(600):
+            if fast.done:
+                break
+            act = action if not action or k % 40 else [1.0]
+            fast.step(act)
+            old.step(act)
+            assert body_states(fast) == body_states(old), k
+            assert fast.observe().tobytes() == old.observe().tobytes(), k
+        assert fast.steps == old.steps and fast.steps > 100
+
+
+def test_direct_c_calls_match_the_public_pymunk_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정해진 움직임 물체·레이를 C 함수로 바로 다루는 길(고정한 pymunk에서 쓰임)과 공개 API 길의 모든 물체 상태·관찰이
+    스텝마다 비트 단위로 같다(설계 3.1: 결과는 (환경, 몸 수치, 시험)만의 함수)."""
+    from evolab.world.physics2d import episode as episode_mod
+
+    assert episode_mod._CP_FAST  # 고정한 pymunk(uv.lock)에서는 빠른 길이 쓰여야 한다
+    spec = riding_env()
+    fast = Episode(spec, None, Trial(3))
+    assert all(raw is not None for _, raw, _, _ in fast._kinematic_drive)
+    monkeypatch.setattr(episode_mod, "_CP_FAST", False)
+    public = Episode(spec, None, Trial(3))
+    assert all(raw is None for _, raw, _, _ in public._kinematic_drive)
+    hits = 0
+    for k in range(600):
+        obs = fast.observe()
+        assert obs.tobytes() == public.observe().tobytes(), k
+        hits += int(np.count_nonzero(obs < 1.0))
+        fast.step([])
+        public.step([])
+        assert body_states(fast) == body_states(public), k
+    assert hits > 100  # 레이가 실제로 움직이는 물체를 맞혔다

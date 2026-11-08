@@ -16,7 +16,9 @@ concurrency:
 jobs:
   test-and-build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    # v2.0 빠른 테스트가 리눅스 한가한 4코어에서 1,008~1,030초(17분 남짓)라 테스트 단계 25분 + 설치·자체 점검·exe 묶기·
+    # exe 점검으로 60분.
+    timeout-minutes: 60
     env:
       UV_PYTHON_DOWNLOADS: never
       # uv.lock과 pyproject가 어긋나면 sync와 run 모두 실패하게 한다(잠금을 조용히 고치지 않게).
@@ -36,7 +38,7 @@ jobs:
         run: uv sync
 
       - name: Tests
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -q

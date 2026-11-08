@@ -661,6 +661,8 @@ class CompareView(QWidget):
         self._checked: set[str] = set()
         self._collapsed: set[str] = set()
         self.shown: list[Shown] = []
+        self._no_success_hidden = False
+        """성공률 그래프에서 성공 판정이 없는 환경의 실행을 뺐는가(안내 CMP_NO_SUCCESS_RATE)."""
         self.rows: list[TableRow] = []
         self.x_axis = "evaluations"
         self.y_metric = "compare_score"
@@ -1228,16 +1230,24 @@ class CompareView(QWidget):
         self._redraw_timer.stop()
         t = self.theme
         step = self.y_metric in STEP_METRICS
+        # 성공률: 성공 판정이 없는 환경(글라이더)의 실행은 그리지 않는다(통계의 0%가 실패처럼 보이지 않게, 표의 「—」와
+        # 같은 규칙: v2.0 설계 D21). 범례는 남기고 안내를 보인다.
+        rate = self.y_metric in PERCENT_METRICS
+        self._no_success_hidden = False
         shown: list[Shown] = []
         for k, (kind, name, entries, gid) in enumerate(self._items_to_show()):
             color = t.series[k % len(t.series)]
             style = _STYLES[(k // len(t.series)) % len(_STYLES)]
             datas = [self.cache.get(e.path) for e in entries]
             item = Shown(kind, name, color, style, entries, datas, group_id=gid)
+            keep = [not rate or env_has_success(e.path) for e in entries]
+            self._no_success_hidden |= not all(keep)
             if kind == "run":
-                item.x, item.y = series(datas[0], self.x_axis, self.y_metric)
+                if keep[0]:
+                    item.x, item.y = series(datas[0], self.x_axis, self.y_metric)
             else:
-                curve = aggregate([series(d, self.x_axis, self.y_metric) for d in datas], step)
+                members = [d for d, ok in zip(datas, keep, strict=True) if ok]
+                curve = aggregate([series(d, self.x_axis, self.y_metric) for d in members], step)
                 item.curve = curve
                 item.x, item.y = curve.x, curve.mean
             shown.append(item)
@@ -1328,7 +1338,10 @@ class CompareView(QWidget):
         self.title_label.setText(S.CMP_TITLE.format(y=S.CMP_Y_NAMES[self.y_metric], x=S.CMP_X_NAMES[self.x_axis]))
         self.legend.setText("&nbsp;&nbsp; ".join(legend))
         self.stack.setCurrentWidget(self.plot_widget if self.shown else self.message)
-        if self.shown and not any_value:
+        if self.shown and self._no_success_hidden:
+            self.note_label.setText(S.CMP_NO_SUCCESS_RATE)
+            self.note_label.show()
+        elif self.shown and not any_value:
             self.note_label.setText(S.CMP_NO_VALUES.format(y=S.CMP_Y_NAMES[self.y_metric]))
             self.note_label.show()
         else:
