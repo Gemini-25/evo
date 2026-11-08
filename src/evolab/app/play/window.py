@@ -11,6 +11,11 @@ v2.0(설계 5.2, D12·D49):
   「조종할 것이 없는 환경」 안내.
 - 기본 보기(editor.view)가 있으면 카메라가 그 상자에서 시작하고, 따라갈 물체가 보이는 범위의 가장자리를 넘을 때만
   움직인다(배율은 그대로). 없으면 지금 규칙(따라갈 물체와 목표 영역).
+
+v2.1(몸 구조): 직접 조종은 처음 몸(매개변수 값)으로 한다. 처음 몸에 없는 부품(Episode.absent)이 있으면 그 이름과 「처음 몸은
+서툴 수 있고 학습하면 바뀐다」 안내를 보이고(PLAY_STRUCTURE_NOTE), 없는 부품의 구동기 키(Episode.dead_channels)는 도움말에서
+뺀다. 센서 표는 없는 부품에 단 센서 옆에 「(없음)」(INSPECT_ABSENT). 몸은 처음 몸 그대로라 입력 기록·「내 최고 기록」은 v2.0과
+같은 뜻이다(바퀴 고르는 언덕차의 처음 몸은 설계 D44대로 일부러 바퀴 하나).
 """
 
 from __future__ import annotations
@@ -535,6 +540,10 @@ class PlayWindow(QWidget):
         ]
         """점프 추진기 (채널 = 구동기 id, 이름, 물체 id): HUD와 먼지 표시."""
         self.pressed: set[int] = set()
+        self.dead_outputs: frozenset[int] = frozenset()
+        """없는 부품의 구동기 출력 번호(spec.outputs 순서, v2.1). 그 키는 도움말에 넣지 않는다(눌러도 출력 0)."""
+        self.absent_inputs: frozenset[str] = frozenset()
+        """없는 부품에 단 센서의 입력 채널 이름(v2.1). 센서 표에서 「(없음)」."""
         self.paused = False
         self.replaying: PlayRecord | None = None
         self.episode: Episode | None = None
@@ -571,8 +580,13 @@ class PlayWindow(QWidget):
         help_label = QLabel(self.help_text())
         help_label.setWordWrap(True)
         self.help_label = help_label
+        self.structure_label = QLabel()
+        """처음 몸에 없는 부품 안내(v2.1). 없는 부품이 없으면 숨긴다."""
+        self.structure_label.setWordWrap(True)
+        self.structure_label.hide()
 
         side = QVBoxLayout()
+        side.addWidget(self.structure_label)
         side.addWidget(self.status)
         side.addWidget(self.seed_label)
         side.addWidget(QLabel(S.PLAY_BLOCKS_TITLE))
@@ -619,6 +633,7 @@ class PlayWindow(QWidget):
         else:
             keys = "\n".join(
                 S.PLAY_KEY_LINE.format(keys=" / ".join(kb.key_names), label=kb.label) for kb in self.bindings
+                if kb.output_index not in self.dead_outputs  # 없는 부품의 키(v2.1)는 듣지 않으므로 뺀다
             )
         pause = S.PLAY_PAUSE_KEYS["both" if self.space_pauses else "esc"]
         return S.PLAY_HELP.format(keys=keys, pause=pause)
@@ -655,11 +670,28 @@ class PlayWindow(QWidget):
         self._jump_index = [(self.canvas.channel_names.index(ch), self.episode.bodies[body])
                             for ch, _label, body in self.jumps if body in self.episode.bodies]
         self.canvas.set_world(geom, self.episode.snapshot(), agent, self.view)
+        self._show_structure(episode)
         self.seed_label.setText(S.PLAY_SEED.format(seed=seed))
         self._fill_tables(force=True)
         self.clock.start()
         self._steps_since_clock = 0
         self.canvas.setFocus()
+
+    def _show_structure(self, episode: Episode) -> None:
+        """처음 몸에 없는 부품(v2.1): 안내 글, 도움말에서 뺄 키, 센서 표의 「(없음)」. 몸 수치만의 함수라 시드와 무관하다."""
+        dead = set(episode.dead_channels)
+        self.dead_outputs = frozenset(i for i, ch in enumerate(self.spec.outputs) if ch in dead)
+        absent = episode.absent
+        sensors = {s.id for s in self.spec.file.sensors
+                   if getattr(s, "body", None) in absent
+                   or (isinstance(s, m.JointAngle) and s.joint in episode.absent_joints)}
+        self.absent_inputs = frozenset(
+            name for name in episode.inputs
+            if (ch := self.spec.sensor_channels.get(name)) is not None and ch.owner in sensors)
+        names = [b.label or b.id for b in self.spec.file.bodies if b.id in absent]
+        self.structure_label.setText(S.PLAY_STRUCTURE_NOTE.format(names=", ".join(names)) if names else "")
+        self.structure_label.setVisible(bool(names))
+        self.help_label.setText(self.help_text())
 
     def restart(self) -> None:
         self.start(self.seed)
@@ -775,7 +807,7 @@ class PlayWindow(QWidget):
         names = ep.inputs
         self.sensors.setRowCount(len(names))
         for r, name in enumerate(names):
-            self._set(self.sensors, r, 0, name)
+            self._set(self.sensors, r, 0, f"{name} {S.INSPECT_ABSENT}" if name in self.absent_inputs else name)
             self._set(self.sensors, r, 1, f"{float(obs[r]):+.3f}")
 
     @staticmethod

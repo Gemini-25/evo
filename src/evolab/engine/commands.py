@@ -32,6 +32,7 @@ from evolab.engine.trainer import (
     Trainer,
     qualify_budget_problem,
     structure_note,
+    structure_range_note,
     training_trials,
 )
 from evolab.policy.genome import layout_for
@@ -228,7 +229,7 @@ def train_command(args: Any) -> int:
             trainer = Trainer.resume(store, pool, None, observe=observe, **overrides)
             store.append_event("resume", gen, workers=workers)
             say(S.TRAIN_RESUMED.format(gen=gen, path=store.root))
-            note = structure_note(trainer.config, trainer.layout)
+            note = structure_note(trainer.config, trainer.layout, trainer.spec)
             if note is not None:  # v2.0 GA·담금질 실행을 구조 환경에서 이어 감(뒤집기 꺼짐): 한 번 알린다
                 warn(note)
             if live:
@@ -268,6 +269,9 @@ def train_command(args: Any) -> int:
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
             say(_stability_text(config))
+            note = structure_range_note(config, spec)
+            if note is not None:  # 범위 때문에 구조 뒤집기가 건드리지 않는 있음 칸(v2.1): 시작할 때 한 번
+                warn(note)
     except (EnvFileError, RunStoreError, ValueError, OSError) as exc:
         if pool is not None:
             pool.close()  # 워커를 띄운 뒤 실패(깨진 체크포인트 등): 워커를 남기지 않는다

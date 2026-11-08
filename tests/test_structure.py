@@ -267,12 +267,73 @@ def _random_bodies(spec: Any, n: int, seed: int) -> np.ndarray:
     return np.random.default_rng(seed).uniform(lo, hi, (n, len(evolved)))
 
 
+_CONSTRAINTS_PER_JOINT = {"pivot": 1, "weld": 2, "spring": 1, "rot_spring": 2}
+"""Episode._build_joint가 관절 종류마다 만드는 pymunk 제약 수(각도 제한은 +1)."""
+
+
+def _assert_built_world(spec: Any, ep: Episode) -> None:
+    """Episode가 실제로 만든 세계가 구조 함수와 같다(Episode.absent를 그 함수와만 비교하면 같은 식을 두 번 쓰는 셈이라,
+    만든 물체·관절·제약·죽은 채널을 직접 센다).
+
+    - 만든 에이전트 물체 = structure.present(몸 수치), 없는 관절 = 끝 하나가 없는 물체인 관절.
+    - pymunk 공간의 제약(관절 + 모터)의 물체 쌍 = 두 끝이 모두 있는 관절이 만들 것.
+    - 죽은 채널 = 없는 물체의 추진기·점프·차량, 없는 관절의 모터.
+    """
+    from collections import Counter
+
+    env = spec.file
+    here = st.present(spec, ep.params)
+    assert set(ep.bodies) & AGENTS == here
+    assert ep.absent == AGENTS - here
+    gone = {j.id for j in env.joints if j.a in ep.absent or j.b in ep.absent}
+    assert ep.absent_joints == gone
+    name_of = {id(b): bid for bid, b in ep.bodies.items()}
+    built = Counter((name_of[id(c.a)], name_of[id(c.b)]) for c in ep.space.constraints)
+    want: Counter[tuple[str, str]] = Counter()
+    joints = {j.id: j for j in env.joints}
+    for j in env.joints:
+        if j.id not in gone:
+            want[(j.a, j.b)] += _CONSTRAINTS_PER_JOINT[j.kind] + (j.limit is not None and j.kind != "weld")
+    for a in env.actuators:
+        if isinstance(a, m.Motor) and a.joint not in gone:
+            want[(joints[a.joint].a, joints[a.joint].b)] += 1
+    assert built == want
+    index = {name: k for k, name in enumerate(ep.actuator_channels())}
+    dead = sorted(index[a.id] for a in env.actuators
+                  if (isinstance(a, m.Motor) and a.joint in gone) or (isinstance(a, m.Thruster) and a.body in ep.absent))
+    assert ep._dead_channels == dead
+
+
 def test_t57_present_equals_runtime_absent_on_2000_random_bodies() -> None:
     spec = _spec()
     trial = Trial(seeds.derive(9, 1))
+    seen: set[frozenset[str]] = set()
     for body in _random_bodies(spec, 2000, 2057):
         ep = Episode(spec, body, trial)
-        assert ep.absent == AGENTS - st.present(spec, ep.params)
+        _assert_built_world(spec, ep)
+        seen.add(ep.absent)
+    assert len(seen) >= 8  # 여러 구조를 지났다(바퀴2·팔 사슬·개수 부품의 조합)
+
+
+def test_t57_place_by_child_of_an_absent_parent_kept_by_a_brace() -> None:
+    """팔이 없어도 손이 차체에 버팀 관절로 이어져 있으면 손(place_by가 팔의 관절)은 있고, 그 시작 자세는 팔이 있을 때와
+    비트 단위로 같다(배치는 구조와 무관하게 선언된 관절 사슬로 정한다). 손가락도 그대로 있다."""
+    data = _data()
+    data["joints"].append({"id": "j_brace", "kind": "spring", "a": "chassis", "b": "hand", "stiffness": 50.0})
+    spec = _spec(data)
+    assert st.optional_bodies(spec.file) == OPTIONAL - {"hand", "finger"}
+    trial = Trial(seeds.derive(9, 3))
+    names = [p.id for p in sy.evolved_params(spec.file)]
+    values = {"w2_on": 0.75, "arm_on": 0.25, "extra_count": 1.0, "wheel_r": 0.3}
+    off = Episode(spec, np.array([values[n] for n in names]), trial)
+    on = Episode(spec, np.array([{**values, "arm_on": 0.75}[n] for n in names]), trial)
+    assert off.absent == {"arm", "extra2", "loose"} and on.absent == {"extra2", "loose"}
+    _assert_built_world(spec, off)
+    _assert_built_world(spec, on)
+    for bid in ("hand", "finger"):
+        a, b = off.bodies[bid], on.bodies[bid]
+        assert (a.position.x, a.position.y, a.angle) == (b.position.x, b.position.y, b.angle), bid
+    assert "j_hand" in off.absent_joints and "j_brace" not in off.absent_joints
 
 
 # ---------------------------------------------------------------------------

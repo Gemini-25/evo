@@ -442,16 +442,37 @@ def structure_flip_of(config: TrainConfig) -> float:
     return {"ga": config.ga_structure_flip, "sa": config.sa_structure_flip}.get(config.method, 0.0)
 
 
-def structure_note(config: TrainConfig, layout: GenomeLayout) -> str | None:
-    """GA·담금질 실행인데 구조 뒤집기가 꺼져 있고 환경에 있음 유전자가 있으면 LAB_GA_NO_STRUCTURE 안내(한국어), 아니면 None.
+def structure_note(config: TrainConfig, layout: GenomeLayout, spec: EnvSpec | None = None) -> str | None:
+    """GA·담금질 실행의 몸 구조 안내(한국어, 여러 줄이면 줄바꿈으로 잇는다). 알릴 것이 없으면 None.
 
-    v2.0에서 시작한 GA·담금질 실행(설정에 키가 없어 0)을 구조 환경에서 이어 갈 때 실험실·명령줄이 한 번 알린다(설계 6절).
+    - 구조 뒤집기가 꺼져 있고 환경에 있음 유전자가 있으면 LAB_GA_NO_STRUCTURE: v2.0에서 시작한 GA·담금질 실행(설정에 키가
+      없어 0)을 구조 환경에서 이어 갈 때 실험실·명령줄이 한 번 알린다(설계 6절).
+    - spec을 주면 structure_range_note(범위 가운데가 0.5가 아니라 뒤집기가 건드리지 않는 있음 칸)도.
     """
     from evolab.app import strings as S
 
+    notes: list[str] = []
     if config.method in ("ga", "sa") and layout.on_genes and not structure_flip_of(config) > 0:
-        return S.LAB_GA_NO_STRUCTURE
-    return None
+        notes.append(S.LAB_GA_NO_STRUCTURE)
+    if spec is not None:
+        notes.append(structure_range_note(config, spec) or "")
+    return "\n".join(n for n in notes if n) or None
+
+
+def structure_range_note(config: TrainConfig, spec: EnvSpec) -> str | None:
+    """GA·담금질 실행인데 있음 칸이 "=p.<id>"이면서 그 매개변수 범위의 가운데가 0.5가 아닌 부품이 있으면
+    LAB_STRUCTURE_RANGE(부품 이름), 아니면 None. 그런 부품은 구조 뒤집기가 켜고 끄지 않는다(structure.off_centre_exists,
+    on_genes와 같은 규칙). 새 실행과 이어하기 모두 알린다."""
+    from evolab.app import strings as S
+    from evolab.spec.structure import off_centre_exists
+
+    if config.method not in ("ga", "sa"):
+        return None
+    skipped = off_centre_exists(spec.file)
+    if not skipped:
+        return None
+    labels = {b.id: (b.label or b.id) for b in spec.file.bodies}
+    return S.LAB_STRUCTURE_RANGE.format(names=", ".join(labels[b] for b, _ in skipped))
 
 
 def _structure_fields(p: float, layout: GenomeLayout) -> dict[str, Any]:
@@ -930,7 +951,8 @@ class Trainer:
         return {"config": TrainConfig.from_dict(self.config.to_dict()), "env_text": self.env_text, "spec": self.spec,
                 "env_version": self.env_version, "layout": self.layout, "trials": self.trials, "how": self.how,
                 "current": dataclasses.replace(s.current),
-                "reserve_record": None if s.reserve is None else dataclasses.replace(s.reserve.record)}
+                "reserve_record": None if s.reserve is None else dataclasses.replace(s.reserve.record),
+                "learner_structure": self._learner_structure()}
 
     def restore_changeable(self, snap: dict[str, Any]) -> None:
         self.config = snap["config"]
@@ -940,12 +962,38 @@ class Trainer:
         self.state.current = dataclasses.replace(snap["current"])
         if self.state.reserve is not None and snap["reserve_record"] is not None:
             self.state.reserve.record = dataclasses.replace(snap["reserve_record"])
+        structure = snap.get("learner_structure")
+        if structure is not None and structure != self._learner_structure():
+            self.learner.set_structure(*structure)  # type: ignore[attr-defined]
+
+    def _learner_structure(self) -> tuple[float, tuple[int, ...]] | None:
+        """지금 학습 방법의 구조 뒤집기 칸 (확률, 있음 유전자). 뒤집기가 없는 학습 방법(CMA-ES)이면 None."""
+        if not hasattr(self.learner, "set_structure"):
+            return None
+        cfg = self.learner.config  # type: ignore[attr-defined]
+        return float(cfg.structure_flip), tuple(cfg.structure_genes)
+
+    def _structure_for(self, layout: GenomeLayout) -> tuple[float, tuple[int, ...]] | None:
+        """배치 layout에서 지금 학습 방법이 뒤집어야 할 (확률, 있음 유전자): make_learner가 그 배치로 새로 만들 때와 같은
+        규칙(_structure_fields). 지금 값과 같거나 뒤집기가 없는 학습 방법이면 None(바꿀 것 없음)."""
+        have = self._learner_structure()
+        if have is None:
+            return None
+        fields = _structure_fields(structure_flip_of(self.config), layout)
+        want = (float(fields.get("structure_flip", 0.0)), tuple(fields.get("structure_genes", ())))
+        return None if want == have else want
 
     def replace_env(self, env_text: str) -> str:
         """환경을 바꾼다(유전자 배치, 점수 블록, 종료 조건 목록이 같아야 한다). 새 환경 버전 id(해시)를 돌려준다.
 
         예선 중(평가를 하나라도 했으면)에는 거부한다(출전자끼리 다른 환경에서 겨루지 않게). 환경 버전이 바뀌면 지금
         학습 방법의 재시작 기준점을 다시 잡는다(어렵게 고친 직후 옛 기준을 못 넘어 엉뚱하게 재시작하지 않게).
+
+        있음 칸 수식을 고쳐 있음 유전자(layout.on_genes, 서명에 들어가지 않음)가 바뀌면 지금 GA·담금질의 구조 뒤집기 목록도
+        새 배치를 따른다(설계 4.12·3.5: 고친 뒤 새로 만드는 학습 방법과 같은 규칙). 바뀐 목록은 학습 방법 상태의 설정에
+        들어가 다음 체크포인트에 남고, 재현 묶음은 같은 세대에 replace_env를 다시 부르므로 이어하기·재현이 같다. 구조
+        뒤집기를 끈 실행(확률 0)은 바뀌는 것이 없다(상태 키도 그대로). 보관 출전자(예선)는 여기서 있을 수 없다: 보관은
+        예선 중 평가 뒤에만 생기고, 그때는 위에서 거부한다.
         """
         from evolab.app import strings as S
 
@@ -966,6 +1014,7 @@ class Trainer:
         if (spec.file.scoring.formula is None) != self.weighted_blocks:
             raise TrainerChangeError(S.TRAIN_ENV_COLUMNS_CHANGED)
         version = env_hash(spec.file)[:16]
+        structure = self._structure_for(layout)
         if version != self.env_version:
             self._rearm()
         self.env_text = env_text
@@ -974,6 +1023,8 @@ class Trainer:
         # 달라질 수 있다: 처음 상태에서 새로 시작하는 학습 방법과 다음 예선 출전자의 출발점(layout.initial())이
         # 지금 환경을 따라야, 그 뒤 체크포인트에서 이어 간 트레이너(체크포인트의 환경으로 배치를 만든다)와 같다
         self.layout = layout
+        if structure is not None:
+            self.learner.set_structure(*structure)  # type: ignore[attr-defined]
         self.env_version = version
         self.trials = trials_for(spec, self.config)
         self.how = self.config.aggregate or spec.file.evaluation.aggregate

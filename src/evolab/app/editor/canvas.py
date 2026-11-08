@@ -12,8 +12,10 @@
   않는 그림을 이미지로 한 번 그려 두고 움직이는 물체만 덧그린다. 문서가 바뀌면 멈추고 0초로 돌아간다.
 - (v2) 기본 보기(editor.view, 해시 밖): 「전체 보기」는 기본 보기가 있으면 그 상자로, 한 번 더 누르면 장면 전체로.
 - (v2.1) 없어질 수 있는 물체(spec.structure.optional_bodies)는 점선 테두리와 「?」 표지. 처음 몸에 없는 물체(Episode.absent)와
-  거기 붙은 부품은 「없는 부품도 보기」(show_absent)가 켜져 있으면 옅게, 꺼져 있으면 그리지도 누르지도 않는다. 구조 탭에서
-  고른 줄의 물체와 함께 사라지는 부품은 점선 강조(set_structure_highlight). 물체 오른쪽 메뉴에 「배열로 늘리기…」.
+  거기 붙은 부품은 「없는 부품도 보기」(show_absent)가 켜져 있으면 옅게, 꺼져 있으면 그리지도 누르지도 않는다(꺼진 채 캔버스
+  밖에서 숨은 부품을 고르면, 예를 들어 구조 탭 줄, 보기를 다시 켠다: 고른 것은 늘 보인다). 구조 탭에서 고른 줄의 물체와
+  함께 사라지는 부품은 점선 강조(set_structure_highlight). 물체 오른쪽 메뉴에 「배열로 늘리기…」(할 수 없으면 흐리게, 이유는
+  풍선 도움말).
 """
 
 from __future__ import annotations
@@ -1301,7 +1303,11 @@ class EditorCanvas(QWidget):
         self.setFocus(Qt.FocusReason.OtherFocusReason)
         return isinstance(tool, T.PathTool) and tool.start_with(body_id)
 
-    def _on_selection_changed(self, _refs: list[Any]) -> None:
+    def _on_selection_changed(self, refs: list[Any]) -> None:
+        if not self.show_absent and any(not self.visible_ref(tuple(r)) for r in refs):
+            # 「없는 부품도 보기」가 꺼진 채 숨은 부품이 골라졌다(구조 탭 줄, 검사 결과 등 캔버스 밖에서): 보기를 다시
+            # 켠다. 보이지 않는 부품이 고른 채로 남아 끌리거나 Delete로 지워지지 않게(set_show_absent가 탭 체크도 맞춘다)
+            self.set_show_absent(True)
         self.update()
 
     def _on_checked(self, issues: list[Any]) -> None:
@@ -1340,12 +1346,16 @@ class EditorCanvas(QWidget):
         self.show_absent = on
         self._badge_cache = None
         self._static_cache = None
-        if not on:  # 숨는 부품을 고르고 있었으면 고르기를 푼다(보이지 않는 것을 끌지 않게)
-            hidden = [r for r in self.doc.selection if not self.visible_ref(r)]
-            if hidden:
-                self.doc.select([r for r in self.doc.selection if r not in hidden])
+        if not on:
+            self._drop_hidden_selection()
         self.show_absent_changed.emit(on)
         self.update()
+
+    def _drop_hidden_selection(self) -> None:
+        """숨는 부품을 고르고 있었으면 고르기를 푼다(보이지 않는 것을 끌거나 Delete로 지우지 않게)."""
+        hidden = [r for r in self.doc.selection if not self.visible_ref(r)]
+        if hidden:
+            self.doc.select([r for r in self.doc.selection if r not in hidden])
 
     def set_structure_highlight(self, refs: Iterable[Ref]) -> None:
         """구조 탭이 고른 물체와 함께 사라지는 부품을 점선으로 강조한다(빈 목록이면 끈다)."""
@@ -1385,8 +1395,10 @@ class EditorCanvas(QWidget):
     def body_menu(self, body_id: str) -> QMenu:
         """물체 오른쪽 메뉴: 「배열로 늘리기…」."""
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)  # 할 수 없는 이유(몸통·세계 물체)를 흐린 항목의 풍선 도움말로
         act = menu.addAction(S.ED_REPLICATE)
         err = T.replicate_error(self.doc, body_id)
+        act.setEnabled(err is None)
         act.setToolTip(err or S.ED_REPLICATE_HINT.format(name=body_id))
         act.triggered.connect(lambda _c=False, b=body_id: self.request_replicate(b))
         return menu

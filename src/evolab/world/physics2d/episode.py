@@ -678,6 +678,12 @@ class Episode:
         """끝 하나가 없는 물체라 만들지 않은 관절 id(v2.1, 읽기 전용). 그 관절의 모터 채널은 죽은 채널이고 관절 각도 센서는 0."""
         return self._absent_joints
 
+    @property
+    def dead_channels(self) -> tuple[str, ...]:
+        """없는 부품의 구동기 채널 이름(v2.1, 읽기 전용, actuator_channels 순서). 명령도 실제 출력도 늘 0이다. 직접 조종
+        창이 듣지 않는 키를 도움말에서 뺄 때 쓴다."""
+        return tuple(self._u_names[i] for i in self._dead_channels)
+
     def _structure_absent(self) -> frozenset[str]:
         """이어짐 규칙(spec/structure.py)으로 없는 에이전트 물체를 구한다. 있음 칸이 하나도 없으면 계산하지 않는다."""
         env = self.env

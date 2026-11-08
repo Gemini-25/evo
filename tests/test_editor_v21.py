@@ -623,7 +623,14 @@ def test_view_replicate_runs_the_dialog_as_one_undo_step(qtbot: Any, monkeypatch
     view.tabs.structure_tab.replicate_button.click()
     assert view.doc.undo_stack.count() == steps + 1
     assert [b["id"] for b in view.doc.items("bodies")] == ["chassis", "wheel_r", "wheel_r2", "wheel_r3"]
-    assert view.canvas.status_text == S.ED_REPLICATE_DONE.format(id="wheel_r", n=3)
+    # 사본이 원본의 몸 수치를 그대로 쓰면 상태 줄이 그것도 알린다(검토 반영, ED_REPLICATE_SHARED)
+    shared = T.shared_params(view.doc, [("bodies", "wheel_r2"), ("joints", "j_r2"), ("actuators", "m_r2"),
+                                        ("sensors", "c_r2"), ("bodies", "wheel_r3"), ("joints", "j_r3"),
+                                        ("actuators", "m_r3"), ("sensors", "c_r3"), ("params", "wheel_r2_on"),
+                                        ("params", "wheel_r3_on")])
+    assert shared and "wheel_r2_on" not in shared
+    assert view.canvas.status_text == (S.ED_REPLICATE_DONE.format(id="wheel_r", n=3) + " "
+                                       + S.ED_REPLICATE_SHARED.format(params=", ".join(shared)))
     qtbot.waitUntil(lambda: view.tabs.structure_tab.table.rowCount() == 3, timeout=2000)
     assert view.doc.selection == [("bodies", "wheel_r"), ("bodies", "wheel_r2"), ("bodies", "wheel_r3")]
     view.doc.undo_stack.undo()

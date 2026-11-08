@@ -24,7 +24,11 @@ jobs:
       # uv.lock과 pyproject가 어긋나면 sync와 run 모두 실패하게 한다(잠금을 조용히 고치지 않게).
       UV_LOCKED: "1"
     steps:
+      # 전체 기록을 받는다: T67(tests/test_structure_learners.py)이 같은 머신에서 v2.0 커밋(4d3e3e6)의 코드를 꺼내
+      # 지금 코드와 비교한다(기본 얕은 복제에는 그 커밋이 없어 비교가 빠진다).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

@@ -1779,3 +1779,14 @@ ED_STRUCT_SHOW_ABSENT_TIP: Final = "처음 몸에 없는 부품을 옅은 점선
 STRUCT_AXIS: Final = "개체 비율(%)"
 STRUCT_WAIT: Final = "학습을 시작하면 세대마다 개체들의 몸 구조 비율을 그립니다."
 STRUCT_REPS_ONLY: Final = "집단 기록이 없는 세대는 세대 대표의 몸 구조 하나만 셉니다."
+
+# ---------------------------------------------------------------------------
+# v2.1 검토 반영 묶음(독립 검토·검증에서 확인된 결함 고침: spec/compiled.py, engine/trainer.py, app/play/window.py,
+# app/editor/tools.py·view.py·structure.py). 6절 밖
+# ---------------------------------------------------------------------------
+SPEC_EXISTS_FLIP_RANGE: Final = ("물체 '{id}'의 있음 몸 수치 '{param}'은 범위의 가운데가 0.5가 아니라서, 유전 알고리즘·"
+                                 "담금질의 구조 뒤집기가 이 부품을 켜고 끄지 않습니다. 범위를 0..1로 하면 뒤집습니다.")
+LAB_STRUCTURE_RANGE: Final = "있음 몸 수치의 범위 가운데가 0.5가 아니라서 구조 뒤집기가 켜고 끄지 않는 부품: {names}. 범위를 0..1로 하세요."
+PLAY_STRUCTURE_NOTE: Final = "처음 몸에 없는 부품: {names}. 그 부품의 키는 듣지 않습니다. 처음 몸은 서툴 수 있고, 학습하면 몸 구조가 바뀝니다."
+ED_REPLICATE_SHARED: Final = "사본의 수식은 원본의 몸 수치({params})를 그대로 씁니다. 사본마다 다르게 하려면 수식을 고치세요."
+ED_STRUCT_EVOLVE_BY_PARAM_TIP: Final = "있음이 진화하는 몸 수치 '{id}'로 정해집니다. 진화를 끄려면 매개변수 탭에서 그 몸 수치의 진화를 끄세요."

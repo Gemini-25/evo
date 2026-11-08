@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
+from evolab.scoring.expr import formula_body
 from evolab.spec import model as m
 
 if TYPE_CHECKING:
@@ -95,6 +96,52 @@ def optional_bodies(env: m.EnvFile) -> frozenset[str]:
     범례 열쇠), 에디터(구조 탭)가 같은 집합을 쓴다. EnvSpec 없이 모델만으로 계산하므로 오류가 있는 파일에도 쓸 수 있다.
     """
     return absent_from(env, {b.id for b in env.bodies if _may_be_off(b)})
+
+
+def exists_param_id(body: m.Body) -> str | None:
+    """있음 칸이 정확히 "=p.<id>" 하나(공백 무시)이면 그 <id>, 아니면 None(그런 매개변수가 있는지는 보지 않는다).
+
+    구조 뒤집기의 있음 유전자(policy/genome.layout_for의 on_genes)와 아래 off_centre_exists가 같은 규칙을 쓴다.
+    "=(p.a)"나 "=p.a > 0.5"처럼 다른 모양은 None.
+    """
+    if not isinstance(body.exists, str):
+        return None
+    text = "".join(formula_body(body.exists).split())
+    return text[2:] if text.startswith("p.") and len(text) > 2 else None
+
+
+def flip_threshold(low: float, high: float) -> float:
+    """범위 low..high 매개변수에서 있음 문턱(물리 값 0.5)의 유전자 공간(-1..1) 위치. 범위 가운데가 0.5면 0.
+
+    구조 뒤집기(learners/structure.flip_structure)는 유전자의 부호를 뒤집으므로 이 값이 0인 유전자만 뒤집기가 곧 구조
+    바꾸기다(on_genes 규칙). 0..1과 -1..2 같은 범위가 그렇다.
+    """
+    return 2.0 * (EXISTS_THRESHOLD - low) / (high - low) - 1.0
+
+
+FLIP_CENTRE_TOLERANCE: Final = 1e-9
+"""flip_threshold가 이 값 이하이면 범위 가운데가 0.5라고 본다."""
+
+
+def off_centre_exists(env: m.EnvFile) -> tuple[tuple[str, str], ...]:
+    """구조 뒤집기가 건드리지 않는 있음 칸: (물체 id, 매개변수 id), 선언 순서.
+
+    에이전트 물체의 있음 칸이 정확히 "=p.<id>"이고 그 매개변수가 진화하는데(범위 있음) 범위 가운데가 0.5가 아닌 것.
+    on_genes 규칙에서 범위 때문에 빠진 물체다(예: 범위 0..2). 그대로 쓸 수 있지만(CMA-ES와 가우시안 돌연변이는 다룬다)
+    GA·담금질이 구조를 바꾸지 못하므로 검사 안내와 실험실·명령줄 안내가 알린다(v2.1 검토 반영: 조용히 빠지지 않게).
+    """
+    params = {p.id: p for p in env.params}
+    out: list[tuple[str, str]] = []
+    for b in env.bodies:
+        if b.owner != "agent":
+            continue
+        pid = exists_param_id(b)
+        p = params.get(pid) if pid is not None else None
+        if p is None or not p.evolve or p.min is None or p.max is None or not float(p.max) > float(p.min):
+            continue
+        if abs(flip_threshold(float(p.min), float(p.max))) > FLIP_CENTRE_TOLERANCE:
+            out.append((b.id, p.id))
+    return tuple(out)
 
 
 def exists_value(spec: EnvSpec, body: m.Body, params: Mapping[str, float]) -> float:

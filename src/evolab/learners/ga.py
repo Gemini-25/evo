@@ -21,8 +21,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Final
 
 import numpy as np
@@ -131,6 +131,15 @@ class GeneticAlgorithm:
     @property
     def config(self) -> GAConfig:
         return self._config
+
+    def set_structure(self, flip: float, genes: Sequence[int]) -> None:
+        """구조 뒤집기 칸(structure_flip, structure_genes)을 바꾼다. 다음 tell()이 만드는 자식부터 쓴다.
+
+        Trainer.replace_env가 쓴다: 학습 중 있음 칸 수식을 고쳐 있음 유전자(GenomeLayout.on_genes)가 바뀌면 지금 학습
+        방법도 새 목록을 뒤집는다(설계 4.12·3.5). 이미 만든 다음 후보와 난수 상태는 그대로다. 값이 잘못되면 ValueError
+        (한국어)이고 이 학습 방법은 그대로다. 바꾼 값은 state_dict()의 설정에 들어가므로 이어하기·재현이 같다.
+        """
+        self._config = replace(self._config, structure_flip=flip, structure_genes=tuple(genes))
 
     @property
     def generation(self) -> int:

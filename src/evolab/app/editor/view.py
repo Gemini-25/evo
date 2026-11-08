@@ -47,6 +47,8 @@ from evolab.spec.io import parse_env
 BUILTIN_TITLES = {"lander": S.ED_BUILTIN_LANDER, "track_car": S.ED_BUILTIN_TRACK, "hill_car": S.ED_BUILTIN_HILL,
                   "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER, "wheels": S.ED_BUILTIN_WHEELS}
 """내장 예제 메뉴 이름(파일 이름 줄기 -> 이름). 여기 없는 파일은 그 파일의 name."""
+SHARED_PARAMS_SHOWN = 6
+"""「배열로 늘리기」 뒤 상태 줄에 이름을 보이는 공유 몸 수치 수(넘으면 …)."""
 
 
 def _builtin_title(path: Path) -> str:
@@ -348,7 +350,12 @@ class EditorView(QWidget):
         except (T.ToolError, ValueError) as exc:
             self.canvas.message(str(exc))
             return None
-        self.canvas.message(S.ED_REPLICATE_DONE.format(id=body, n=dialog.values()[0]))
+        text = S.ED_REPLICATE_DONE.format(id=body, n=dialog.values()[0])
+        shared = T.shared_params(self.doc, refs)
+        if shared:  # 사본이 원본의 몸 수치를 그대로 쓴다: 사본마다 다르게 하려면 수식을 고쳐야 한다고 알린다
+            names = ", ".join(shared[:SHARED_PARAMS_SHOWN]) + ("…" if len(shared) > SHARED_PARAMS_SHOWN else "")
+            text += " " + S.ED_REPLICATE_SHARED.format(params=names)
+        self.canvas.message(text)
         return refs
 
     def play(self) -> None:

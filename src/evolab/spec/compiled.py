@@ -591,6 +591,10 @@ class _Compiler:
             elif b.id == root:
                 self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_ROOT.format(id=b.id))
                 root_has_exists = True
+        # 있음 칸이 "=p.<id>"인데 범위 가운데가 0.5가 아니면 GA·담금질의 구조 뒤집기가 건드리지 않는다(안내, 쓸 수는 있음)
+        order_of = {b.id: k for k, b in enumerate(env.bodies)}
+        for body_id, param_id in st.off_centre_exists(env):
+            self.info(f"bodies[{order_of[body_id]}].exists", S.SPEC_EXISTS_FLIP_RANGE.format(id=body_id, param=param_id))
         if root_has_exists:
             # 뿌리의 있음 칸은 위에서 오류로 알렸다. 그것까지 넣으면 모든 부품이 없어질 수 있다고 나와 아래 오류가 쏟아진다.
             bodies = [b.model_copy(update={"exists": None}) if b.id == root else b for b in env.bodies]

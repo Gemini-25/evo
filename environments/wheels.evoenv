@@ -578,5 +578,13 @@
   "evaluation": {
     "trials": 3,
     "aggregate": "mean"
+  },
+  "editor": {
+    "view": [
+      -4.0,
+      -2.0,
+      10.0,
+      5.0
+    ]
   }
 }

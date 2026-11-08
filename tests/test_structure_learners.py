@@ -313,14 +313,21 @@ Path(sys.argv[2]).write_bytes(pickle.dumps(out, protocol=4))
 
 @pytest.fixture(scope="module")
 def v20_src(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """v2.0 코드(커밋 4d3e3e6)의 src. git이나 그 커밋이 없으면(얕은 복제 CI) 건너뛴다."""
+    """v2.0 코드(커밋 4d3e3e6)의 src. git이나 그 커밋이 없으면(얕은 복제) 건너뛴다. CI(환경 변수 CI)에서는 건너뛰지 않고
+    실패한다: 윈도우 CI는 전체 기록을 받으므로(.github/workflows/windows.yml fetch-depth: 0) 그 커밋이 없으면 설정이
+    잘못된 것이고, 조용히 건너뛰면 v2.0과 비교하는 유일한 테스트가 빠진다."""
+    def unavailable(reason: str) -> None:
+        if os.environ.get("CI"):
+            pytest.fail(f"T67 needs the v2.0 commit {V20_COMMIT} on CI (full clone): {reason}")
+        pytest.skip(reason)
+
     if shutil.which("git") is None:
-        pytest.skip("git is not available")
+        unavailable("git is not available")
     try:
         done = subprocess.run(["git", "-C", str(ROOT), "archive", V20_COMMIT, "src/evolab"], capture_output=True,
                               check=True, timeout=120)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        pytest.skip(f"v2.0 commit {V20_COMMIT} is not available here: {exc}")
+        unavailable(f"v2.0 commit {V20_COMMIT} is not available here: {exc}")
     out = tmp_path_factory.mktemp("v20")
     with tarfile.open(fileobj=io.BytesIO(done.stdout)) as tar:
         tar.extractall(out, filter="data")
@@ -383,8 +390,8 @@ class ScoreEvaluator:
 
 def _config(method: str, gens: int, flip: float = 0.05, **over: Any) -> TrainConfig:
     per = {"ga": {"popsize": 8, "ga_structure_flip": flip}, "sa": {"sa_neighbors": 5, "sa_structure_flip": flip}}
-    return TrainConfig(method=method, trials=2, validate_every=24, checkpoint_every=3, run_seed=5, max_generations=gens,
-                       **{**per[method], **over})
+    base = {"trials": 2, "validate_every": 24, "checkpoint_every": 3, "run_seed": 5, "max_generations": gens}
+    return TrainConfig(method=method, **{**base, **per[method], **over})
 
 
 def _store(tmp: Path, name: str) -> RunStore:
@@ -630,3 +637,194 @@ def test_t69_cli_train_uses_structure_flip(tmp_path: Path, capsys: pytest.Captur
     (run_dir,) = [p for p in (tmp_path / "given").iterdir() if p.is_dir()]
     code, text = _run_cli(["train", "--resume", str(run_dir), "--structure-flip", "0.3", "--workers", "0"], capsys)
     assert code == 2 and S.TRAIN_RESUME_STRUCTURE_FIXED in text
+
+
+# ---------------------------------------------------------------------------------------------- 학습 중 있음 칸 고치기
+# 설계 3.5 v2.1 줄: 학습 중 있음 칸 수식을 고치면 이어진다(서명은 그대로). 고친 뒤 있음 유전자가 바뀌면 지금 GA·담금질도 새
+# 목록을 뒤집는다(4.12, 검토 반영). 진화를 켜고 끄는 것은 몸 유전자가 바뀌어 거부한다.
+
+
+def _car_text(**exists: str) -> str:
+    d = _data()
+    for b in d["bodies"]:
+        if b["id"] in exists:
+            b["exists"] = exists[b["id"]]
+    return json.dumps(d, ensure_ascii=False)
+
+
+def _store_with(tmp: Path, name: str, text: str) -> RunStore:
+    s = RunStore.create(tmp, name, {"env_name": CAR["name"]})
+    s.add_env_version(text, 0)
+    return s
+
+
+@pytest.mark.parametrize("method", ["ga", "sa"])
+@pytest.mark.parametrize(("start", "edited", "before", "after"), [
+    ({}, {"wheel3": "=p.w3_on > 0.5"}, CAR_ON, (1, 3)),                                   # 줄어듦
+    ({"wheel3": "=p.w3_on > 0.5"}, {"wheel3": "=p.w3_on"}, (1, 3), CAR_ON),               # 늘어남
+    ({"wheel1": "=p.w1_on > 0.5", "wheel2": "=p.w2_on > 0.5", "wheel3": "=p.w3_on > 0.5"},
+     {"wheel1": "=p.w1_on > 0.5", "wheel2": "=p.w2_on > 0.5"}, (), (4,)),                  # 없음 -> 하나
+], ids=["shrink", "grow", "from_none"])
+def test_exists_edit_mid_run_moves_the_flip_genes_and_resumes_identically(
+    method: str, start: dict[str, str], edited: dict[str, str], before: tuple[int, ...], after: tuple[int, ...],
+    tmp_path: Path,
+) -> None:
+    start_text, edited_text = _car_text(**start), _car_text(**edited)
+    store = _store_with(tmp_path, "straight", start_text)
+    t = Trainer(start_text, _config(method, 2, flip=0.3, checkpoint_every=1), ScoreEvaluator(), store)
+    t.run()
+    assert t.layout.on_genes == before
+    assert tuple(t.learner.config.structure_genes) == before  # type: ignore[attr-defined]
+    assert (t.learner.config.structure_flip > 0) == bool(before)  # type: ignore[attr-defined]
+    t.replace_env(edited_text)
+    store.add_env_version(edited_text, 2)
+    assert t.layout.on_genes == after
+    assert t.learner.config.structure_genes == after  # type: ignore[attr-defined]
+    assert t.learner.config.structure_flip == (0.3 if after else 0.0)  # type: ignore[attr-defined]
+    t.apply_config({"max_generations": 6})
+    pops: list[np.ndarray] = []
+    t.run(lambda row: pops.append(t.last_generation.population.copy()))  # type: ignore[union-attr]
+    new_genes = [k for k in after if k not in before]
+    if new_genes:
+        # 고친 뒤 만든 개체군(4세대부터)에서 새 있음 유전자가 실제로 뒤집혔다(뒤집은 값은 정확히 ±0.5)
+        assert any(np.any(np.abs(X[1:, new_genes]) == 0.5) for X in pops[1:]), "new on-gene never flipped"
+    state = t.learner.state_dict()
+    assert ("structure_flip" in state["config"]) == bool(after)  # 상태 키는 뒤집기를 쓸 때만(T68 규칙 그대로)
+
+    # 고친 뒤의 체크포인트(4세대)에서 이어 가도 끊지 않은 실행과 같다
+    after_root = tmp_path / "after"
+    shutil.copytree(store.root, after_root)
+    after_store = RunStore.open(after_root)
+    resumed = Trainer.resume(after_store, ScoreEvaluator(), 4, max_generations=6)
+    assert resumed.layout.on_genes == after
+    assert resumed.learner.config.structure_genes == after  # type: ignore[attr-defined]
+    resumed.run()
+    assert _strip(after_store.read_stats()) == _strip(store.read_stats())
+    assert pickle.dumps(resumed.learner.state_dict()) == pickle.dumps(t.learner.state_dict())
+
+    # 고치기 전의 체크포인트(2세대)에서 이어 같은 세대에 같은 수정을 해도 같다(재현 묶음이 다시 부르는 길)
+    cut = _store_with(tmp_path, "cut", start_text)
+    Trainer(start_text, _config(method, 2, flip=0.3, checkpoint_every=1), ScoreEvaluator(), cut).run()
+    again = Trainer.resume(cut, ScoreEvaluator(), None, max_generations=6)
+    again.replace_env(edited_text)
+    cut.add_env_version(edited_text, 2)
+    again.run()
+    assert _strip(cut.read_stats()) == _strip(store.read_stats())
+    assert pickle.dumps(again.learner.state_dict()) == pickle.dumps(t.learner.state_dict())
+
+
+@pytest.mark.parametrize("method", ["ga", "sa"])
+def test_exists_edit_with_flip_off_changes_nothing_in_the_learner(method: str) -> None:
+    """구조 뒤집기를 끈 실행(v2.0 모양): 있음 칸을 고쳐도 학습 방법 설정·상태 키가 그대로다(T68)."""
+    t = Trainer(CAR_TEXT, _config(method, 1, flip=0.0), ScoreEvaluator())
+    t.run()
+    before = pickle.dumps(t.learner.state_dict())
+    t.replace_env(_car_text(wheel3="=p.w3_on > 0.5"))
+    assert t.layout.on_genes == (1, 3)
+    assert pickle.dumps(t.learner.state_dict()) == before
+    assert "structure_flip" not in t.learner.state_dict()["config"]
+
+
+@pytest.mark.parametrize("method", ["ga", "sa"])
+def test_failed_env_change_rolls_the_flip_genes_back(method: str) -> None:
+    """세션이 바뀐 것을 저장하지 못하면 restore_changeable로 되돌린다: 학습 방법의 있음 유전자도 바꾸기 전으로."""
+    t = Trainer(CAR_TEXT, _config(method, 1, flip=0.3), ScoreEvaluator())
+    t.run()
+    snap = t.changeable_state()
+    state = pickle.dumps(t.learner.state_dict())
+    t.replace_env(_car_text(wheel3="=p.w3_on > 0.5"))
+    assert t.learner.config.structure_genes == (1, 3)  # type: ignore[attr-defined]
+    t.restore_changeable(snap)
+    assert t.layout.on_genes == CAR_ON
+    assert t.learner.config.structure_genes == CAR_ON  # type: ignore[attr-defined]
+    assert pickle.dumps(t.learner.state_dict()) == state
+
+
+@pytest.mark.parametrize("method", ["ga", "sa"])
+def test_toggling_evolve_mid_run_is_refused(method: str) -> None:
+    """진화를 켜고 끄면 몸 유전자(서명)가 바뀌므로 거부하고, 트레이너는 그대로다."""
+    t = Trainer(CAR_TEXT, _config(method, 1, flip=0.3), ScoreEvaluator())
+    t.run()
+    toggled = _data()
+    next(p for p in toggled["params"] if p["id"] == "w3_on")["evolve"] = False
+    with pytest.raises(TrainerChangeError) as exc:
+        t.replace_env(json.dumps(toggled, ensure_ascii=False))
+    assert str(exc.value) == S.TRAIN_ENV_LAYOUT_CHANGED
+    assert t.env_text == CAR_TEXT and t.layout.on_genes == CAR_ON
+    assert t.learner.config.structure_genes == CAR_ON  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("cls", [GAConfig, SAConfig])
+def test_set_structure_validates_and_keeps_the_rest(cls: type) -> None:
+    x0 = np.array([0.5, -0.5, 0.2, -0.5, 0.0])
+    learner = (GeneticAlgorithm if cls is GAConfig else SimulatedAnnealing)(x0, cls(bounded_dims=4, seed=3))
+    asked = learner.ask().tobytes()
+    learner.set_structure(0.2, [3, 1])
+    assert (learner.config.structure_flip, learner.config.structure_genes) == (0.2, (3, 1))
+    assert learner.ask().tobytes() == asked  # 이미 만든 후보는 그대로
+    for flip, genes in ((1.5, (1,)), (0.1, (4,)), (0.1, (1, 1))):
+        with pytest.raises(ValueError):
+            learner.set_structure(flip, genes)
+    assert (learner.config.structure_flip, learner.config.structure_genes) == (0.2, (3, 1))
+
+
+# ---------------------------------------------------------------------------------------------- 범위 가운데가 0.5가 아닌 있음 칸
+# on_genes는 범위 가운데가 0.5인 매개변수만 센다(뒤집기 = 부호 바꾸기라 문턱이 유전자 0이어야 한다). 설계 계약보다 좁힌 이
+# 점이 조용히 지나가지 않게 검사 안내(info)와 실험실·명령줄 안내가 알린다(검토 반영).
+
+
+def _wide() -> dict[str, Any]:
+    d = _data()
+    next(p for p in d["params"] if p["id"] == "w2_on").update({"max": 2.0})
+    return d
+
+
+def test_off_centre_exists_params_are_reported_not_flipped() -> None:
+    spec = _spec(_wide())
+    assert layout_for(spec).on_genes == (1, 4)
+    assert st.off_centre_exists(spec.file) == (("wheel2", "w2_on"),)
+    assert st.off_centre_exists(_spec(CAR).file) == ()
+    assert st.off_centre_exists(_spec(_mixed()).file) == (("wheel2", "b_wide"),)  # d_on(-1..2)은 가운데 0.5
+    infos = [i for i in spec.issues if i.severity == "info"]
+    assert [i.message for i in infos] == [S.SPEC_EXISTS_FLIP_RANGE.format(id="wheel2", param="w2_on")]
+    assert infos[0].where == "bodies[3].exists"
+    assert not [i for i in _spec(CAR).issues if i.severity == "info"]
+    for path in paths.builtin_envs():  # 내장 예제에는 없다
+        assert st.off_centre_exists(compile_env(path.read_text(encoding="utf-8")).file) == (), path.name
+
+
+def test_structure_note_names_parts_the_flip_cannot_reach() -> None:
+    spec = _spec(_wide())
+    layout = layout_for(spec)
+    range_note = S.LAB_STRUCTURE_RANGE.format(names="wheel2")
+    assert structure_note(TrainConfig(method="ga", ga_structure_flip=0.05), layout, spec) == range_note
+    assert structure_note(TrainConfig(method="ga", ga_structure_flip=0.05), layout) is None  # spec이 없으면 예전 그대로
+    assert structure_note(TrainConfig(method="sa"), layout, spec) == S.LAB_GA_NO_STRUCTURE + "\n" + range_note
+    assert structure_note(TrainConfig(method="cmaes"), layout, spec) is None
+    assert trainer_mod.structure_range_note(TrainConfig(method="cmaes"), spec) is None
+    # 범위가 모두 0..2이면 있음 유전자가 없어 새 실행 권장값도 0: 그래도 안내는 나온다(조용히 빠지지 않음)
+    every = _data()
+    for p in every["params"]:
+        if p["id"].endswith("_on"):
+            p["max"] = 2.0
+    spec2 = _spec(every)
+    assert layout_for(spec2).on_genes == ()
+    fresh = TrainConfig.for_new_run(spec2, method="ga")
+    assert fresh.ga_structure_flip == 0.0
+    assert structure_note(fresh, layout_for(spec2), spec2) == S.LAB_STRUCTURE_RANGE.format(
+        names="wheel1, wheel2, wheel3")
+
+
+def test_cli_train_warns_about_off_centre_exists(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env = tmp_path / "wide.evoenv"
+    env.write_text(json.dumps(_wide(), ensure_ascii=False), encoding="utf-8")
+    code, text = _run_cli(["train", str(env), "--method", "ga", "--popsize", "4", "--trials", "1",
+                           "--max-generations", "1", "--workers", "0", "--no-observe", "--out", str(tmp_path / "o")],
+                          capsys)
+    assert code == 0, text
+    assert S.LAB_STRUCTURE_RANGE.format(names="wheel2") in text
+    code, text = _run_cli(["train", str(env), "--method", "cmaes", "--popsize", "4", "--trials", "1",
+                           "--max-generations", "1", "--workers", "0", "--no-observe", "--out", str(tmp_path / "c")],
+                          capsys)
+    assert code == 0, text
+    assert S.LAB_STRUCTURE_RANGE.format(names="wheel2") not in text

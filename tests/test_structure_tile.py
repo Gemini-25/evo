@@ -175,10 +175,11 @@ def test_t74_ratios_equal_direct_counting_with_top_six_and_other(qtbot: QtBot, t
         assert t.ratios[-1, i] == pytest.approx(sum(v for k, v in direct[g].items() if k not in shown), abs=1e-12)
     assert np.allclose(t.ratios.sum(axis=0), 1.0)
     theme = dash.theme
-    assert t.colors == [*theme.series[:ST.TOP_STRUCTURES], theme.muted]
+    # 색은 구조마다 지키는 자리(검토 반영: 순서가 아니라 열쇠에 붙는다) — 6개가 범주 색 앞 6개를 하나씩 나눠 갖는다
+    assert sorted(t.colors[:-1]) == sorted(theme.series[:ST.TOP_STRUCTURES]) and t.colors[-1] == theme.muted
     assert [e.name for e in t.entries()] == t.names and [e.color for e in t.entries()] == t.colors
-    assert len(t.curves) == len(t.series)
-    x, y = t.curves[-1].getData()
+    assert t.area.layer_count == len(t.series)
+    x, y = t.area.layer_data(-1)
     assert np.allclose(y, 100.0) and len(x) == len(y) + 1  # 세대마다 한 칸(계단), 맨 위 누적 = 100%
     assert t.plot.getAxis("bottom").labelText == S.DASH_AXIS_NAMES["generation"]
     # 보는 세대 세로선
@@ -198,7 +199,7 @@ def test_t74_long_runs_draw_an_area_through_the_generations(qtbot: QtBot, tmp_pa
     n = ST.STEP_LIMIT + 5
     feed(dash, range(1, n + 1), random_X(lay, pop=3))
     t = tile(dash)
-    x, y = t.curves[-1].getData()
+    x, y = t.area.layer_data(-1)
     assert len(x) == len(y) == n and np.allclose(y, 100.0) and x[0] == 1 and x[-1] == n  # 계단 대신 세대 점을 잇는다
     assert np.allclose(t.ratios.sum(axis=0), 1.0)
 
@@ -566,6 +567,12 @@ def test_m13_generation_arrival_update_and_paint_on_a_750_generation_run(qtbot: 
     dash.flush()
     assert t.gens.size == 750
     wait_body(qtbot, dash)
+    # 펌프처럼 읽은 기록을 먼저 그려 둔다: dash.flush()는 갱신만 하고 그리지 않아, 이것이 없으면 첫 세대 도착에 기록 전체의
+    # 첫 그림(세대 750개 다각형, 범례·제목·몸 그림 배치)이 섞인다. 그 첫 그림은 따로 잰다(열기 쪽 비용, v1.2 이벤트 루프 목표)
+    t0 = time.perf_counter()
+    t.prepare_paint()
+    t.repaint()
+    first = (time.perf_counter() - t0) * 1000.0
     times: list[float] = []
     for g in range(751, 771):
         obs, X = fake_generation(g, lay, pop=32)
@@ -578,6 +585,6 @@ def test_m13_generation_arrival_update_and_paint_on_a_750_generation_run(qtbot: 
         times.append((time.perf_counter() - t0) * 1000.0)
     load = os.getloadavg()[0] if hasattr(os, "getloadavg") else float("nan")
     print(f"\n[M13] structure tile update+paint per generation on 750 generations: median {np.median(times):.1f} ms, "
-          f"worst {max(times):.1f} ms (load {load:.2f})")
+          f"worst {max(times):.1f} ms, first paint of the loaded history {first:.1f} ms (load {load:.2f})")
     assert t.gens.size == 770
     assert np.median(times) < 100.0  # 목표 10ms(M13)는 보고서에 잰 값으로. 여기서는 큰 퇴행만

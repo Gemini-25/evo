@@ -357,16 +357,17 @@ def absent_inputs(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray) -> fr
 
 
 def structure_notice(config: Mapping[str, Any], spec: EnvSpec | None) -> str | None:
-    """구조 환경(있음 유전자가 있음)에서 구조 뒤집기가 꺼진 유전 알고리즘·담금질 실행이면 LAB_GA_NO_STRUCTURE, 아니면
-    None. 키가 없는 예전(v2.0) 설정은 데이터클래스 기본값 0(꺼짐)으로 읽는다. 판단은 명령줄 이어하기와 같은
-    trainer.structure_note(실행 설정 사전과 환경으로 부르는 껍데기)."""
+    """구조 환경(있음 유전자가 있음)에서 구조 뒤집기가 꺼진 유전 알고리즘·담금질 실행이면 LAB_GA_NO_STRUCTURE, 범위
+    가운데가 0.5가 아니라 뒤집기가 건드리지 않는 있음 칸이 있으면 LAB_STRUCTURE_RANGE(둘 다면 두 줄), 아니면 None. 키가
+    없는 예전(v2.0) 설정은 데이터클래스 기본값 0(꺼짐)으로 읽는다. 판단은 명령줄과 같은 trainer.structure_note(실행 설정
+    사전과 환경으로 부르는 껍데기)."""
     if spec is None:
         return None
     try:
         layout = layout_for(spec)
     except ValueError:  # 유전자 배치를 만들 수 없는 환경(학습이 따로 알린다)
         return None
-    return structure_note(TrainConfig.from_dict(dict(config)), layout)
+    return structure_note(TrainConfig.from_dict(dict(config)), layout, spec)
 
 
 def _bar(v: float, width: int = 10) -> str:

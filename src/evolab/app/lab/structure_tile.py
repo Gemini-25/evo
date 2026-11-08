@@ -22,14 +22,15 @@ import hashlib
 import math
 import re
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.functions as fn
 from PySide6.QtCore import QRectF, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPaintEvent, QPen, QTransform
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPaintEvent, QPen, QPolygonF, QTransform
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from evolab.app import strings as S
@@ -46,7 +47,8 @@ BODY_CACHE: Final = 16
 """챔피언 몸 그림을 기억하는 수(타임라인을 오가도 다시 만들지 않게)."""
 STEP_LIMIT: Final = 200
 """이 세대 수까지는 세대마다 한 칸(계단)으로, 넘으면 세대 점을 잇는 영역으로 그린다(점 수가 반: 그리기 시간이 준다,
-가로 픽셀보다 세대가 많으면 모양은 같다)."""
+가로 픽셀보다 세대가 많으면 모양은 같다). 영역일 때 세대가 그림 가로 픽셀보다 많으면 이웃 세대를 묶어 평균한 점만
+그린다(_drawn: 긴 실행에서도 그리는 점 수가 그림 폭 정도)."""
 PICTURE_HEIGHT: Final = 84
 PICTURE_MARGIN: Final = 6.0
 OTHER_KEY: Final = None
@@ -257,9 +259,11 @@ def _relative_pose(pose: tuple[float, float, float], root: tuple[float, float, f
     return (target[0] + ct * rx - sn * ry, target[1] + sn * rx + ct * ry, target[2] + pose[2] - root[2])
 
 
-def champion_bodies(spec: EnvSpec, body: np.ndarray | None, full: EnvSpec | None) -> list[tuple[Any, str]]:
+def champion_bodies(spec: EnvSpec, body: np.ndarray | None, full: EnvSpec | None,
+                    pause: Callable[[], object] | None = None) -> list[tuple[Any, str]]:
     """챔피언 몸 그림: [(BodyGeom, 역할)]. 역할 "body"(늘 있는 에이전트 물체), "part"(있는 부품), "absent"(없는 부품,
-    full로 만든 모양을 뿌리 물체 기준으로 옮긴 것). Episode(spec, body, 전시 시드)를 만든다(EpisodeBuildError는 그대로)."""
+    full로 만든 모양을 뿌리 물체 기준으로 옮긴 것). Episode(spec, body, 전시 시드)를 만든다(EpisodeBuildError는 그대로).
+    없는 부품이 있으면 Episode를 하나 더(full로) 만드는데, 그 앞에 pause()를 부른다(배경 스레드가 화면이 바쁜 동안 쉬게)."""
     from evolab.engine import seeds
     from evolab.world.physics2d.episode import Episode, EpisodeBuildError
 
@@ -273,6 +277,8 @@ def champion_bodies(spec: EnvSpec, body: np.ndarray | None, full: EnvSpec | None
     root = st.root_body(spec.file)
     if not missing or full is None or root is None:
         return out
+    if pause is not None:
+        pause()
     try:
         whole = Episode(full, body, trial).geometry()
     except (EpisodeBuildError, ValueError, KeyError):
@@ -308,12 +314,18 @@ class _BodyJob(QThread):
         self.need_full = need_full
 
     def run(self) -> None:
-        hs.GUI_PRIORITY.wait(self.isInterruptionRequested)  # 펌프가 그리는 중이면 끝난 뒤에(GIL을 다투지 않게)
+        # 펌프가 그리는 중이면 끝난 뒤에(GIL을 다투지 않게). 일이 셋(있음 칸을 비운 환경 컴파일, Episode 둘)이라 일마다
+        # 앞에서 다시 기다린다(v1.2 gui_first와 같은 규칙: 한 일을 시작한 뒤에는 멈추지 않는다)
+        def pause() -> None:
+            hs.GUI_PRIORITY.wait(self.isInterruptionRequested)
+
+        pause()
         full = self.full
         try:
             if full is None and self.need_full:
                 full = full_structure_spec(self.spec)
-            result: Any = champion_bodies(self.spec, self.body, full)
+                pause()
+            result: Any = champion_bodies(self.spec, self.body, full, pause)
         except Exception as exc:  # noqa: BLE001 - 그림만 못 그린다(학습·재생과 무관)
             result = exc
         self.done.emit((self, self.tag, result, full))
@@ -417,6 +429,104 @@ class _BodyPicture(QWidget):
         p.end()
 
 
+def _polygon(xs: np.ndarray, ys: np.ndarray, base: float | None = None) -> QPolygonF:
+    """점 (xs, ys)의 QPolygonF(numpy로 한 번에 채움). base가 있으면 끝에서 base 높이로 내려와 처음 x로 돌아가는 두 점을
+    더한다(아래까지 채우는 다각형)."""
+    n = len(xs)
+    poly = fn.create_qpolygonf(n + (2 if base is not None and n else 0))
+    arr = fn.ndarray_from_qpolygonf(poly)
+    arr[:n, 0] = xs
+    arr[:n, 1] = ys
+    if base is not None and n:
+        arr[n] = (xs[-1], base)
+        arr[n + 1] = (xs[0], base)
+    return poly
+
+
+class _StackArea(pg.GraphicsObject):
+    """쌓은 비율 그림 한 항목: 계열마다 아래(0)까지 채운 다각형을 위 계열부터 그리고 그 윗선을 바탕색 1픽셀 선으로 긋는다
+    (작은 누적이 위에 오는 불투명 색 쌓기, 계열마다 PlotCurveItem(fillLevel=0, 바탕색 펜)을 두던 것과 같은 그림).
+
+    계열마다 PlotCurveItem을 두면 그릴 때마다 계열마다 자료 범위(nanmin·nanmax)·채움 경로를 다시 만들어, 750세대 기록에서
+    세대 하나가 올 때 그리기가 5~10ms였다(9.2 M13). 여기서는 자료가 바뀔 때 다각형을 한 번 만들고, 그리기는 채우기와 선만
+    한다. 자동 범위는 dataBounds(가로: 처음~끝 x, 세로: 0~맨 위 누적)로 바로 알린다.
+    """
+
+    def __init__(self, edge: QPen) -> None:
+        super().__init__()
+        self._edge = edge
+        self._layers: list[tuple[np.ndarray, np.ndarray]] = []
+        self._fills: list[tuple[QPolygonF, QBrush]] = []
+        self._lines: list[QPolygonF] = []
+        self._xr: tuple[float, float] | None = None
+        self._yr: tuple[float, float] | None = None
+        self._rect = QRectF()
+
+    def set_layers(self, x: np.ndarray, cum: np.ndarray, colors: Sequence[str], step: bool) -> None:
+        """x: 계단이면 칸 경계(len = 점 수 + 1, 세대마다 한 칸), 아니면 점의 x. cum: (계열, 점) 누적 %(아래 계열부터),
+        colors: 계열 색. 계단은 칸마다 수평선(경계 x에서 세로로 잇는다)."""
+        self.prepareGeometryChange()
+        x = np.asarray(x, dtype=np.float64)
+        cum = np.asarray(cum, dtype=np.float64)
+        ok = cum.ndim == 2 and cum.shape[0] == len(colors)
+        self._layers = [(x, cum[j]) for j in range(len(colors))] if ok else []
+        n = cum.shape[1] if ok else 0
+        if not len(colors) or n == 0 or len(x) != n + (1 if step else 0):
+            self._fills, self._lines = [], []
+            self._xr = self._yr = None
+            self._rect = QRectF()
+            self.update()
+            return
+        xs = np.repeat(x, 2)[1:-1] if step else x
+        fills: list[tuple[QPolygonF, QBrush]] = []
+        lines: list[QPolygonF] = []
+        for j in reversed(range(len(colors))):  # 위 계열(큰 누적)부터: 아래 계열이 그 위에 그려진다
+            ys = np.repeat(cum[j], 2) if step else cum[j]
+            fills.append((_polygon(xs, ys, 0.0), QBrush(_qcolor(colors[j]))))
+            if step:  # 계단 선은 양 끝에서 0까지 내려온다(PlotCurveItem stepMode="center" + fillLevel과 같은 선)
+                lines.append(_polygon(np.concatenate(([xs[0]], xs, [xs[-1]])), np.concatenate(([0.0], ys, [0.0]))))
+            else:
+                lines.append(_polygon(xs, ys))
+        self._fills, self._lines = fills, lines
+        x0, x1 = float(xs[0]), float(xs[-1])
+        y0, y1 = min(0.0, float(cum.min())), max(0.0, float(cum.max()))
+        self._xr, self._yr = (x0, x1), (y0, y1)
+        # 바뀐 곳 알리기(다시 그릴 칸)에만 쓰는 사각형: 1픽셀 선이 가장자리에 걸리지 않게 조금 넓힌다
+        px = max(0.5, 0.01 * (x1 - x0))
+        py = max(1.0, 0.02 * (y1 - y0))
+        self._rect = QRectF(x0 - px, y0 - py, (x1 - x0) + 2 * px, (y1 - y0) + 2 * py)
+        self.update()
+
+    @property
+    def layer_count(self) -> int:
+        return len(self._layers)
+
+    def layer_data(self, j: int) -> tuple[np.ndarray, np.ndarray]:
+        """j번째 계열에 준 (x, 누적 %) 그대로(계단이면 len(x) = len(y) + 1, 시험용)."""
+        return self._layers[j]
+
+    def dataBounds(self, ax: int, frac: float = 1.0, orthoRange: Any = None) -> tuple[float | None, float | None]:  # noqa: N802, N803
+        r = self._xr if ax == 0 else self._yr
+        return (None, None) if r is None else r
+
+    def pixelPadding(self) -> float:  # noqa: N802
+        return self._edge.widthF() * 0.7072  # PlotCurveItem과 같은 여백(코스메틱 펜)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._rect
+
+    def paint(self, p: QPainter, *args: Any) -> None:
+        if not self._fills:
+            return
+        for (fill, brush), line in zip(self._fills, self._lines, strict=True):
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(brush)
+            p.drawPolygon(fill)
+            p.setPen(self._edge)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(line)
+
+
 @dataclass(frozen=True, eq=False)
 class _GenCount:
     """세대 하나를 센 값(entry가 바뀌면 다시 센다)."""
@@ -463,8 +573,9 @@ class StructureTile(_WatchTile):
         self.stack.addWidget(self.host)
         self.message.setText(S.STRUCT_EMPTY)
         self.stack.setCurrentWidget(self.message)
-        self.curves: list[pg.PlotCurveItem] = []
-        self._curve_colors: list[str] = []
+        # 쌓은 그림은 한 항목(계열마다 곡선 항목을 두면 세대마다 그리기가 느리다, _StackArea)
+        self.area = _StackArea(_pen(t.surface, 1))
+        self.plot.addItem(self.area)
 
         self._versions: list[tuple[int, EnvSpec | str]] = []
         self._froms: list[int] = []
@@ -480,6 +591,9 @@ class StructureTile(_WatchTile):
         self._epoch = 0
         """버전·기록이 바뀔 때마다 늘어난다(배경 몸 그림 결과가 지금 것인지 보는 꼬리표)."""
         self._agg_key: tuple[Any, ...] | None = None
+        self._slots: dict[StructureKey, int] = {}
+        """보이는 구조 열쇠 → 색 자리(Theme.series 번호). 열쇠가 많이 나온 6개에 들어올 때 비어 있는 가장 작은 자리를
+        받고, 6개에 있는 동안 지킨다(다른 구조가 들고 나도 색이 바뀌지 않게). 6개에서 빠지면 자리를 내놓는다."""
         # 그린 자료(테스트가 읽는다)
         self.gens = np.zeros(0)
         """그린 세대(오름차순, float)."""
@@ -557,6 +671,7 @@ class StructureTile(_WatchTile):
         self._key_index.clear()
         self._key_of.clear()
         self._agg_key = None
+        self._slots.clear()
         self._epoch += 1
         self._pending = None
         self._want = None
@@ -683,7 +798,14 @@ class StructureTile(_WatchTile):
         self.key_names = {keys[i]: structure_label(keys[i], self.labels, groups, seen[plain[i]] > 1) for i in live}
         self.series = [keys[i] for i in shown]
         self.names = [self.key_names[keys[i]] for i in shown]
-        self.colors = [t.series[j % len(t.series)] for j in range(len(shown))]
+        # 색은 순서가 아니라 열쇠마다 지키는 자리로(범례는 부품 수 순서 그대로)
+        for k in [k for k in self._slots if k not in self.series]:
+            del self._slots[k]
+        for k in self.series:
+            if k not in self._slots:
+                taken = set(self._slots.values())
+                self._slots[k] = next(j for j in range(TOP_STRUCTURES + 1) if j not in taken)
+        self.colors = [t.series[self._slots[k] % len(t.series)] for k in self.series]
         rows = [ratios[i] for i in shown]
         if rest:
             self.series.append(OTHER_KEY)
@@ -693,19 +815,6 @@ class StructureTile(_WatchTile):
         self.ratios = np.vstack(rows) if rows else np.zeros((0, ratios.shape[1]))
 
     # -- 갱신 -----------------------------------------------------------------
-    def _rebuild_curves(self) -> None:
-        for c in self.curves:
-            self.plot.removeItem(c)
-        self.curves = []
-        self._curve_colors = list(self.colors)
-        n = len(self.series)
-        for j in range(n):
-            curve = pg.PlotCurveItem(pen=_pen(self.theme.surface, 1), brush=_qcolor(self.colors[j]), fillLevel=0.0,
-                                     connect="all")
-            curve.setZValue(n - j)  # 작은 누적값이 위에(불투명 색으로 쌓은 모양)
-            self.plot.addItem(curve)
-            self.curves.append(curve)
-
     def update_data(self) -> None:
         if not self._versions:
             self._show_empty(S.STRUCT_EMPTY)
@@ -733,22 +842,34 @@ class StructureTile(_WatchTile):
             self._choose(keys, ratios)
             self.gens = np.array(used, dtype=np.float64)
             self.observed = observed
-            if self._curve_colors != self.colors:
-                self._rebuild_curves()
-            cum = np.cumsum(self.ratios * 100.0, axis=0)
             if len(self.gens) <= STEP_LIMIT:
-                edges = _step_edges(self.gens)
-                for j, curve in enumerate(self.curves):
-                    curve.setData(edges, cum[j], stepMode="center")
+                self.area.set_layers(_step_edges(self.gens), np.cumsum(self.ratios * 100.0, axis=0), self.colors,
+                                     step=True)
             else:
-                for j, curve in enumerate(self.curves):
-                    curve.setData(self.gens, cum[j], stepMode=None)
+                x, cum = self._drawn()
+                self.area.set_layers(x, cum, self.colors, step=False)
             self._agg_key = agg_key
         self.stack.setCurrentWidget(self.host)
         self._place_focus()
         self._update_champion()
         self.set_notes([S.STRUCT_REPS_ONLY if len(self.observed) and not bool(self.observed.all()) else "",
                         self.loading_note()])
+
+    def _drawn(self) -> tuple[np.ndarray, np.ndarray]:
+        """영역 그림(STEP_LIMIT 넘음)에 넘길 (세대, (계열, 점) 누적 %). 세대가 그림 가로 픽셀보다 많으면 이웃 세대
+        k개씩 묶어 평균한다(묶음의 첫 세대 자리, 마지막 세대는 그대로 끝점). 평균의 누적 = 누적의 평균이라 쌓은 모양이
+        유지되고, 묶음 하나가 1픽셀 남짓이라 보이는 모양은 같다. self.gens·ratios(테스트·마우스가 읽음)는 그대로 둔다."""
+        cum = np.cumsum(self.ratios * 100.0, axis=0)
+        n = len(self.gens)
+        width = max(STEP_LIMIT, int(self.plot.vb.width()))
+        if n <= width:
+            return self.gens, cum
+        k = math.ceil(n / width)
+        starts = np.arange(0, n, k)
+        sizes = np.diff(np.append(starts, n)).astype(np.float64)
+        mean = np.add.reduceat(cum, starts, axis=1) / sizes
+        x = np.append(self.gens[starts], self.gens[-1])
+        return x, np.concatenate([mean, cum[:, -1:]], axis=1)
 
     def _show_empty(self, text: str, notes: list[str] | None = None) -> None:
         self.gens = np.zeros(0)

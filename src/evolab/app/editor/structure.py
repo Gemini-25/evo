@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -47,6 +48,8 @@ from evolab.spec import model as m
 from evolab.spec import structure
 
 COL_BODY, COL_EXISTS, COL_EVOLVE, COL_INITIAL, COL_PARTS = range(5)
+_PARAM_NAME_RE = re.compile(r"(?<![\w.])p\.(\w+)")
+"""수식 안의 p.<매개변수 id>."""
 REFRESH_DEBOUNCE_MS = 30
 """문서가 바뀐 뒤 탭을 다시 계산하기까지(타이핑 한 번마다 다시 하지 않게)."""
 
@@ -164,6 +167,17 @@ class StructureRow:
     """처음 몸에 있나(None = 알 수 없음)."""
     parts: tuple[Ref, ...]
     """함께 사라지는 부품(자기 자신 제외)."""
+    driven_by: str | None = None
+    """있음 칸이 매개변수 하나가 아닌 수식인데 진화하는 매개변수를 쓰면 그 첫 id(선언 순서, 예: 「개수를 몸 수치 하나로」의
+    <이름>_count). 진화 칸은 켜진 채 잠기고(그 매개변수를 고쳐야 바뀜) 풍선 도움말이 그 이름을 알린다."""
+
+
+def evolving_params_in(data: dict[str, Any], formula: Any) -> list[str]:
+    """수식 formula가 쓰는 진화 매개변수 id(매개변수 선언 순서). 수식이 아니면 빈 목록."""
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return []
+    used = set(_PARAM_NAME_RE.findall(formula))
+    return [str(p.get("id")) for p in _items(data, "params") if p.get("evolve") and str(p.get("id")) in used]
 
 
 def structure_rows(doc: EnvDocument) -> list[StructureRow]:
@@ -185,10 +199,12 @@ def structure_rows(doc: EnvDocument) -> list[StructureRow]:
         value = b.get("exists")
         linked = plain_param(value)
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        param = exists_param(doc, bid)
+        driven = None if param is not None or linked is not None else next(iter(evolving_params_in(data, value)), None)
         rows.append(StructureRow(
-            bid, str(b.get("label") or bid), value, exists_param(doc, bid),
+            bid, str(b.get("label") or bid), value, param,
             value is None or number or (linked is not None and linked in params),
-            None if absent is None else bid not in absent, tuple(gone_with(env, data, bid))))
+            None if absent is None else bid not in absent, tuple(gone_with(env, data, bid)), driven))
     return rows
 
 
@@ -308,9 +324,15 @@ class StructureTab(QWidget):
                 if row.evolvable:
                     flags |= Qt.ItemFlag.ItemIsEnabled
                 evolve.setFlags(flags)
-                evolve.setCheckState(Qt.CheckState.Checked if row.param else Qt.CheckState.Unchecked)
-                evolve.setToolTip(S.EDP_EVOLVE_ON_TIP.format(id=row.param) if row.param else
-                                  (S.EDP_EVOLVE_TIP if row.evolvable else S.EDP_EVOLVE_FORMULA_TIP))
+                evolving = bool(row.param or row.driven_by)
+                evolve.setCheckState(Qt.CheckState.Checked if evolving else Qt.CheckState.Unchecked)
+                if row.param:
+                    tip = S.EDP_EVOLVE_ON_TIP.format(id=row.param)
+                elif row.driven_by:  # 진화하는 몸 수치를 쓰는 수식(개수 하나로 묶은 부품): 켜진 채 잠금
+                    tip = S.ED_STRUCT_EVOLVE_BY_PARAM_TIP.format(id=row.driven_by)
+                else:
+                    tip = S.EDP_EVOLVE_TIP if row.evolvable else S.EDP_EVOLVE_FORMULA_TIP
+                evolve.setToolTip(tip)
                 initial = QTableWidgetItem(S.ED_STRUCT_UNKNOWN if row.initial is None else
                                            (S.ED_STRUCT_ON if row.initial else S.ED_STRUCT_OFF))
                 parts = QTableWidgetItem(str(len(row.parts)))
@@ -397,6 +419,8 @@ class StructureTab(QWidget):
         if item.column() != COL_EVOLVE or not 0 <= item.row() < len(self.rows):
             return
         row = self.rows[item.row()]
+        if not row.evolvable:  # 잠긴 칸(일반 수식): 켜고 끌 수 없다
+            return
         on = item.checkState() == Qt.CheckState.Checked
         if on == (row.param is not None):
             return

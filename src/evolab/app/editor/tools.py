@@ -1061,6 +1061,29 @@ def numbered(text: str, k: int, sep: str = "") -> str:
     return f"{stem}{num + k}" if num is not None else f"{text}{sep}{k + 1}"
 
 
+def _stem_numbers(names: Iterable[str], stem: str) -> list[int]:
+    """names 가운데 줄기 stem에 끝 숫자만 붙은 이름의 숫자들('wheel' -> wheel2, wheel4의 2, 4). 줄기 끝 공백은 무시."""
+    want = stem.rstrip()
+    out: list[int] = []
+    for name in names:
+        head, num = _split_number(name)
+        if num is not None and head.rstrip() == want:
+            out.append(num)
+    return out
+
+
+def copy_shift(text: str, count: int, used: Iterable[str], sep: str = "") -> int:
+    """사본 1..count-1의 번호를 얼마나 밀지. numbered(text, k)가 하나라도 이미 쓰는 이름이면 같은 줄기의 가장 큰 번호
+    다음부터 쓰게 민다('wheel1'인데 wheel2..4가 있으면 3: wheel5, wheel6 ...). 겹치지 않으면 0(설계 5.1 번호 그대로)."""
+    used = set(used)
+    if not text or not any(numbered(text, k, sep) in used for k in range(1, count)):
+        return 0
+    stem, num = _split_number(text)
+    if num is None:  # 끝 숫자가 없으면 원본이 1번('wheel' -> wheel2 ...)
+        stem, num = text, 1
+    return max([num, *_stem_numbers(used, stem)]) - num
+
+
 def copy_label(label: str, body_label: str, k: int) -> str:
     """사본 부품의 표시 이름. 늘리는 물체의 이름이 들어 있으면 그 부분만 번호를 바꾼다('바퀴1 축' -> '바퀴2 축'),
     아니면 끝 번호를 바꾸거나 번호를 붙인다. 빈 이름은 그대로."""
@@ -1267,17 +1290,21 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
 
     - 함께 복사: replicate_group의 물체들, 그 물체에 끝이 닿은 관절, 그 물체의 추진기·차량·점프·공기역학, 복사한 관절의
       모터, 그 물체·관절에 단 센서. 연료 탱크·영역·사건·점수는 복사하지 않는다(추진기는 같은 탱크를 쓴다).
-    - id: k번째 사본은 numbered(id, k)('wheel1' -> 'wheel2', 'j1' -> 'j2'; 겹치면 doc.unique_id). 사본 안의 참조(관절
-      a·b, place_by, 구동기 물체·관절, 센서 물체·대상·맞을 것, 수식의 부품 이름)는 사본끼리 바꿔 쓴다(forms.id_renamer).
-      표시 이름은 copy_label. 원본은 이름을 바꾸지 않는다.
+    - id: k번째 사본은 numbered(id, k)('wheel1' -> 'wheel2', 'j1' -> 'j2'). 그 번호가 이미 쓰이면 같은 줄기의 가장 큰 번호
+      다음부터(copy_shift: 바퀴 넷이 있는 문서에서 wheel1을 늘리면 wheel5·j5·m5·c5), 그래도 겹치면 doc.unique_id. 사본 안의
+      참조(관절 a·b, place_by, 구동기 물체·관절, 센서 물체·대상·맞을 것, 수식의 부품 이름)는 사본끼리 바꿔 쓴다
+      (forms.id_renamer). 표시 이름은 copy_label(물체 이름이 이미 쓰이면 같은 규칙으로 번호를 민다: 바퀴5). 원본은 이름을
+      바꾸지 않는다.
     - 자리: replicate_layout의 변환으로 물체 pos·angle과, 바깥 물체(부모) 쪽 관절 앵커·쉬는 각도·각도 제한을 옮긴다. 수식
       칸은 수식으로 남는다(lin_comb). 거울이면 사본의 모양·앵커·추진기·레이를 물체 좌표에서 비춘다.
     - evolve: 원본(있음 칸이 비었거나 숫자일 때)과 사본마다 있음 몸 수치 <id>_on(0..1, 처음 원본만 있음 0.75, 사본 0.25).
+      원본의 있음 칸이 이미 매개변수 하나("=p.<옛>")였으면 사본의 수식 안 p.<옛>은 그 사본의 <id>_on으로 바꾼다(모터 힘을
+      "있으면 켬"으로 거는 수식이 사본 자기 있음을 따르게). 다른 몸 수치는 원본 것을 그대로 쓴다(shared_params, 화면이 알린다).
     - one_count: 몸 수치 <이름>_count(1..N, 진화, 처음 1) 하나와 k번째 부품(원본 k = 1)의 있음 "=p.<이름>_count > k - 0.5"
       (D40). evolve보다 앞선다.
     - 뇌 입력·출력이 목록이면(all이 아니면) 사본 센서·구동기 채널을 원본 채널 뒤에 차례로 더한다.
     """
-    from evolab.app.editor.forms import EXISTS_OFF, EXISTS_ON, id_renamer
+    from evolab.app.editor.forms import EXISTS_OFF, EXISTS_ON, id_renamer, plain_param
 
     err = replicate_error(doc, body)
     if err is not None:
@@ -1301,16 +1328,21 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
     source = body_data(doc, body) or {}
     body_label = str(source.get("label") or "")
 
-    # 사본 k의 id 표
+    # 사본 k의 id 표. 번호가 이미 쓰이면 그 부품 줄기의 가장 큰 번호 다음부터(copy_shift)
+    used_ids = doc.all_ids()
+    shifts = {(section, str(item.get("id"))): copy_shift(str(item.get("id")), n, used_ids) for section, item in parts}
     taken: set[str] = set()
     renames: list[dict[Ref, str]] = []
     for k in range(1, n):
         table: dict[Ref, str] = {}
         for section, item in parts:
-            new = doc.unique_id(numbered(str(item.get("id")), k), taken)
+            ref = (section, str(item.get("id")))
+            new = doc.unique_id(numbered(ref[1], k + shifts[ref]), taken)
             taken.add(new)
-            table[(section, str(item.get("id")))] = new
+            table[ref] = new
         renames.append(table)
+    # 표시 이름 번호: 늘리는 물체의 이름이 다른 물체 이름과 겹치면 민다(모든 사본 부품에 같은 만큼)
+    label_shift = copy_shift(body_label, n, [str(b.get("label") or "") for b in doc.items("bodies")], " ")
 
     def frame_map(bid: str, mt: Affine) -> Affine:
         """바깥 물체 bid 좌표에서 본 변환: pose⁻¹ ∘ mt ∘ pose."""
@@ -1327,7 +1359,7 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
         out = fix(copy.deepcopy(item), None)
         out["id"] = renames[k - 1][(section, str(item.get("id")))]
         if "label" in out:
-            out["label"] = copy_label(str(item.get("label") or ""), body_label, k)
+            out["label"] = copy_label(str(item.get("label") or ""), body_label, k + label_shift)
         zero = [0.0, 0.0]
         if section == "bodies":
             put(out, "pos", map_vec(out.get("pos", zero), mt), zero)
@@ -1371,18 +1403,34 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
             put(out, "center", map_num(out.get("center", 0.0), -1.0, math.pi), 0.0)
         return out
 
+    # 있음 칸과 몸 수치 (원본 = 1번, 사본 = 2..N번). 사본 수식의 p.<원본 있음>을 바꾸려면 복사 전에 id를 정해야 한다
+    new_params: list[dict[str, Any]] = []
+    exists_of: dict[str, Any] = {}
+    b_copies = [renames[k - 1][("bodies", body)] for k in range(1, n)]
+    labels = [body_label or body] + [copy_label(body_label, body_label, k + label_shift) or b_copies[k - 1]
+                                     for k in range(1, n)]
+    taken_params = set(taken)
+    current = source.get("exists")
+    source_on: str | None = None
+    copy_on: list[str] = []
+    if evolve and not one_count:
+        if current is None or is_number(current):  # 원본에도 있음 몸 수치를 만든다
+            source_on = doc.unique_id(f"{body}_on", taken_params)
+            taken_params.add(source_on)
+        for bid in b_copies:
+            copy_on.append(doc.unique_id(f"{bid}_on", taken_params))
+            taken_params.add(copy_on[-1])
+        gate = plain_param(current)
+        if gate is not None and any(str(p.get("id")) == gate for p in doc.items("params")):
+            for k in range(1, n):  # 사본 수식의 p.<원본 있음> -> p.<사본 있음>
+                renames[k - 1][("params", gate)] = copy_on[k - 1]
+
     copies: dict[str, list[dict[str, Any]]] = {"bodies": [], "joints": [], "actuators": [], "sensors": []}
     for k, (mt, turn) in enumerate(transforms, start=1):
         fix = id_renamer(renames[k - 1])
         for section, item in parts:
             copies[section].append(copy_part(section, item, k, mt, turn, fix))
 
-    # 있음 칸과 몸 수치 (원본 = 1번, 사본 = 2..N번)
-    new_params: list[dict[str, Any]] = []
-    exists_of: dict[str, Any] = {}
-    b_copies = [renames[k - 1][("bodies", body)] for k in range(1, n)]
-    labels = [body_label or body] + [copy_label(body_label, body_label, k) or b_copies[k - 1] for k in range(1, n)]
-    taken_params = set(taken)
     if one_count:
         stem = re.sub(r"_?\d+$", "", body) or body
         pid = doc.unique_id(f"{stem}_count", taken_params)
@@ -1393,17 +1441,12 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
         for k, bid in enumerate([body, *b_copies]):
             exists_of[bid] = f"=p.{pid} > {_fmt_num(k + 0.5)}"
     elif evolve:
-        current = source.get("exists")
-        if current is None or is_number(current):
-            pid = doc.unique_id(f"{body}_on", taken_params)
-            taken_params.add(pid)
+        if source_on is not None:
             on = current is None or float(current) > 0.5
-            new_params.append({"id": pid, "label": S.ED_PARAM_ON_LABEL.format(label=labels[0]),
+            new_params.append({"id": source_on, "label": S.ED_PARAM_ON_LABEL.format(label=labels[0]),
                                "value": EXISTS_ON if on else EXISTS_OFF, "evolve": True, "min": 0.0, "max": 1.0})
-            exists_of[body] = f"=p.{pid}"
-        for k, bid in enumerate(b_copies, start=1):
-            pid = doc.unique_id(f"{bid}_on", taken_params)
-            taken_params.add(pid)
+            exists_of[body] = f"=p.{source_on}"
+        for k, (bid, pid) in enumerate(zip(b_copies, copy_on, strict=True), start=1):
             new_params.append({"id": pid, "label": S.ED_PARAM_ON_LABEL.format(label=labels[k]), "value": EXISTS_OFF,
                                "evolve": True, "min": 0.0, "max": 1.0})
             exists_of[bid] = f"=p.{pid}"
@@ -1444,6 +1487,25 @@ def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], e
     new_refs += [("params", str(p["id"])) for p in new_params]
     doc.select([("bodies", body), *[("bodies", bid) for bid in b_copies]])
     return new_refs
+
+
+def shared_params(doc: EnvDocument, refs: Iterable[Ref]) -> list[str]:
+    """새로 만든 부품(refs, replicate의 결과)의 수식이 쓰는 몸 수치 가운데 이번에 만든 것이 아닌 것(매개변수 선언 순서).
+
+    사본이 원본과 같은 몸 수치(위치·반지름·모터 힘 나누기 등)를 그대로 쓴다는 뜻이라 화면이 알린다(ED_REPLICATE_SHARED).
+    """
+    from evolab.app.editor.forms import _formula_strings
+
+    refs = list(refs)
+    made = {cid for section, cid in refs if section == "params"}
+    rx = re.compile(r"(?<![\w.])p\.(\w+)")
+    names: set[str] = set()
+    for ref in refs:
+        if ref[0] == "params":
+            continue
+        for text in _formula_strings(doc.item(ref) or {}):
+            names.update(rx.findall(text))
+    return [str(p.get("id")) for p in doc.items("params") if str(p.get("id")) in names - made]
 
 
 # ---------------------------------------------------------------------------

@@ -24,10 +24,9 @@ import numpy as np
 
 from evolab.app import strings as S
 from evolab.policy.brain import ACTIVATIONS, BrainLayout
-from evolab.scoring.expr import formula_body
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvSpec
-from evolab.spec.structure import EXISTS_THRESHOLD
+from evolab.spec.structure import FLIP_CENTRE_TOLERANCE, exists_param_id, flip_threshold
 
 LAYOUT_FORMAT = 1
 """to_dict와 signature의 형식 번호. 파라미터 순서나 사상 규칙을 바꾸면 올린다."""
@@ -294,25 +293,25 @@ def _names(x: Any) -> tuple[str, ...]:
 
 
 def _on_genes(spec: EnvSpec, body: Sequence[BodyGene]) -> tuple[int, ...]:
-    """있음 유전자 번호(오름차순, 설계 4.12): 에이전트 물체의 exists가 정확히 "=p.<id>"(공백 무시)이고 그 매개변수가
-    진화하는 몸 유전자.
+    """있음 유전자 번호(오름차순, 설계 4.12): 에이전트 물체의 exists가 정확히 "=p.<id>"(공백 무시, structure.exists_param_id)
+    이고 그 매개변수가 진화하는 몸 유전자.
 
     구조 뒤집기는 유전자 공간에서 부호를 뒤집으므로(−0.5·sign) 유전자 0이 있음 문턱(물리 값 0.5)이어야 뒤집기가 곧 구조
     바꾸기다. 그래서 범위의 가운데가 0.5인 매개변수만 센다(에디터가 만드는 <id>_on은 0..1). 다른 범위나 다른 수식
-    (예: "=p.n > 1.5")으로 켜는 물체는 뒤집지 않는다(CMA-ES와 가우시안 돌연변이가 그대로 다룬다).
+    (예: "=p.n > 1.5")으로 켜는 물체는 뒤집지 않는다(CMA-ES와 가우시안 돌연변이가 그대로 다룬다). 범위 때문에 빠진 물체는
+    structure.off_centre_exists가 같은 규칙으로 찾아 검사·실험실·명령줄이 알린다(설계 계약보다 좁힌 점, V21 보고).
     """
     index = {g.id: k for k, g in enumerate(body)}
     found: set[int] = set()
     for b in spec.file.bodies:
-        if b.owner != "agent" or not isinstance(b.exists, str):
+        if b.owner != "agent":
             continue
-        text = "".join(formula_body(b.exists).split())
-        k = index.get(text[2:]) if text.startswith("p.") else None
+        pid = exists_param_id(b)
+        k = index.get(pid) if pid is not None else None
         if k is None:
             continue
         g = body[k]
-        threshold = 2.0 * (EXISTS_THRESHOLD - g.low) / (g.high - g.low) - 1.0  # 문턱의 유전자 공간 위치
-        if abs(threshold) <= 1e-9:
+        if abs(flip_threshold(g.low, g.high)) <= FLIP_CENTRE_TOLERANCE:
             found.add(k)
     return tuple(sorted(found))
 
