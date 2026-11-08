@@ -1428,7 +1428,7 @@ DASH_TILE_HELP: Final = {
                 "추진기를 얼마나 세게, 얼마나 자주 켜는지 보입니다."),
     "body": ("진화하는 몸 수치(바퀴 크기, 다리 길이 등)의 집단 평균(선)과 가장 작은 값~가장 큰 값(띠)입니다. 띠가 좁아지면 "
              "집단이 한 몸 모양으로 모인 것입니다."),
-    # v2.1: 설계 6절의 STRUCT_TIP과 같은 글(대시보드는 「보는 재미」 타일 제목의 풍선 도움말을 이 사전에서 읽는다)
+    # v2.1: 설계 6절의 STRUCT_TIP(대시보드는 「보는 재미」 타일 제목의 풍선 도움말을 이 사전에서 읽어 따로 두지 않는다)
     "structure": ("세대마다 개체들이 어떤 몸 구조(있는 부품 모음)를 가졌는지 비율로 쌓아 보여 줍니다. 아래는 보는 세대 챔피언의 "
                   "몸입니다."),
 }
@@ -1696,7 +1696,7 @@ PLAY_SAVE_WATCH_ONLY: Final = "조종하지 않는 환경이라 입력 기록을
 # ---------------------------------------------------------------------------
 # v2.1 몸 구조 진화: 바퀴 고르는 언덕차, 구조 뒤집기, 에디터 「구조」 탭, 「몸 구조」 타일 (0'단계: 설계 6절 v2.1 전체 목록)
 # 에디터 칸 이름·도움말 "exists"는 위 EDP_FIELD_NAMES·EDP_FIELD_TIPS에, 타일 제목 "structure"는 DASH_TILE_TITLES에,
-# 타일 풍선 도움말은 DASH_TILE_HELP["structure"]에 더했다(STRUCT_TIP은 그 글).
+# 타일 풍선 도움말(설계의 STRUCT_TIP)은 DASH_TILE_HELP["structure"]에 더했다.
 # ---------------------------------------------------------------------------
 # v2.1 환경 파일 검사 (spec/compiled.py)
 SPEC_EXISTS_WORLD: Final = "'있음'은 에이전트 물체에만 쓸 수 있습니다 ('{id}')."
@@ -1727,7 +1727,6 @@ ED_PARAM_ON_LABEL: Final = "{label} 있음"
 ED_PARAM_COUNT_LABEL: Final = "{label} 개수"
 
 # v2.1 실험실·대시보드 (app/lab/structure_tile.py, view.py)
-STRUCT_TIP: Final = DASH_TILE_HELP["structure"]
 STRUCT_EMPTY: Final = "이 환경에는 진화로 생기고 없어지는 부품이 없습니다. 에디터에서 부품의 '있음' 진화를 켜 보세요."
 STRUCT_OTHER: Final = "기타"
 STRUCT_COUNT: Final = "{name} {n}개"
@@ -1745,3 +1744,38 @@ SPEC_EXISTS_WHERE_BLOCK: Final = "점수 블록 '{id}'"
 SPEC_EXISTS_WHERE_FORMULA: Final = "점수 수식"
 SPEC_EXISTS_WHERE_CHECKPOINTS: Final = "체크포인트 '{id}'"
 SPEC_EXISTS_WHERE_TARGET: Final = "목표 센서 '{id}'"
+
+# v2.1 L묶음(학습 방법 구조 뒤집기: learners/structure.py·ga.py·sa.py, engine/commands.py 이어하기 검사). 6절 밖
+LEARNER_ERR_STRUCTURE_FLIP: Final = "구조 뒤집기 확률은 0 이상 1 이하의 숫자여야 합니다 (지금 {value})."
+LEARNER_ERR_STRUCTURE_GENES: Final = "'있음' 유전자 번호는 몸 유전자 수({n})보다 작고 서로 다른 0 이상의 정수여야 합니다 (지금 {value})."
+TRAIN_RESUME_STRUCTURE_FIXED: Final = "이어 할 때는 구조 뒤집기 확률(--structure-flip)을 바꿀 수 없습니다. 새 실행으로 시작하세요."
+
+# ---------------------------------------------------------------------------
+# v2.1 B'묶음 (에디터 구조 탭·배열로 늘리기: app/editor/structure.py, tools.py). 6절 밖
+# ---------------------------------------------------------------------------
+ED_REPLICATE_ROOT: Final = "몸통(첫 에이전트 물체)은 배열로 늘릴 수 없습니다. 몸통에 붙은 부품을 고르세요."
+ED_REPLICATE_HINT: Final = "'{name}' 물체와 거기 붙은 관절·모터·구동기·센서(관절로 매달린 부품 포함)를 함께 복사합니다."
+ED_REPLICATE_LAYOUT_LABEL: Final = "놓는 방식"
+ED_REPLICATE_LAYOUT_TIPS: Final = {
+    "line": "원본 자리(시작점)부터 끝점까지 같은 간격으로 놓습니다.",
+    "circle": "가운데를 중심으로 같은 각도 간격으로 돌려 놓습니다.",
+    "mirror": "세로 축에 비춰 뒤집은 사본 하나를 만듭니다.",
+}
+ED_REPLICATE_START: Final = "시작점 (x, y)"
+ED_REPLICATE_END: Final = "끝점 (x, y)"
+ED_REPLICATE_CENTER: Final = "가운데 (x, y)"
+ED_REPLICATE_RADIUS: Final = "반지름"
+ED_REPLICATE_AXIS: Final = "거울 축 x"
+ED_REPLICATE_EVOLVE_TIP: Final = "부품마다 '있음' 몸 수치를 만들어, 생기고 없어지는 것까지 진화합니다. 처음에는 원본만 있습니다."
+ED_REPLICATE_ONE_COUNT_TIP: Final = "몸 수치 하나(개수)가 몇 개를 달지 정합니다. k번째 부품은 개수가 k 이상일 때 있습니다."
+ED_REPLICATE_OK: Final = "늘리기"
+ED_REPLICATE_CANCEL: Final = "취소"
+ED_STRUCT_HINT: Final = "진화로 생기고 없어질 수 있는 물체입니다. 줄을 고르면 함께 사라지는 부품이 캔버스에 점선으로 보입니다."
+ED_STRUCT_UNKNOWN: Final = "—"
+ED_STRUCT_PARTS_TIP: Final = "이 물체가 없을 때 함께 없어지는 부품 수: 관절·모터·구동기·센서와, 관절로만 매달려 있던 물체."
+ED_STRUCT_SHOW_ABSENT_TIP: Final = "처음 몸에 없는 부품을 옅은 점선으로 그립니다. 끄면 처음 몸 그대로 보입니다."
+
+# v2.1 C'묶음(「몸 구조」 타일 app/lab/structure_tile.py). 6절 밖
+STRUCT_AXIS: Final = "개체 비율(%)"
+STRUCT_WAIT: Final = "학습을 시작하면 세대마다 개체들의 몸 구조 비율을 그립니다."
+STRUCT_REPS_ONLY: Final = "집단 기록이 없는 세대는 세대 대표의 몸 구조 하나만 셉니다."

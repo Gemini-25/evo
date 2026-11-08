@@ -67,7 +67,7 @@ def fun_dashboard(qtbot: QtBot, tmp_path: Path, env: str = "lander", name: str =
 def test_new_tiles_live_on_the_fun_page_and_learning_page_is_unchanged(qtbot: QtBot, tmp_path: Path) -> None:
     dash = make_dashboard(qtbot, tmp_path)
     assert D.TILE_PAGES == {"learning": D.TILE_IDS, "fun": D.FUN_TILE_IDS}
-    assert D.FUN_TILE_IDS == ("genemap", "brain", "density", "actions", "body")
+    assert D.FUN_TILE_IDS == ("genemap", "brain", "density", "actions", "body", "structure")  # v2.1 「몸 구조」는 끝
     assert "brain" in D.TILE_PAGES["fun"] and D.PAGE_OF["brain"] == "fun"
     assert dash.page == "learning" and dash.page_tabs.currentIndex() == 0
     assert dash.tile_order() == list(D.TILE_IDS) == dash.tile_order("learning")

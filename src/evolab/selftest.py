@@ -322,12 +322,13 @@ def _check_builtin_env() -> str:
     return f"{path.name}: inputs={len(spec.inputs)}, outputs={len(spec.outputs)}, checksum={_checksum(np.frombuffer(a[1]))}"
 
 
-REQUIRED_EXAMPLES: tuple[str, ...] = ("lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv")
-"""자체 점검이 있어야 한다고 보는 내장 예제(v2.0: 점프 게임, 글라이더 추가)."""
+REQUIRED_EXAMPLES: tuple[str, ...] = ("lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv",
+                                      "wheels.evoenv")
+"""자체 점검이 있어야 한다고 보는 내장 예제(v2.0: 점프 게임, 글라이더, v2.1: 바퀴 고르는 언덕차 추가)."""
 
 
 def _check_bundle_files() -> str:
-    """내장 예제(착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더)를 모두 컴파일하고, v2 예제를 같은 시드로 두 번 돌려
+    """내장 예제(착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더, 바퀴 고르는 언덕차)를 모두 컴파일하고, v2 예제를 같은 시드로 두 번 돌려
     같은지 보고(_check_v2_examples), exe면 아이콘과 라이선스 고지가 있는지 본다."""
     import sys
 
@@ -349,18 +350,20 @@ def _check_bundle_files() -> str:
 
 
 def _check_v2_examples() -> str:
-    """v2 내장 예제를 같은 시드로 두 번 돌려 같은지 본다: 점프 게임(정해진 움직임 장애물 줄, 점프 추진기)과
-    글라이더(공기역학, 날개 모양, 모양별 밀도, 뇌 없음). exe 안에서도 v2 부품이 결정적인지 확인한다."""
+    """v2 내장 예제를 같은 시드로 두 번 돌려 같은지 본다: 점프 게임(정해진 움직임 장애물 줄, 점프 추진기),
+    글라이더(공기역학, 날개 모양, 모양별 밀도, 뇌 없음), (v2.1) 바퀴 고르는 언덕차(있음 칸: 바퀴 자리 넷 중 둘을 켠 몸이라
+    없는 바퀴의 관절·모터·센서를 빼는 길을 지난다). exe 안에서도 v2 부품이 결정적인지 확인한다."""
     from evolab.spec.io import load_env
     from evolab.world.physics2d.episode import Episode, Trial
 
     parts = []
-    for name, steps in (("jump.evoenv", 600), ("glider.evoenv", 600)):
+    for name, steps in (("jump.evoenv", 600), ("glider.evoenv", 600), ("wheels.evoenv", 600)):
         path = paths.builtin_env_dir() / name
         spec = load_env(path)
+        body = _two_wheel_body(spec) if name == "wheels.evoenv" else None
 
         def run() -> tuple[float, int, bytes]:
-            ep = Episode(spec, None, Trial(12345))
+            ep = Episode(spec, body, Trial(12345))
             n_out = len(spec.outputs)
             for k in range(steps):
                 if ep.done:
@@ -374,6 +377,14 @@ def _check_v2_examples() -> str:
             raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"{name} replay"))
         parts.append(f"{name}: steps={a[1]}, checksum={_checksum(np.frombuffer(a[2], dtype=np.uint8))}")
     return "; ".join(parts)
+
+
+def _two_wheel_body(spec: Any) -> np.ndarray:
+    """바퀴 고르는 언덕차의 처음 몸에서 바퀴 자리 1·4를 켜고 2·3을 끈 몸 수치(몸 유전자 순서)."""
+    from evolab.spec import symbols as sy
+
+    on = {"w1_on": 0.75, "w2_on": 0.25, "w3_on": 0.25, "w4_on": 0.75}
+    return np.array([on.get(p.id, p.value) for p in sy.evolved_params(spec.file)], dtype=np.float64)
 
 
 def _check_gui() -> str:

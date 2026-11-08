@@ -23,7 +23,7 @@ import re
 import types
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
 from annotated_types import Ge, Gt, Le, Lt, MaxLen, MinLen
 from pydantic import BaseModel, StringConstraints, TypeAdapter, ValidationError
@@ -1274,6 +1274,151 @@ def _enable_param(doc: EnvDocument, pid: str) -> None:
     doc.edit(S.ED_UNDO_EVOLVE_ON, mutate)
 
 
+# ---------------------------------------------------------------------------
+# v2.1 있음 칸 (설계 5.1·D38): 진화 체크가 몸 수치 <물체 id>_on(0..1)을 만든다
+# ---------------------------------------------------------------------------
+
+EXISTS_ON: Final = 0.75
+"""있음 몸 수치의 처음 값: 처음 몸에 있는 부품(D38, 유전자 공간에서 0.5와 0.25 떨어져 CMA-ES 시그마 0.5로 가끔 뒤집힘)."""
+EXISTS_OFF: Final = 0.25
+"""처음 몸에 없는 부품의 처음 값."""
+
+
+def root_body_id(data: Any) -> str | None:
+    """뿌리 물체(선언 순서 첫 에이전트 물체) id. 사전에서 바로 읽는다(구조 오류가 있어도). spec.structure.root_body와 같은 규칙."""
+    for b in _items(data, "bodies"):
+        if b.get("owner", "agent") == "agent" and isinstance(b.get("id"), str):
+            return str(b["id"])
+    return None
+
+
+def exists_param(doc: EnvDocument, body_id: str) -> str | None:
+    """물체의 있음 칸이 진화하는 매개변수 하나("=p.<id>", evolve)를 가리키면 그 id."""
+    path = doc.item_path(("bodies", body_id))
+    return None if path is None else doc.evolve_param((*path, "exists"))
+
+
+def evolve_exists(doc: EnvDocument, body_id: str) -> str | None:
+    """있음 칸의 진화를 켠다(되돌리기 한 단계): 매개변수 <id>_on(0..1, 처음 있으면 0.75, 없으면 0.25)을 만들고 칸을
+    "=p.<id>_on"으로. 칸이 이미 매개변수 하나를 가리키면 그 매개변수를 진화시킨다(범위가 없으면 0..1). 뿌리·세계 물체와
+    일반 수식 칸은 하지 않는다(None)."""
+    path = doc.item_path(("bodies", body_id))
+    body = doc.get(path) if path is not None else None
+    if path is None or not isinstance(body, dict) or body.get("owner", "agent") != "agent":
+        return None
+    if body_id == root_body_id(doc.data):
+        return None
+    value = body.get("exists")
+    linked = plain_param(value)
+    if linked is not None and doc.find(("params", linked)) is not None:
+        idx = doc.find(("params", linked))
+
+        def enable(d: dict[str, Any]) -> None:
+            p = d["params"][idx]
+            p["evolve"] = True
+            if p.get("min") is None:
+                p["min"] = 0.0
+            if p.get("max") is None:
+                p["max"] = 1.0
+
+        doc.edit(S.ED_UNDO_EVOLVE_ON, enable)
+        return linked
+    if value is not None and not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return None
+    initial = EXISTS_ON if value is None or float(value) > 0.5 else EXISTS_OFF
+    pid = doc.unique_id(f"{body_id}_on")
+    label = S.ED_PARAM_ON_LABEL.format(label=body.get("label") or body_id)
+
+    def mutate(d: dict[str, Any]) -> None:
+        d.setdefault("params", []).append({"id": pid, "label": label, "value": initial, "evolve": True,
+                                           "min": 0.0, "max": 1.0})
+        set_path(d, (*path, "exists"), f"=p.{pid}")
+
+    doc.edit(S.ED_UNDO_EVOLVE_ON, mutate)
+    return pid
+
+
+def fix_exists(doc: EnvDocument, body_id: str) -> None:
+    """있음 칸의 진화를 끈다(되돌리기 한 단계). 다른 칸(모터 힘 수식 등)도 그 매개변수를 쓰면 매개변수는 두고 진화만 끈다.
+    아니면 매개변수를 지우고 처음 상태를 지킨다: 처음 값이 0.5보다 크면 칸을 비우고(늘 있음), 아니면 그 값(늘 없음)."""
+    pid = exists_param(doc, body_id)
+    path = doc.item_path(("bodies", body_id))
+    if pid is None or path is None:
+        return
+    idx = doc.find(("params", pid))
+    if param_uses(doc.data, pid) > 1:
+        doc.edit(S.ED_UNDO_EVOLVE_OFF, lambda d: set_path(d, ("params", idx, "evolve"), False))
+        return
+
+    def mutate(d: dict[str, Any]) -> None:
+        value = d["params"][idx].get("value", EXISTS_ON)
+        body = get_path(d, path)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) <= 0.5:
+            body["exists"] = float(value)
+        else:
+            body.pop("exists", None)
+        d["params"] = [p for p in d["params"] if p.get("id") != pid]
+
+    doc.edit(S.ED_UNDO_EVOLVE_OFF, mutate)
+
+
+class ExistsField(NumField):
+    """물체의 「있음」 칸(v2.1). 숫자·수식 칸 + 「진화」 체크(evolve_exists / fix_exists). 진화 중이면 칸은 그 몸 수치의
+    처음 값이고 범위는 0..1로 고정이라 최솟값·최댓값 줄은 없다. 뿌리 물체는 잠긴다(ED_STRUCT_ROOT_LOCKED): 칸이 비어 있으면
+    고칠 수 없고, 잘못 적혀 있으면(검사 오류) 지울 수만 있다. 세계 물체에서는 폼이 이 줄을 숨긴다(FormRows._sync_info)."""
+
+    def __init__(self, ctx: FormContext, path: JsonPath, spec: FieldSpec | None,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(ctx, path, spec, evolve=True, parent=parent)
+
+    def body(self) -> dict[str, Any]:
+        item = self.doc.get(self.path[:-1])
+        return item if isinstance(item, dict) else {}
+
+    @property
+    def locked(self) -> bool:
+        """뿌리 물체라 있음 칸을 쓸 수 없다."""
+        return str(self.body().get("id", "")) == root_body_id(self.doc.data)
+
+    def _refresh_value(self) -> None:
+        super()._refresh_value()
+        assert isinstance(self.editor, NumEdit) and self.evolve_box is not None and self._range is not None
+        self._range.hide()  # 있음 몸 수치의 범위는 늘 0..1
+        value = self.value()
+        body = self.body()
+        if self.locked:
+            # 잘못 적힌 값(검사 오류 SPEC_EXISTS_ROOT)은 글 그대로 보이고 지울 수 있게: 진화 매개변수 값을 보이지 않는다
+            self._pid = None
+            self.editor.formula = True
+            self.editor.optional = True
+            self.editor.show_value(value)
+            self.editor.setEnabled(value is not None)
+            self.editor.setPlaceholderText(S.ED_STRUCT_ROOT_LOCKED)
+            self.evolve_box.setChecked(False)
+            self.evolve_box.setEnabled(False)
+            self.evolve_box.setToolTip(S.ED_STRUCT_ROOT_LOCKED)
+            self._tip_extra = S.ED_STRUCT_ROOT_LOCKED
+            return
+        self.editor.setEnabled(True)
+        self.editor.setPlaceholderText(S.ED_STRUCT_ON)
+        if self._pid is None:
+            linked = plain_param(value)
+            number = isinstance(value, (int, float)) and not isinstance(value, bool)
+            ok = body.get("owner", "agent") == "agent" and (
+                value is None or number or (linked is not None and self.doc.find(("params", linked)) is not None))
+            self.evolve_box.setEnabled(ok)
+            self.evolve_box.setToolTip(S.EDP_EVOLVE_TIP if ok else S.EDP_EVOLVE_FORMULA_TIP)
+
+    def _on_evolve(self, checked: bool) -> None:
+        bid = str(self.body().get("id", ""))
+        if checked:
+            evolve_exists(self.doc, bid)
+        else:
+            fix_exists(self.doc, bid)
+        self.refresh()
+        self._restyle()
+
+
 class VecField(FieldWidget):
     """고정 길이 수 묶음(Vec2, 경계 4개, 각도 제한). 선택 칸이면 '사용' 체크박스."""
 
@@ -2223,6 +2368,11 @@ class FormRows(QWidget):
             item = self.ctx.doc.get(self.path)
             item = item if isinstance(item, dict) else {}
             self.layout_.setRowVisible(motion, item.get("type") == "kinematic" or item.get("motion") is not None)
+        exists = self.fields.get("exists") if self.model is m.Body else None
+        if exists is not None:  # v2.1 있음 칸: 에이전트 물체만(세계 물체에 잘못 적힌 값은 지울 수 있게 보인다)
+            item = self.ctx.doc.get(self.path)
+            item = item if isinstance(item, dict) else {}
+            self.layout_.setRowVisible(exists, item.get("owner", "agent") == "agent" or item.get("exists") is not None)
 
     def _add_row(self, text: str, tip: str, w: FieldWidget, extra: QWidget | None = None) -> None:
         label = QLabel(text)
@@ -2608,6 +2758,8 @@ def make_field(ctx: FormContext, path: JsonPath, spec: FieldSpec) -> FieldWidget
     """칸 타입에 맞는 위젯. 폼에 안 보이는 칸이면 None."""
     k = spec.info.kind
     if k in ("num", "float"):
+        if spec.model is m.Body and spec.key == "exists":  # v2.1 있음 칸
+            return ExistsField(ctx, path, spec)
         return NumField(ctx, path, spec)
     if k == "int":
         return IntField(ctx, path, spec)

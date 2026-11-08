@@ -73,9 +73,9 @@ def test_glider_initial_body_flies_about_113_m() -> None:
 
 
 def test_builtin_order_and_unknown_files_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """T35: 착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더, 그 밖은 이름순."""
+    """T35: 착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더, (v2.1) 바퀴 고르는 언덕차, 그 밖은 이름순."""
     assert [p.name for p in paths.builtin_envs()] == [
-        "lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv"]
+        "lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv", "wheels.evoenv"]
     for name in ("zebra", "glider", "apple", "lander", "jump"):
         (tmp_path / f"{name}.evoenv").write_text("{}", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("", encoding="utf-8")
@@ -85,11 +85,11 @@ def test_builtin_order_and_unknown_files_by_name(tmp_path: Path, monkeypatch: py
 
 
 def test_first_run_copies_only_new_examples(tmp_path: Path) -> None:
-    """T35: v2.0을 처음 켜면 새 예제(점프 게임, 글라이더)만 복사하고 사용자가 고친 옛 예제는 그대로 둔다."""
+    """T35: v2.0을 처음 켜면 새 예제(점프 게임, 글라이더, v2.1 바퀴 고르는 언덕차)만 복사하고 사용자가 고친 옛 예제는 그대로 둔다."""
     for name in ("lander", "track_car", "hill_car"):
         (tmp_path / f"{name}.evoenv").write_text(f"고친 {name}", encoding="utf-8")
     copied = paths.install_examples(tmp_path)
-    assert [p.name for p in copied] == ["jump.evoenv", "glider.evoenv"]
+    assert [p.name for p in copied] == ["jump.evoenv", "glider.evoenv", "wheels.evoenv"]
     assert (tmp_path / "jump.evoenv").read_bytes() == JUMP.read_bytes()
     for name in ("lander", "track_car", "hill_car"):
         assert (tmp_path / f"{name}.evoenv").read_text(encoding="utf-8") == f"고친 {name}"

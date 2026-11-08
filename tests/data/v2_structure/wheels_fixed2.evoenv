@@ -1,0 +1,582 @@
+{
+  "version": 3,
+  "name": "바퀴 고르는 언덕차",
+  "description": "바퀴 자리 네 곳 중 어디에 몇 개를 달지와 크기, 차체 모양이 함께 진화한다. 모터 힘 600은 달린 바퀴가 나눠 쓴다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 30.0,
+    "bounds": [
+      -30.0,
+      -60.0,
+      460.0,
+      200.0
+    ],
+    "contact_debounce": 0.1
+  },
+  "params": [
+    {
+      "id": "half",
+      "label": "차체 반길이",
+      "value": 1.1,
+      "evolve": true,
+      "min": 0.7,
+      "max": 1.8
+    },
+    {
+      "id": "nose",
+      "label": "앞 높이",
+      "value": 0.35,
+      "evolve": true,
+      "min": 0.1,
+      "max": 0.9
+    },
+    {
+      "id": "tail",
+      "label": "뒤 높이",
+      "value": 0.35,
+      "evolve": true,
+      "min": 0.1,
+      "max": 0.9
+    },
+    {
+      "id": "w1_on",
+      "label": "바퀴1 있음",
+      "value": 0.75,
+      "evolve": false,
+      "min": 0.0,
+      "max": 1.0
+    },
+    {
+      "id": "w1_x",
+      "label": "바퀴1 위치",
+      "value": -1.0,
+      "evolve": true,
+      "min": -1.0,
+      "max": 1.0
+    },
+    {
+      "id": "w1_r",
+      "label": "바퀴1 반지름",
+      "value": 0.5,
+      "evolve": true,
+      "min": 0.25,
+      "max": 1.0
+    },
+    {
+      "id": "w2_on",
+      "label": "바퀴2 있음",
+      "value": 0.25,
+      "evolve": false,
+      "min": 0.0,
+      "max": 1.0
+    },
+    {
+      "id": "w2_x",
+      "label": "바퀴2 위치",
+      "value": -0.33,
+      "evolve": true,
+      "min": -1.0,
+      "max": 1.0
+    },
+    {
+      "id": "w2_r",
+      "label": "바퀴2 반지름",
+      "value": 0.5,
+      "evolve": true,
+      "min": 0.25,
+      "max": 1.0
+    },
+    {
+      "id": "w3_on",
+      "label": "바퀴3 있음",
+      "value": 0.25,
+      "evolve": false,
+      "min": 0.0,
+      "max": 1.0
+    },
+    {
+      "id": "w3_x",
+      "label": "바퀴3 위치",
+      "value": 0.33,
+      "evolve": true,
+      "min": -1.0,
+      "max": 1.0
+    },
+    {
+      "id": "w3_r",
+      "label": "바퀴3 반지름",
+      "value": 0.5,
+      "evolve": true,
+      "min": 0.25,
+      "max": 1.0
+    },
+    {
+      "id": "w4_on",
+      "label": "바퀴4 있음",
+      "value": 0.75,
+      "evolve": false,
+      "min": 0.0,
+      "max": 1.0
+    },
+    {
+      "id": "w4_x",
+      "label": "바퀴4 위치",
+      "value": 1.0,
+      "evolve": true,
+      "min": -1.0,
+      "max": 1.0
+    },
+    {
+      "id": "w4_r",
+      "label": "바퀴4 반지름",
+      "value": 0.5,
+      "evolve": true,
+      "min": 0.25,
+      "max": 1.0
+    }
+  ],
+  "randomize": [
+    {
+      "id": "hseed",
+      "label": "언덕 시드",
+      "dist": "int",
+      "low": 0,
+      "high": 1000000000
+    }
+  ],
+  "generators": [
+    {
+      "kind": "hills",
+      "id": "ground",
+      "label": "언덕길",
+      "seed": "=r.hseed",
+      "x_range": [
+        -20.0,
+        420.0
+      ],
+      "segment": 1.0,
+      "base_y": 0.0,
+      "amplitude": 0.5,
+      "growth": 0.03,
+      "roughness": 0.6,
+      "slope": 0.06,
+      "flat_start": 25.0,
+      "friction": 0.9
+    }
+  ],
+  "agent": {
+    "spawn": {
+      "x": 0.0,
+      "y": "=max((p.w1_r if p.w1_on > 0.5 else 0), (p.w2_r if p.w2_on > 0.5 else 0), (p.w3_r if p.w3_on > 0.5 else 0), (p.w4_r if p.w4_on > 0.5 else 0)) + 0.6"
+    }
+  },
+  "bodies": [
+    {
+      "id": "chassis",
+      "label": "차체",
+      "owner": "agent",
+      "shapes": [
+        {
+          "kind": "poly",
+          "points": [
+            [
+              "=-p.half",
+              -0.25
+            ],
+            [
+              "=p.half",
+              -0.25
+            ],
+            [
+              "=p.half",
+              "=p.nose"
+            ],
+            [
+              "=-p.half",
+              "=p.tail"
+            ]
+          ]
+        }
+      ],
+      "material": {
+        "density": 20.0,
+        "friction": 0.5
+      },
+      "tags": [
+        "chassis"
+      ]
+    },
+    {
+      "id": "wheel1",
+      "label": "바퀴1",
+      "owner": "agent",
+      "pos": [
+        "=p.w1_x * p.half",
+        -0.25
+      ],
+      "exists": "=p.w1_on",
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": "=p.w1_r"
+        }
+      ],
+      "material": {
+        "density": 10.0,
+        "friction": 1.0
+      },
+      "tags": [
+        "wheel"
+      ]
+    },
+    {
+      "id": "wheel2",
+      "label": "바퀴2",
+      "owner": "agent",
+      "pos": [
+        "=p.w2_x * p.half",
+        -0.25
+      ],
+      "exists": "=p.w2_on",
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": "=p.w2_r"
+        }
+      ],
+      "material": {
+        "density": 10.0,
+        "friction": 1.0
+      },
+      "tags": [
+        "wheel"
+      ]
+    },
+    {
+      "id": "wheel3",
+      "label": "바퀴3",
+      "owner": "agent",
+      "pos": [
+        "=p.w3_x * p.half",
+        -0.25
+      ],
+      "exists": "=p.w3_on",
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": "=p.w3_r"
+        }
+      ],
+      "material": {
+        "density": 10.0,
+        "friction": 1.0
+      },
+      "tags": [
+        "wheel"
+      ]
+    },
+    {
+      "id": "wheel4",
+      "label": "바퀴4",
+      "owner": "agent",
+      "pos": [
+        "=p.w4_x * p.half",
+        -0.25
+      ],
+      "exists": "=p.w4_on",
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": "=p.w4_r"
+        }
+      ],
+      "material": {
+        "density": 10.0,
+        "friction": 1.0
+      },
+      "tags": [
+        "wheel"
+      ]
+    }
+  ],
+  "joints": [
+    {
+      "id": "j1",
+      "label": "바퀴1 축",
+      "kind": "pivot",
+      "a": "chassis",
+      "b": "wheel1",
+      "anchor_a": [
+        "=p.w1_x * p.half",
+        -0.25
+      ]
+    },
+    {
+      "id": "j2",
+      "label": "바퀴2 축",
+      "kind": "pivot",
+      "a": "chassis",
+      "b": "wheel2",
+      "anchor_a": [
+        "=p.w2_x * p.half",
+        -0.25
+      ]
+    },
+    {
+      "id": "j3",
+      "label": "바퀴3 축",
+      "kind": "pivot",
+      "a": "chassis",
+      "b": "wheel3",
+      "anchor_a": [
+        "=p.w3_x * p.half",
+        -0.25
+      ]
+    },
+    {
+      "id": "j4",
+      "label": "바퀴4 축",
+      "kind": "pivot",
+      "a": "chassis",
+      "b": "wheel4",
+      "anchor_a": [
+        "=p.w4_x * p.half",
+        -0.25
+      ]
+    }
+  ],
+  "actuators": [
+    {
+      "kind": "motor",
+      "id": "m1",
+      "label": "바퀴1 모터",
+      "joint": "j1",
+      "max_torque": "=(600 / max(1, (1 if p.w1_on > 0.5 else 0) + (1 if p.w2_on > 0.5 else 0) + (1 if p.w3_on > 0.5 else 0) + (1 if p.w4_on > 0.5 else 0))) if p.w1_on > 0.5 else 0",
+      "max_speed": 15.0,
+      "keys_pos": [
+        "Left",
+        "A"
+      ],
+      "keys_neg": [
+        "Right",
+        "D"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m2",
+      "label": "바퀴2 모터",
+      "joint": "j2",
+      "max_torque": "=(600 / max(1, (1 if p.w1_on > 0.5 else 0) + (1 if p.w2_on > 0.5 else 0) + (1 if p.w3_on > 0.5 else 0) + (1 if p.w4_on > 0.5 else 0))) if p.w2_on > 0.5 else 0",
+      "max_speed": 15.0,
+      "keys_pos": [
+        "Left",
+        "A"
+      ],
+      "keys_neg": [
+        "Right",
+        "D"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m3",
+      "label": "바퀴3 모터",
+      "joint": "j3",
+      "max_torque": "=(600 / max(1, (1 if p.w1_on > 0.5 else 0) + (1 if p.w2_on > 0.5 else 0) + (1 if p.w3_on > 0.5 else 0) + (1 if p.w4_on > 0.5 else 0))) if p.w3_on > 0.5 else 0",
+      "max_speed": 15.0,
+      "keys_pos": [
+        "Left",
+        "A"
+      ],
+      "keys_neg": [
+        "Right",
+        "D"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m4",
+      "label": "바퀴4 모터",
+      "joint": "j4",
+      "max_torque": "=(600 / max(1, (1 if p.w1_on > 0.5 else 0) + (1 if p.w2_on > 0.5 else 0) + (1 if p.w3_on > 0.5 else 0) + (1 if p.w4_on > 0.5 else 0))) if p.w4_on > 0.5 else 0",
+      "max_speed": 15.0,
+      "keys_pos": [
+        "Left",
+        "A"
+      ],
+      "keys_neg": [
+        "Right",
+        "D"
+      ]
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "body_state",
+      "id": "st",
+      "label": "차체 상태",
+      "body": "chassis",
+      "fields": [
+        "vx",
+        "vy",
+        "angle",
+        "omega"
+      ],
+      "frame": "world",
+      "scale": {
+        "vx": 5.0,
+        "vy": 5.0,
+        "angle": 1.5,
+        "omega": 3.0
+      }
+    },
+    {
+      "kind": "rays",
+      "id": "ray",
+      "label": "앞쪽 땅까지 거리",
+      "body": "chassis",
+      "origin": [
+        "=p.half",
+        0.0
+      ],
+      "count": 5,
+      "spread": 1.6,
+      "center": -0.9,
+      "length": 10.0,
+      "hits": [
+        "tag.terrain"
+      ]
+    },
+    {
+      "kind": "contact",
+      "id": "c1",
+      "label": "바퀴1 접지",
+      "body": "wheel1",
+      "with": [
+        "tag.terrain"
+      ]
+    },
+    {
+      "kind": "contact",
+      "id": "c2",
+      "label": "바퀴2 접지",
+      "body": "wheel2",
+      "with": [
+        "tag.terrain"
+      ]
+    },
+    {
+      "kind": "contact",
+      "id": "c3",
+      "label": "바퀴3 접지",
+      "body": "wheel3",
+      "with": [
+        "tag.terrain"
+      ]
+    },
+    {
+      "kind": "contact",
+      "id": "c4",
+      "label": "바퀴4 접지",
+      "body": "wheel4",
+      "with": [
+        "tag.terrain"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "finish",
+      "label": "끝까지",
+      "when": "chassis.x > gen.ground.x_max - 15"
+    },
+    {
+      "id": "crash",
+      "label": "뒤집힘",
+      "when": "contact(chassis, tag.terrain)"
+    },
+    {
+      "id": "stall",
+      "label": "정체",
+      "when": "chassis.vx < 0.3",
+      "hold": 3.0
+    }
+  ],
+  "termination": [
+    {
+      "event": "finish",
+      "outcome": "success",
+      "label": "끝까지"
+    },
+    {
+      "event": "crash",
+      "outcome": "failure",
+      "label": "뒤집힘"
+    },
+    {
+      "event": "stall",
+      "outcome": "failure",
+      "label": "정체"
+    },
+    {
+      "event": "out_of_bounds",
+      "outcome": "failure",
+      "label": "이탈"
+    },
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 초과"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "kind": "progress",
+        "id": "s_prog",
+        "label": "전진 거리",
+        "body": "chassis",
+        "direction": 0.0,
+        "weight": 1.0
+      },
+      {
+        "kind": "event",
+        "id": "s_finish",
+        "label": "끝까지",
+        "event": "finish",
+        "weight": 100.0
+      },
+      {
+        "kind": "event",
+        "id": "s_crash",
+        "label": "뒤집힘",
+        "event": "crash",
+        "weight": -20.0
+      },
+      {
+        "kind": "energy",
+        "id": "s_energy",
+        "label": "에너지",
+        "weight": -0.05
+      }
+    ]
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean"
+  }
+}

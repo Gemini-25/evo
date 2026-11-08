@@ -305,8 +305,10 @@ def test_gui_replay_matches_worker_score_and_trajectory(batch: Any) -> None:
         assert r.observations is not None and r.observations.shape == (r.result.steps, layout.brain.n_in)
         assert [a.shape[1] for a in r.activations] == [fo for _, fo in layout.brain.shapes]
         assert len(r.agent) == r.trajectory.poses.shape[1]
-    # v2.0(설계 T21): 점프 게임(정해진 움직임 장애물 줄, 점프)과 글라이더(공기역학, 뇌 없음)도 화면 재생 = 워커
-    v2_texts = {name: (paths.builtin_env_dir() / f"{name}.evoenv").read_text(encoding="utf-8") for name in ("jump", "glider")}
+    # v2.0(설계 T21): 점프 게임(정해진 움직임 장애물 줄, 점프)과 글라이더(공기역학, 뇌 없음)도 화면 재생 = 워커.
+    # v2.1: 바퀴 고르는 언덕차(있음 칸: 개체마다 있는 바퀴가 달라 움직이는 물체 수가 다르다)도.
+    v2_texts = {name: (paths.builtin_env_dir() / f"{name}.evoenv").read_text(encoding="utf-8")
+                for name in ("jump", "glider", "wheels")}
     with WorkerPool(2) as pool:
         for name, text in v2_texts.items():
             spec2 = compile_env(text)

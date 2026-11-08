@@ -31,11 +31,12 @@ from evolab.engine.trainer import (
     TrainConfig,
     Trainer,
     qualify_budget_problem,
+    structure_note,
     training_trials,
 )
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStoreError
-from evolab.spec.compiled import EnvFileError
+from evolab.spec.compiled import EnvFileError, EnvSpec
 from evolab.spec.io import compile_env, env_hash, load_env
 
 METHOD_NAMES = S.METHOD_NAMES
@@ -82,9 +83,10 @@ class _StopFlag:
         signal.signal(signal.SIGINT, self._old)
 
 
-def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig:
-    """명령줄 인수로 설정을 만든다. base가 없으면 새 실행: 자동 재시작 같은 권장값(NEW_RUN_DEFAULTS) 위에 인수."""
-    c = base.to_dict() if base is not None else TrainConfig.for_new_run().to_dict()
+def _config_from_args(args: Any, base: TrainConfig | None = None, spec: EnvSpec | None = None) -> TrainConfig:
+    """명령줄 인수로 설정을 만든다. base가 없으면 새 실행: 자동 재시작 같은 권장값(NEW_RUN_DEFAULTS)과, spec에 있음 유전자가
+    있으면 구조 뒤집기 권장값(v2.1, for_new_run(spec)) 위에 인수. --structure-flip은 GA·담금질 둘 다의 확률이다."""
+    c = base.to_dict() if base is not None else TrainConfig.for_new_run(spec).to_dict()
     for key, attr in (
         ("method", "method"), ("run_seed", "seed"), ("popsize", "popsize"), ("sigma0", "sigma"),
         ("max_generations", "max_generations"), ("max_evaluations", "max_evaluations"), ("max_time", "max_time"),
@@ -98,6 +100,9 @@ def _config_from_args(args: Any, base: TrainConfig | None = None) -> TrainConfig
             c[key] = value
     if getattr(args, "no_restart", False):
         c["restart_patience"] = None
+    flip = getattr(args, "structure_flip", None)
+    if flip is not None:
+        c["ga_structure_flip"] = c["sa_structure_flip"] = flip
     if base is None and getattr(args, "popsize", None) is None and c.get("method") == "ga":
         c["popsize"] = 64  # 명세: 유전 알고리즘 기본 개체 수 64(CMA-ES는 32)
     return TrainConfig.from_dict(c)
@@ -207,6 +212,9 @@ def train_command(args: Any) -> int:
             if fixed:
                 warn(S.TRAIN_RESUME_QUALIFY_FIXED.format(flags=", ".join(fixed)))
                 return 2
+            if getattr(args, "structure_flip", None) is not None:  # 학습 방법의 일부(v2.1): 이어 할 때는 못 바꿈
+                warn(S.TRAIN_RESUME_STRUCTURE_FIXED)
+                return 2
             store = RunStore.open(Path(args.resume))
             gen, ckpt = store.load_checkpoint(None)
             config = _config_from_args(args, TrainConfig.from_dict(ckpt["config"]))
@@ -220,6 +228,9 @@ def train_command(args: Any) -> int:
             trainer = Trainer.resume(store, pool, None, observe=observe, **overrides)
             store.append_event("resume", gen, workers=workers)
             say(S.TRAIN_RESUMED.format(gen=gen, path=store.root))
+            note = structure_note(trainer.config, trainer.layout)
+            if note is not None:  # v2.0 GA·담금질 실행을 구조 환경에서 이어 감(뒤집기 꺼짐): 한 번 알린다
+                warn(note)
             if live:
                 # 화면의 「적용」(세션)과 같은 순서: 트레이너에 적용 → 체크포인트(바뀐 상태) → 보호 → 사건 줄
                 changes = trainer.apply_config(live)
@@ -235,7 +246,7 @@ def train_command(args: Any) -> int:
                 return 2
             spec = load_env(args.env)
             env_text = Path(args.env).read_text(encoding="utf-8-sig")
-            config = _config_from_args(args)
+            config = _config_from_args(args, spec=spec)
             from evolab.runs.store import RunStore
 
             base_dir = Path(args.out) if args.out else paths.runs_dir()

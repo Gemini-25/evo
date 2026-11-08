@@ -5,8 +5,7 @@
 - 형식 3: exists 하나만 써도 형식 3 파일, 지우면 처음 글·해시로 돌아옴. v2.0 프로그램(형식 2까지)은 「파일 버전 3」으로 거부.
 - 검사: 있음 칸의 수식은 만들기 단계 structure(p.*만).
 
-런타임(Episode.absent, A' 묶음)과 검사 규칙(SPEC_EXISTS_*, A' 묶음)이 필요한 부분은 그 묶음이 들어올 때까지
-xfail(strict=False)로 둔다(통합 때 표시를 지운다).
+런타임(Episode.absent)과 검사 규칙(SPEC_EXISTS_*)은 A' 묶음이 넣었다(그 묶음의 테스트: tests/test_structure_runtime.py).
 """
 
 from __future__ import annotations
@@ -32,10 +31,6 @@ from evolab.world.physics2d.episode import Episode, Trial
 
 ROOT = Path(__file__).resolve().parents[1]
 ENVS = ROOT / "environments"
-
-A_RUNTIME = pytest.mark.xfail(strict=False, reason="A' runtime")
-A_VALIDATION = pytest.mark.xfail(strict=False, reason="A' validation")
-
 
 def _box(w: float, h: float) -> dict[str, Any]:
     return {"kind": "box", "w": w, "h": h}
@@ -272,7 +267,6 @@ def _random_bodies(spec: Any, n: int, seed: int) -> np.ndarray:
     return np.random.default_rng(seed).uniform(lo, hi, (n, len(evolved)))
 
 
-@A_RUNTIME
 def test_t57_present_equals_runtime_absent_on_2000_random_bodies() -> None:
     spec = _spec()
     trial = Trial(seeds.derive(9, 1))
@@ -310,7 +304,6 @@ def test_t58_constant_exists_above_the_threshold_is_not_optional() -> None:
     assert st.optional_bodies(env) == OPTIONAL - {"arm", "hand", "finger"}
 
 
-@A_RUNTIME
 def test_t58_runtime_absent_stays_inside_optional_bodies() -> None:
     spec = _spec()
     trial = Trial(seeds.derive(9, 2))
@@ -328,7 +321,6 @@ def _exists_ref_messages(issues: list[Any], body: str) -> list[str]:
     return [i.message for i in issues if i.severity == "error" and pattern.fullmatch(i.message)]
 
 
-@A_VALIDATION
 def test_t58_validation_flags_exactly_the_optional_bodies() -> None:
     for body in sorted(AGENTS):
         data = _data()
@@ -453,7 +445,6 @@ def test_t60_contact_and_sensors_on_optional_bodies_are_allowed() -> None:
     assert spec.outputs == ["m1", "m2", "m_arm", "push"]
 
 
-@A_VALIDATION
 def test_t60_exists_on_a_world_body_is_an_error() -> None:
     data = _data()
     data["bodies"][1]["exists"] = 0.75  # post(세계 물체)
@@ -462,7 +453,6 @@ def test_t60_exists_on_a_world_body_is_an_error() -> None:
         (i.severity, i.where, i.message) for i in issues]
 
 
-@A_VALIDATION
 def test_t60_exists_on_the_root_body_is_an_error() -> None:
     data = _data()
     data["bodies"][2]["exists"] = "=p.arm_on"  # chassis(뿌리)
@@ -513,14 +503,13 @@ REF_CASES: dict[str, Any] = {
 
 @pytest.mark.parametrize("case", list(REF_CASES))
 def test_t60_references_compile_when_the_body_cannot_disappear(case: str) -> None:
-    """같은 참조를 늘 있는 물체(wheel2의 있음 칸을 비움)에 쓰면 오류가 아니다(아래 xfail 경우의 대조군)."""
+    """같은 참조를 늘 있는 물체(wheel2의 있음 칸을 비움)에 쓰면 오류가 아니다(아래 오류 경우의 대조군)."""
     data = REF_CASES[case]()
     data["bodies"][4]["exists"] = None
     assert data["bodies"][4]["id"] == "wheel2"
     compile_env(data)
 
 
-@A_VALIDATION
 @pytest.mark.parametrize("case", list(REF_CASES))
 def test_t60_references_to_an_optional_body_are_errors(case: str) -> None:
     issues = check_env(_env(REF_CASES[case]()))

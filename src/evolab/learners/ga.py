@@ -7,6 +7,9 @@
    토너먼트 선택 → 균등 교차(확률 crossover) → 유전자별 가우시안 돌연변이(확률 mutation_rate, 폭 sigma)로 채운다.
    몸 유전자(앞쪽 bounded_dims차원)는 [-1, 1]을 넘으면 잘라낸다.
 3. 돌연변이 폭은 세대마다 sigma_decay를 곱한다. 세대 g의 개체군은 폭 mutation_sigma × sigma_decay**g로 만든다.
+4. 구조 뒤집기(v2.1, structure_flip > 0): 자식을 다 만든 뒤(엘리트 제외) 자식 순서로, 있음 유전자(structure_genes)마다
+   확률 structure_flip으로 부호를 뒤집어 ∓0.5에 둔다(learners/structure.flip_structure). 확률이 0이면 난수를 쓰지 않아
+   v2.0과 비트 단위로 같고, 상태(state_dict)의 설정에 structure_* 키도 쓰지 않는다.
 
 - 초기 개체군: 첫 개체는 x0 그대로, 나머지는 x0 + mutation_sigma × N(0, 1)(모든 유전자).
 - 다음 개체군은 tell()에서 바로 만들어 두므로 ask()는 난수를 쓰지 않는다. 그래서 ask()와 tell() 사이의
@@ -37,6 +40,7 @@ from evolab.learners.base import (
     sanitize_scores,
     state_array,
 )
+from evolab.learners.structure import check_structure_config, config_for_state, flip_structure
 
 STATE_FORMAT: Final = 1
 _SEED_LIMIT: Final = 2**32
@@ -65,6 +69,10 @@ class GAConfig:
     """학습 방법 전용 난수 생성기 시드(0 ≤ seed < 2**32). Trainer가 실행 시드에서 만든다."""
     bounded_dims: int = 0
     """앞쪽 k차원(몸 유전자)은 [-1, 1]을 넘으면 잘라낸다. 나머지(뇌 가중치)는 경계 없음."""
+    structure_flip: float = 0.0
+    """구조 뒤집기 확률(v2.1): 자식마다, 있음 유전자마다 이 확률로 부호를 뒤집는다. 0이면 끔(난수를 쓰지 않음)."""
+    structure_genes: tuple[int, ...] = ()
+    """있음 유전자 번호(GenomeLayout.on_genes, 몸 유전자 안). 상태에서 읽은 목록은 tuple로 바꾼다."""
 
     def __post_init__(self) -> None:
         if not is_int(self.popsize) or self.popsize < 2:
@@ -85,6 +93,8 @@ class GAConfig:
             raise ValueError(S.LEARNER_ERR_SEED.format(value=self.seed))
         if not is_int(self.bounded_dims) or self.bounded_dims < 0:
             raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS.format(value=self.bounded_dims))
+        genes = check_structure_config(self.structure_flip, self.structure_genes, self.bounded_dims)
+        object.__setattr__(self, "structure_genes", genes)
 
 
 class GeneticAlgorithm:
@@ -148,6 +158,8 @@ class GeneticAlgorithm:
         self._best_score = float(fitness[order[0]])
         self._sigma *= float(c.sigma_decay)
         children = self._offspring(ranked, c.popsize - c.elites)
+        # 구조 뒤집기: 자식을 다 만든 뒤(엘리트 제외) 자식 순서로. 확률 0이면 난수를 부르지 않는다
+        flip_structure(children, range(children.shape[0]), c.structure_genes, c.structure_flip, self._rng)
         self._population = np.concatenate([ranked[: c.elites], children], axis=0)
         self._asked = False
         self._generation += 1
@@ -175,7 +187,7 @@ class GeneticAlgorithm:
         return {
             "format": STATE_FORMAT,
             "name": self.name,
-            "config": asdict(self._config),
+            "config": config_for_state(asdict(self._config)),  # 구조 뒤집기를 끄면 v2.0과 같은 키
             "dim": self._dim,
             "generation": self._generation,
             "evaluations": self._evaluations,
@@ -214,6 +226,7 @@ class GeneticAlgorithm:
             rng = generator_from_state(d["rng"])
         except (KeyError, TypeError, ValueError) as e:  # 빠진 항목, 모르는 설정 이름, 잘못된 값
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
+        # 설정의 structure_* 키가 없으면(v2.0 상태, 뒤집기를 끈 상태) 데이터클래스 기본값 0이다.
         # 감쇠가 오래 이어지면 폭이 0으로 언더플로할 수 있어 0도 받는다.
         if not (math.isfinite(sigma) and sigma >= 0) or generation < 0 or evaluations < 0:
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=f"sigma={sigma}, generation={generation}"))

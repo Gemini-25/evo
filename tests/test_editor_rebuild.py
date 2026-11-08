@@ -7,6 +7,11 @@
 v2.0(설계 T41): 점프 게임·글라이더(environments/jump.evoenv, glider.evoenv)도 같은 방법으로 만든다. v2 부품은 v2
 도구로 만든다: 장애물 줄(add_obstacles), 점프 추진기(add_jump), 공기역학(add_aero), 날개 모양(add_wing), 정해진
 움직임(make_moving).
+
+v2.1(설계 T63): 바퀴 고르는 언덕차(environments/wheels.evoenv)는 처음부터가 아니라 언덕 넘는 자동차에서 출발해, 「배열로
+늘리기」(tools.replicate: 바퀴 1개 -> 4개, 있음/없음도 진화)와 속성 패널·아래 탭의 편집(지우기, 이름 바꾸기, 값)만으로
+만든다. 바퀴 사본의 id·표시 이름·참조(관절, 모터, 접지 센서)와 있음 몸 수치는 replicate가 만들고, 나머지(바퀴 자리 수식,
+모터 힘 나누기 수식, 시작 높이, 위치·반지름 몸 수치)는 칸 편집이다.
 """
 
 from __future__ import annotations
@@ -17,10 +22,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
 from evolab import paths
 from evolab.app.editor import tools as T
 from evolab.app.editor.document import EnvDocument
+from evolab.app.editor.forms import SECTION_TYPES
 from evolab.engine import trainer as trainer_mod
 from evolab.engine.pool import WorkerPool
 from evolab.engine.trainer import TrainConfig, Trainer
@@ -181,3 +188,96 @@ def test_rebuilt_file_trains_identically(qtbot: Any, tmp_path: Path, name: str) 
     if name == "hill_car.evoenv":
         assert compile_env(rebuilt).body_param_count == 5  # 몸 수치(바퀴 반지름, 차체 꼭짓점) 진화
         assert isinstance(compile_env(rebuilt).file.generators[0], m.HillGen)
+
+
+# ---------------------------------------------------------------------------
+# v2.1 T63: 언덕 넘는 자동차 -> 바퀴 고르는 언덕차 (배열로 늘리기 + 폼 편집)
+# ---------------------------------------------------------------------------
+
+
+def _canonical(section: str, item: dict[str, Any]) -> dict[str, Any]:
+    """부품 사전을 모델 기본값까지 채운 모양으로(기본값만 다른 칸을 편집으로 세지 않게)."""
+    model = TypeAdapter(SECTION_TYPES[section]).validate_python(item)
+    return json.loads(json.dumps(model.model_dump(mode="json", by_alias=True)))
+
+
+def rebuild_wheels() -> tuple[EnvDocument, dict[str, int]]:
+    """언덕 넘는 자동차에서 바퀴 고르는 언덕차를 만든다. 편집 횟수를 센다."""
+    target = json.loads(json.dumps(parse_env((paths.builtin_env_dir() / "wheels.evoenv").read_text(
+        encoding="utf-8")).model_dump(mode="json", by_alias=True)))
+    doc = EnvDocument()
+    doc.from_builtin("hill_car.evoenv")
+    counts = {"tool": 0, "remove": 0, "rename": 0, "field": 0}
+    # 속성 패널 「지우기」: 앞바퀴와 거기 붙은 것, 앞바퀴 반지름 매개변수(매개변수 탭)
+    doc.remove([("bodies", "wheel_f"), ("joints", "j_f"), ("actuators", "m_f"), ("sensors", "c_f"),
+                ("params", "front_r")])
+    counts["remove"] += 1
+    # 이름(id)·표시 이름: 뒷바퀴를 1번 바퀴로
+    for ref, new_id, label in ((("bodies", "wheel_r"), "wheel1", "바퀴1"), (("joints", "j_r"), "j1", "바퀴1 축"),
+                               (("actuators", "m_r"), "m1", "바퀴1 모터"), (("sensors", "c_r"), "c1", "바퀴1 접지"),
+                               (("params", "rear_r"), "w1_r", "바퀴1 반지름")):
+        assert doc.rename(ref, new_id), ref
+        counts["rename"] += 1
+        path = doc.item_path((ref[0], new_id))
+        assert path is not None
+        doc.set_value((*path, "label"), label)
+        counts["field"] += 1
+    # 배열로 늘리기: 바퀴 1개 -> 4개, 차체 뒤 끝에서 앞 끝까지, 있음/없음도 진화
+    new = T.replicate(doc, "wheel1", 4, {"kind": "line", "end": [1.1, -0.25]}, True, False)
+    counts["tool"] += 1
+    assert [r for r in new if r[0] != "params"] == [
+        ("bodies", "wheel2"), ("bodies", "wheel3"), ("bodies", "wheel4"), ("joints", "j2"), ("joints", "j3"),
+        ("joints", "j4"), ("actuators", "m2"), ("actuators", "m3"), ("actuators", "m4"), ("sensors", "c2"),
+        ("sensors", "c3"), ("sensors", "c4")]
+    # replicate가 만든 id·표시 이름·참조가 예제와 같다(편집 없이)
+    for section in ("bodies", "joints", "actuators", "sensors"):
+        assert [(x["id"], x.get("label")) for x in doc.items(section)] == [
+            (x["id"], x.get("label")) for x in target[section]], section
+    for k in range(1, 5):
+        assert doc.item(("joints", f"j{k}"))["b"] == f"wheel{k}"  # type: ignore[index]
+        assert doc.item(("actuators", f"m{k}"))["joint"] == f"j{k}"  # type: ignore[index]
+        assert doc.item(("sensors", f"c{k}"))["body"] == f"wheel{k}"  # type: ignore[index]
+        # 있음 몸 수치: 매개변수 탭에서 이름만 짧게(수식도 함께 바뀐다)
+        assert doc.rename(("params", f"wheel{k}_on"), f"w{k}_on")
+        counts["rename"] += 1
+        assert doc.item(("bodies", f"wheel{k}"))["exists"] == f"=p.w{k}_on"  # type: ignore[index]
+        assert doc.item(("params", f"w{k}_on")) == next(p for p in target["params"] if p["id"] == f"w{k}_on")
+    # 매개변수 탭: 바퀴 자리·반지름 몸 수치를 더하고 순서를 맞춘다(위로·아래로 단추)
+    have = {p["id"] for p in doc.items("params")}
+    for p in target["params"]:
+        if p["id"] not in have:
+            doc.add("params", p, select=False)
+            counts["field"] += 1
+    order = [p["id"] for p in target["params"]]
+    if [p["id"] for p in doc.items("params")] != order:
+        doc.set_value(("params",), sorted(doc.items("params"), key=lambda p: order.index(p["id"])))
+        counts["field"] += 1
+    # 속성 패널: 예제와 다른 칸만(바퀴 자리 수식, 사본 반지름, 관절 앵커, 모터 힘 나누기)
+    for section in ("bodies", "joints", "actuators", "sensors"):
+        for item in target[section]:
+            path = doc.item_path((section, item["id"]))
+            assert path is not None
+            current = _canonical(section, doc.get(path))
+            for field, value in item.items():
+                if current.get(field) != value:
+                    doc.set_value((*path, field), value)
+                    counts["field"] += 1
+    for key in TOP_FIELDS:  # 세계 설정 탭: 이름·설명·시작 높이
+        if json.loads(json.dumps(parse_env(doc.data).model_dump(mode="json", by_alias=True)))[key] != target[key]:
+            doc.set_value((key,), target[key])
+            counts["field"] += 1
+    return doc, counts
+
+
+def test_t63_wheels_from_hill_car_with_replicate_and_forms(qtbot: Any, tmp_path: Path) -> None:
+    doc, counts = rebuild_wheels()
+    out = tmp_path / "wheels.evoenv"
+    doc.save(out)
+    built = load_env(out)
+    original = load_env(paths.builtin_env_dir() / "wheels.evoenv")
+    assert env_hash(built.file) == env_hash(original.file)
+    assert json.loads(out.read_text(encoding="utf-8"))["version"] == 3
+    assert not [i for i in doc.run_check() if i.severity == "error"]
+    assert counts["tool"] == 1
+    print(f"\nwheels.evoenv from hill_car.evoenv: replicate {counts['tool']}, removes {counts['remove']}, "
+          f"renames {counts['rename']}, field edits {counts['field']}")

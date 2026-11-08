@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from evolab.app import strings as S
 from evolab.scoring.expr import Compiled, ExprError, Sym, compile_expr, formula_body, is_formula
 from evolab.spec import model as m
+from evolab.spec import structure as st
 from evolab.spec import symbols as sy
 
 Severity = Literal["error", "warning", "info"]
@@ -199,6 +200,7 @@ class _Compiler:
         formulas = self._compile_formulas()
         events, order = self._compile_events()
         blocks, formula = self._compile_scoring()
+        self._check_structure(events, blocks, formula)
         sensors = {c.name: c for c in sy.sensor_channels(env)}
         actuators = {c.name: c for c in sy.actuator_channels(env)}
         inputs, outputs = self._check_brain(sensors, actuators)
@@ -569,9 +571,70 @@ class _Compiler:
         if still_path or still_speed:
             self.warn(where, S.SPEC_MOTION_STILL.format(id=b.id))
 
+    # ------------------------------------------------------------------
+    # v2.1 몸 구조 (설계 2.3, D33·D36·D37). 있음 칸 수식이 p.*만 쓰는지는 만들기 단계 structure가 본다(_compile_formulas).
+    # ------------------------------------------------------------------
+    def _check_structure(
+        self, events: dict[str, Compiled], blocks: dict[str, Compiled], formula: Compiled | None
+    ) -> None:
+        """있음 칸은 뿌리가 아닌 에이전트 물체에만. 없어질 수 있는 물체(structure.optional_bodies, 런타임과 같은 규칙)를
+        사건·점수 블록·점수 수식·체크포인트·목표 센서가 위치로 가리키면 오류(몸 상태 이름, dist, inside, 블록·체크포인트의 물체,
+        거리·목표 대상). 접촉(contact(), 접촉 센서, 접촉 시간 블록)과 그 물체에 단 센서·구동기는 된다: 없으면 0·거짓."""
+        env = self.env
+        root = st.root_body(env)
+        root_has_exists = False
+        for i, b in enumerate(env.bodies):
+            if b.exists is None:
+                continue
+            if b.owner != "agent":
+                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_WORLD.format(id=b.id))
+            elif b.id == root:
+                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_ROOT.format(id=b.id))
+                root_has_exists = True
+        if root_has_exists:
+            # 뿌리의 있음 칸은 위에서 오류로 알렸다. 그것까지 넣으면 모든 부품이 없어질 수 있다고 나와 아래 오류가 쏟아진다.
+            bodies = [b.model_copy(update={"exists": None}) if b.id == root else b for b in env.bodies]
+            optional = st.optional_bodies(env.model_copy(update={"bodies": bodies}))
+        else:
+            optional = st.optional_bodies(env)
+        if not optional:
+            return
+        order = {b.id: k for k, b in enumerate(env.bodies)}
+
+        def refuse(where: str, refs: set[str], place: str) -> None:
+            for body in sorted(refs, key=order.__getitem__):
+                self.error(where, S.SPEC_EXISTS_REF.format(body=body, where=place))
+
+        for i, e in enumerate(env.events):
+            if e.id in events:
+                refuse(f"events[{i}].when", _optional_names(events[e.id].names, optional),
+                       S.SPEC_EXISTS_WHERE_EVENT.format(id=e.id))
+        for i, b in enumerate(env.scoring.blocks):
+            where, place = f"scoring.blocks[{i}]", S.SPEC_EXISTS_WHERE_BLOCK.format(id=b.id)
+            if isinstance(b, m.ExprBlock) and b.id in blocks:
+                refuse(f"{where}.expr", _optional_names(blocks[b.id].names, optional), place)
+            if isinstance(b, (m.DistanceBlock, m.ProgressBlock, m.SpeedBlock, m.TiltBlock)):
+                refuse(f"{where}.body", {b.body} & optional, place)
+            if isinstance(b, m.DistanceBlock):
+                refuse(f"{where}.target", {b.target} & optional, place)
+        if formula is not None:
+            refuse("scoring.formula", _optional_names(formula.names, optional), S.SPEC_EXISTS_WHERE_FORMULA)
+        # 체크포인트의 물체를 비우면 차량 구동기의 물체, 그것도 없으면 뿌리(늘 있음)를 쓴다(런타임 _build_checkpoints).
+        vehicles = [a.body for a in env.actuators if isinstance(a, m.Vehicle)]
+        default = vehicles[0] if vehicles else root
+        for i, c in enumerate(env.checkpoints):
+            refuse(f"checkpoints[{i}].body", {c.body if c.body is not None else default} & optional,
+                   S.SPEC_EXISTS_WHERE_CHECKPOINTS.format(id=c.id))
+        for i, g in enumerate(env.generators):
+            for cid in sy.generator_checkpoints(g):
+                refuse(f"generators[{i}]", {default} & optional, S.SPEC_EXISTS_WHERE_CHECKPOINTS.format(id=cid))
+        for i, s in enumerate(env.sensors):
+            if isinstance(s, m.Target):
+                refuse(f"sensors[{i}].target", {s.target} & optional, S.SPEC_EXISTS_WHERE_TARGET.format(id=s.id))
+
     def _compile_formulas(self) -> dict[tuple[str, sy.BuildStage], Compiled]:
         out: dict[tuple[str, sy.BuildStage], Compiled] = {}
-        tables = {st: sy.build_symbols(self.env, st) for st in ("generator", "world", "agent", "structure")}
+        tables = {stage: sy.build_symbols(self.env, stage) for stage in ("generator", "world", "agent", "structure")}
         for path, source in iter_formulas(self.env, ""):
             stage = _stage_of(self.env, path)
             key = (source, stage)
@@ -637,6 +700,22 @@ class _Compiler:
         if not any(t.event == "timeout" for t in ends):
             ends.append(m.End(event="timeout", outcome="neutral", label=S.END_TIMEOUT))
         return ends
+
+
+def _optional_names(names: frozenset[str], optional: frozenset[str]) -> set[str]:
+    """수식이 읽는 이름 중 없어질 수 있는 물체를 위치로 가리키는 것의 물체 id: 몸 상태(<물체>.x 등), dist(a, b)의 a·b,
+    inside(a, 영역)의 a. 접촉 질의(contact)와 센서·구동기 채널 이름은 넣지 않는다(없으면 0·거짓)."""
+    out: set[str] = set()
+    for n in names:
+        if n.startswith(("dist:", "inside:")):  # 질의 채널 이름 '<함수>:<a>:<b>'(symbols.Query.channel)
+            out.update(x for x in n.split(":", 2)[1:] if x in optional)
+            continue
+        if n.startswith("contact:"):
+            continue
+        head, dot, tail = n.rpartition(".")
+        if dot and tail in sy.BODY_STATE and head in optional:
+            out.add(head)
+    return out
 
 
 def _keys_of(a: m.Actuator) -> list[str]:

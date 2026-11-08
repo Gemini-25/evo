@@ -5,6 +5,8 @@
 직접 조종, 실험실로 보내기(멈춘 실험이면 고친 환경으로 이어서 학습, 아니면 새 실행에 쓸 환경).
 v2: 캔버스 아래 미리보기 시각 줄(정해진 움직임 물체가 있을 때), 보기 메뉴(전체 보기, 기본 보기 저장·지우기), 내장 예제
 목록은 paths.builtin_envs() 순서.
+v2.1: 아래 「구조」 탭과 캔버스를 잇는다(줄 강조, 「없는 부품도 보기」), 「배열로 늘리기…」(구조 탭 단추와
+물체 오른쪽 메뉴)는 대화 상자(editor/structure.ReplicateDialog)를 띄워 tools.replicate로 늘린다.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -30,17 +33,19 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app.editor import tools as T
 from evolab.app.editor.canvas import EditorCanvas, PreviewBar
-from evolab.app.editor.document import EnvDocument
+from evolab.app.editor.document import EnvDocument, Ref
 from evolab.app.editor.forms import FieldWidget
 from evolab.app.editor.palette import Palette
 from evolab.app.editor.properties import PropertyPanel
+from evolab.app.editor.structure import ReplicateDialog
 from evolab.app.editor.tabs import BottomTabs
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import parse_env
 
 BUILTIN_TITLES = {"lander": S.ED_BUILTIN_LANDER, "track_car": S.ED_BUILTIN_TRACK, "hill_car": S.ED_BUILTIN_HILL,
-                  "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER}
+                  "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER, "wheels": S.ED_BUILTIN_WHEELS}
 """내장 예제 메뉴 이름(파일 이름 줄기 -> 이름). 여기 없는 파일은 그 파일의 name."""
 
 
@@ -72,6 +77,8 @@ class EditorView(QWidget):
         self.doc = EnvDocument(parent=self)
         self.from_lab = False
         """실험실의 멈춘 실험에서 연 환경인가(보내면 이어서 학습)."""
+        self.replicate_dialog: ReplicateDialog | None = None
+        """마지막으로 띄운 「배열로 늘리기」 대화 상자(v2.1, 테스트용)."""
 
         self.canvas = EditorCanvas(self.doc)
         self.preview_bar = PreviewBar(self.canvas)
@@ -80,6 +87,12 @@ class EditorView(QWidget):
         self.props = PropertyPanel(self.doc)
         self.tabs = BottomTabs(self.doc)
         self.tabs.issue_activated.connect(lambda _ref, _where: self.canvas.update())
+        structure_tab = self.tabs.structure_tab  # v2.1 구조 탭 <-> 캔버스
+        structure_tab.highlight_changed.connect(self.canvas.set_structure_highlight)
+        structure_tab.show_absent_changed.connect(self.canvas.set_show_absent)
+        self.canvas.show_absent_changed.connect(structure_tab.set_show_absent)
+        structure_tab.replicate_requested.connect(self.replicate)
+        self.canvas.replicate_requested.connect(self.replicate)
         self.status = QLabel()
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.coords = QLabel()
@@ -316,6 +329,27 @@ class EditorView(QWidget):
         refs = self.doc.paste_text(QApplication.clipboard().text())
         if not refs:
             self.status.setText(S.ED_PASTE_NOTHING)
+
+    def replicate(self, body: str) -> list[Ref] | None:
+        """「배열로 늘리기…」(v2.1): 대화 상자에서 고른 대로 늘린다(되돌리기 한 단계). 취소하거나 할 수 없으면 None."""
+        self.commit_pending()
+        err = T.replicate_error(self.doc, body)
+        if err is not None:
+            self.canvas.message(err)
+            return None
+        if self.replicate_dialog is not None:  # 앞서 띄운 대화 상자는 버린다(창의 자식으로 쌓이지 않게)
+            self.replicate_dialog.deleteLater()
+        dialog = ReplicateDialog(self.doc, body, self)
+        self.replicate_dialog = dialog
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        try:
+            refs = dialog.apply()
+        except (T.ToolError, ValueError) as exc:
+            self.canvas.message(str(exc))
+            return None
+        self.canvas.message(S.ED_REPLICATE_DONE.format(id=body, n=dialog.values()[0]))
+        return refs
 
     def play(self) -> None:
         self.commit_pending()

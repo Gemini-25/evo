@@ -163,6 +163,10 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--restart-from", choices=list(RESTART_FROM), default=None, help=S.CLI_HELP_RESTART_FROM)
     train.add_argument("--qualify", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY)
     train.add_argument("--qualify-trials", type=_int_arg(1), default=None, help=S.CLI_HELP_QUALIFY_TRIALS)
+    # 구조 뒤집기(v2.1): 유전 알고리즘·담금질 둘 다의 확률(범위는 학습 설정 검사가 본다). 주지 않으면 새 실행 권장값
+    # (환경에 있음 유전자가 있으면 0.05, 없으면 0). 학습 방법의 일부라 이어 할 때는 바꿀 수 없다.
+    train.add_argument("--structure-flip", type=_float_arg, default=None, dest="structure_flip",
+                       help=S.CLI_HELP_STRUCTURE_FLIP)
     # 그래프용 관찰 기록(v1.2)만 끈다. 학습 설정이 아니라 run.json·재현 묶음에 남지 않는다(학습 결과는 같다).
     train.add_argument("--no-observe", action="store_true", default=False, help=S.CLI_HELP_NO_OBSERVE)
 

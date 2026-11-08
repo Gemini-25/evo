@@ -9,6 +9,11 @@ v2.0 부품(설계 4.0~4.6)은 모두 "그 부품이 파일에 있을 때만" �
 추진기(_jumps), 공기역학(_aero)이 비어 있으면 v1과 같은 계산을 같은 순서로 한다(모양별 밀도가 없으면 모든 조각에
 물체 재질 밀도). 스텝 순서: 구동기(점프 → 추진기·모터·차량) → 힘(추진기·바람 항력) → 공기역학(한 스텝 상한) →
 정해진 움직임 물체에 다음 자세로 가는 속도 → space.step.
+
+v2.1 몸 구조(설계 4.11, D34·D35·D39): 물체의 있음 칸(exists)으로 없는 에이전트 물체(Episode.absent = 에이전트 물체 −
+spec/structure.present)는 만들지 않는다. 그 물체에 끝이 닿은 관절·모터, 그 물체의 추진기·점프·차량·공기역학도 없고, 그
+구동기 채널은 죽은 채널(실제 출력·명령 모두 0)이다. 그 물체·관절에 단 센서는 늘 0(레이도 0), 접촉 질의는 거짓. 있음 칸을
+쓰는 물체가 없으면 없는 물체가 없어(빈 집합) v1·v2.0 파일은 예전과 같은 계산을 같은 순서로 한다.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from pymunk.autogeometry import convex_decomposition
 from evolab.app import strings as S
 from evolab.generators.terrain import generate_heightmap
 from evolab.spec import model as m
+from evolab.spec import structure
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvSpec, finite
 from evolab.world.physics2d import geometry as geo
@@ -466,6 +472,12 @@ class Episode:
         self._kinematic_drive: list[tuple[pymunk.Body, Any, MotionPlan, bool]] = []
         """_kinematic과 같은 순서로 (물체, cpBody 포인터 또는 None, 움직임, 도는가). _drive_kinematic이 쓴다."""
         self._aero_clamped = 0
+        self._absent = self._structure_absent()
+        """없는 에이전트 물체(v2.1). 있음 칸을 쓰는 물체가 없으면 빈 집합(그때는 아래 만들기가 v2.0과 같은 길만 지난다)."""
+        self._absent_joints = frozenset(j.id for j in env.joints if j.a in self._absent or j.b in self._absent)
+        """끝 하나가 없는 물체라 만들지 않는 관절."""
+        self._dead_channels: list[int] = []
+        """없는 부품의 구동기 채널 번호(오름차순). 명령도 실제 출력도 늘 0이다."""
 
         self._build_generators()
         self._build_env["world"] = {**self.randoms, **self.gen_values}
@@ -542,6 +554,8 @@ class Episode:
                 x = 0.0
             lo, hi = self._u_range[idx]
             u[idx] = lo if x < lo else (hi if x > hi else x)
+        for idx in self._dead_channels:  # 없는 부품의 구동기(v2.1): 명령도 0(부드러움 블록이 세지 않게)
+            u[idx] = 0.0
         self._u = u
 
         self._apply_actuators()
@@ -652,6 +666,25 @@ class Episode:
     def anchor_body(self) -> str | None:
         """궤적 밀도의 기준 물체: 움직이는 에이전트 물체 중 첫째(캔버스 꼬리와 같은 moving_bodies[0] 규칙). 없으면 None."""
         return next((g.id for g in self._geoms if g.moving and g.owner == "agent"), None)
+
+    @property
+    def absent(self) -> frozenset[str]:
+        """없는 에이전트 물체 id(v2.1 몸 구조, 읽기 전용): 에이전트 물체 − structure.present(spec, params). 몸 수치만의 함수라
+        시험·세대·워커와 무관하다. 있음 칸을 쓰는 물체가 없는 환경이면 빈 집합. 클릭 검사 「(없음)」 표시가 쓴다."""
+        return self._absent
+
+    @property
+    def absent_joints(self) -> frozenset[str]:
+        """끝 하나가 없는 물체라 만들지 않은 관절 id(v2.1, 읽기 전용). 그 관절의 모터 채널은 죽은 채널이고 관절 각도 센서는 0."""
+        return self._absent_joints
+
+    def _structure_absent(self) -> frozenset[str]:
+        """이어짐 규칙(spec/structure.py)으로 없는 에이전트 물체를 구한다. 있음 칸이 하나도 없으면 계산하지 않는다."""
+        env = self.env
+        if all(b.exists is None for b in env.bodies):
+            return frozenset()
+        agents = frozenset(b.id for b in env.bodies if b.owner == "agent")
+        return agents - structure.present(self.spec, self.params)
 
     # ------------------------------------------------------------------
     # 만들기
@@ -1011,7 +1044,10 @@ class Episode:
         spawn_w = self._num(sp.omega, "agent")
         poses = self._agent_poses()
         types = {"dynamic": pymunk.Body.DYNAMIC, "static": pymunk.Body.STATIC, "kinematic": pymunk.Body.KINEMATIC}
+        absent = self._absent
         for b in env.bodies:
+            if b.id in absent:  # 없는 물체(v2.1): 공간·self.bodies·그리기·궤적·경계 검사·바람 항력에 들어가지 않는다
+                continue
             body = pymunk.Body(body_type=types[b.type])
             (lp, la) = poses[b.id]
             stage: sy.BuildStage = "agent" if b.owner == "agent" else "world"
@@ -1080,6 +1116,8 @@ class Episode:
 
     def _build_joints(self) -> None:
         for j in self.env.joints:
+            if j.id in self._absent_joints:  # 끝 하나가 없는 물체(v2.1)
+                continue
             try:
                 self._build_joint(j)
             except AssertionError:  # pymunk: 양쪽 모두 정적 물체 등
@@ -1130,8 +1168,13 @@ class Episode:
             if isinstance(a, m.FuelTank):
                 cap = max(self._num(a.capacity, "agent"), 1e-9)
                 self._tanks[a.id] = _Tank(cap, cap)
+        absent = self._absent
+        dead = self._dead_channels
         for a in self.env.actuators:
             if isinstance(a, m.Thruster):
+                if a.body in absent:
+                    dead.append(index[a.id])
+                    continue
                 d = self._num(a.dir, "agent")
                 f = min(max(self._num(a.max_force, "agent"), 0.0), FORCE_LIMIT)
                 self._thrusters.append(_Thruster(index[a.id], self.bodies[a.body], self._vec(a.at, "agent"),
@@ -1141,6 +1184,9 @@ class Episode:
         self._jumps: list[_Jump] = []
         for a in self.env.actuators:
             if isinstance(a, m.Jump):
+                if a.body in absent:
+                    dead.append(index[a.id])
+                    continue
                 d = self._num(a.dir, "agent")
                 self._jumps.append(_Jump(
                     index[a.id], self.bodies[a.body], a.body, _clamp(self._num(a.speed, "agent"), 0.0, FIELD_LIMIT),
@@ -1150,6 +1196,9 @@ class Episode:
         self._vehicles: list[_Vehicle] = []
         for a in self.env.actuators:
             if isinstance(a, m.Vehicle):
+                if a.body in absent:
+                    dead += [index[f"{a.id}.throttle"], index[f"{a.id}.steer"]]
+                    continue
                 body = self.bodies[a.body]
                 self._vehicles.append(_Vehicle(
                     body, a.body, index[f"{a.id}.throttle"], index[f"{a.id}.steer"],
@@ -1177,6 +1226,9 @@ class Episode:
         joints = {j.id: j for j in self.env.joints}
         for a in self.env.actuators:
             if isinstance(a, m.Motor):
+                if a.joint in self._absent_joints:
+                    dead.append(index[a.id])
+                    continue
                 j = joints[a.joint]
                 motor = pymunk.SimpleMotor(self.bodies[j.a], self.bodies[j.b], 0.0)
                 motor.max_force = _clamp(self._num(a.max_torque, "agent"), 0.0, FORCE_LIMIT)
@@ -1200,7 +1252,8 @@ class Episode:
                 self._force_bodies.append((bid, self.bodies[bid]))
             self._drag_slots.append((slot_of[bid], k))
         self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
-        self._build_aero()
+        dead.sort()
+        self._build_aero()  # 없는 물체의 공기역학은 그 물체가 self.bodies에 없어 건너뛴다(출력 채널 없음)
 
     def _connect_jumps(self) -> None:
         """점프 추진기의 땅 접촉 채널을 만든다. 접촉 표(_setup_contacts)가 있어야 하므로 그 뒤에 부른다."""
@@ -1513,6 +1566,8 @@ class Episode:
 
     def _setup_contacts(self) -> None:
         self._touching: dict[str, dict[pymunk.Shape, int]] = {b: {} for b in self.bodies}
+        for b in self._absent:  # 없는 물체(v2.1)는 빈 칸: 그 물체의 접촉 채널(contact(), 접촉 센서·블록)은 늘 거짓
+            self._touching[b] = {}
         self.space.on_collision(None, None, begin=self._on_begin, separate=self._on_separate)
         self._contacts: dict[tuple[str, tuple[str, ...]], _ContactChannel] = {}
         self._debounce = float(self.env.world.contact_debounce)
@@ -1645,6 +1700,9 @@ class Episode:
 
     def _sensor_fn(self, s: m.Sensor) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
         """센서 하나: (채널 이름들, scale들, 원래 값을 한 번에 돌려주는 함수)."""
+        if self._absent and (getattr(s, "body", None) in self._absent
+                             or (isinstance(s, m.JointAngle) and s.joint in self._absent_joints)):
+            return self._absent_sensor_fn(s)
         if isinstance(s, m.BodyState):
             names = [f"{s.id}.{f}" for f in s.fields]
             scales = [s.scale.get(f, sy.DEFAULT_STATE_SCALE[f]) for f in s.fields]
@@ -1707,6 +1765,16 @@ class Episode:
         if isinstance(s, m.Rays):
             return self._rays_fn(s)
         raise EpisodeBuildError(S.SPEC_NOT_YET.format(milestone="M4"))
+
+    def _absent_sensor_fn(self, s: m.Sensor) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
+        """없는 물체·관절에 단 센서(v2.1, 설계 D35): 모든 채널이 늘 0(레이도 0: 「멀리 아무것도 없음」 1과 가른다)."""
+        names = [c.name for c in self.spec.sensor_channels.values() if c.owner == s.id]
+        zeros = (0.0,) * len(names)
+        fn: Callable[[], tuple[float, ...]] = lambda: zeros  # noqa: E731
+        if isinstance(s, m.Rays):
+            # 레이 그림 목록의 자리는 남긴다(에디터는 레이 센서 순서로 이 목록을 읽는다). ray_view는 없는 물체를 건너뛴다.
+            self._ray_views.append((s.body, (0.0, 0.0), [0.0] * len(names), 0.0, fn))
+        return names, [1.0] * len(names), fn
 
     def _ray_filter(self, selectors: Sequence[str]) -> pymunk.ShapeFilter:
         """selectors에 맞는 모양에만 범주 비트를 하나 붙이고, 그 비트만 보는 질의 필터를 돌려준다.
@@ -1783,6 +1851,8 @@ class Episode:
         """화면 표시용: 레이마다 (시작점, 끝점(맞은 곳 또는 최대 길이), 맞은 비율 0..1)."""
         out: list[tuple[geo.Point, geo.Point, float]] = []
         for bid, (ox, oy), angles, length, fn in self._ray_views:
+            if bid in self._absent:
+                continue
             x, y, a, *_ = self._bstate(bid)
             c, si = math.cos(a), math.sin(a)
             px, py = x + ox * c - oy * si, y + ox * si + oy * c
@@ -1827,6 +1897,15 @@ class Episode:
         for bid in self.bodies:
             for f in sy.BODY_STATE:
                 getters[f"{bid}.{f}"] = (lambda b=bid, f=f: self._state(b, f))
+        if self._absent:
+            # 검사가 없어질 수 있는 물체의 몸 상태·거리·영역을 수식에서 막으므로(SPEC_EXISTS_REF) 보통 쓰이지 않는다. 쓰여도
+            # 멈추지 않게 0을 둔다(접촉 질의는 위에서 빈 접촉 칸이라 늘 거짓).
+            for bid in self._absent:
+                for f in sy.BODY_STATE:
+                    getters[f"{bid}.{f}"] = (lambda: 0.0)
+            for q in self.spec.queries.values():
+                if q.func != "contact" and (q.a in self._absent or q.b in self._absent):
+                    getters[q.channel] = (lambda: False) if q.func == "inside" else (lambda: 0.0)
         for name, g in raw.items():
             ch = self.spec.sensor_channels[name]
             getters[name] = (lambda g=g: g() > 0.5) if ch.type == "bool" else g

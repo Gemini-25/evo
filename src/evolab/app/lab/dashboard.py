@@ -10,6 +10,7 @@
   지금 학습 방법 최고점 선, 예선 띠를 더한다. 이 열이 없는 옛 실행은 NaN으로 읽혀 아무것도 더 그리지 않는다.
 - v1.2(설계 D14·D15): 대시보드 위에 쪽 탭 「학습 그래프 | 보는 재미」. 기존 여섯 타일(TILE_IDS)은 「학습 그래프」,
   새 다섯 타일(FUN_TILE_IDS: 유전자 지도, 뇌 들여다보기, 궤적 밀도, 행동 분포, 몸 수치 추이)은 「보는 재미」 쪽이다.
+  v2.1의 「몸 구조」 타일(structure)도 「보는 재미」 쪽 끝에 있다.
   지금 쪽이 아닌 타일은 숨긴 타일처럼 갱신하지 않는다(dirty).
 - 갱신 펌프(D15): 대시보드가 화면에 떠 있으면 자료가 바뀌어도 바로 그리지 않고 타일에 dirty만 표시한 뒤, 화면에 보이는
   (스크롤 밖이 아닌) dirty 타일을 이벤트 루프 차례마다 하나씩 갱신하고 그린다(사이사이 입력을 처리하게). 스크롤 밖 타일은
@@ -73,8 +74,9 @@ if TYPE_CHECKING:
 
 TILE_IDS: tuple[str, ...] = ("trend", "heatmap", "diversity", "blocks", "ends", "perf")
 """「학습 그래프」 쪽 타일(v1.1까지의 여섯, 이 순서가 기본 배치)."""
-FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "density", "actions", "body")
-"""「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py에 있다."""
+FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "density", "actions", "body", "structure")
+"""「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py, structure(v2.1 몸 구조,
+StructureTile)는 app/lab/structure_tile.py에 있다. 예전 배치에 없는 타일은 _load_settings가 뒤에 붙인다."""
 ALL_TILE_IDS: tuple[str, ...] = TILE_IDS + FUN_TILE_IDS
 PAGES: tuple[str, ...] = ("learning", "fun")
 TILE_PAGES: dict[str, tuple[str, ...]] = {"learning": TILE_IDS, "fun": FUN_TILE_IDS}
@@ -1289,8 +1291,8 @@ _TILE_CLASSES: dict[str, type[_Tile]] = {
     "perf": _PerfTile,
 }
 def tile_class(tile_id: str) -> type[_Tile]:
-    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈(watch_tiles, brain_view)은 여기서 늦게 불러온다(그 모듈들이
-    _Tile을 상속하려고 이 모듈을 불러오므로 위에서 불러오면 순환한다)."""
+    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈(watch_tiles, brain_view, structure_tile)은 여기서 늦게
+    불러온다(그 모듈들이 _Tile을 상속하려고 이 모듈을 불러오므로 위에서 불러오면 순환한다)."""
     cls = _TILE_CLASSES.get(tile_id)
     if cls is not None:
         return cls
@@ -1298,6 +1300,10 @@ def tile_class(tile_id: str) -> type[_Tile]:
         from evolab.app.lab.brain_view import BrainTile
 
         return BrainTile
+    if tile_id == "structure":
+        from evolab.app.lab.structure_tile import StructureTile
+
+        return StructureTile
     from evolab.app.lab import watch_tiles
 
     return watch_tiles.TILE_CLASSES[tile_id]
@@ -1777,10 +1783,10 @@ class Dashboard(QWidget):
             self._loader = None
 
     def shutdown(self) -> None:
-        """창을 닫을 때: 배경 읽기·유전자 지도 PCA·뇌 연결선 스레드를 멈추고 끝날 때까지 기다린다. 이 스레드들은 주인이
-        없는 파이썬 객체라 프로그램이 끝나며 지워질 때 아직 돌면 Qt가 프로세스를 끝내 버린다(abort). 앞서 놓은 읽기
-        (_stop_loader는 참조만 놓는다)까지 모두 기다린다. 남은 결과는 꼬리표가 달라 버려진다."""
-        from evolab.app.lab import brain_view, history, watch_tiles
+        """창을 닫을 때: 배경 읽기·유전자 지도 PCA·뇌 연결선·(v2.1) 「몸 구조」 챔피언 몸 그림 스레드를 멈추고 끝날 때까지
+        기다린다. 이 스레드들은 주인이 없는 파이썬 객체라 프로그램이 끝나며 지워질 때 아직 돌면 Qt가 프로세스를 끝내 버린다
+        (abort). 앞서 놓은 읽기(_stop_loader는 참조만 놓는다)까지 모두 기다린다. 남은 결과는 꼬리표가 달라 버려진다."""
+        from evolab.app.lab import brain_view, history, structure_tile, watch_tiles
 
         self._load_tag += 1
         self._stop_loader()
@@ -1789,6 +1795,7 @@ class Dashboard(QWidget):
         history.stop_loaders()
         watch_tiles.wait_jobs()
         brain_view.wait_jobs()
+        structure_tile.wait_jobs()
 
     def _clear_history(self) -> None:
         self._load_tag += 1  # 아직 도는 앞 읽기의 결과는 버린다(되감기·다른 실행)

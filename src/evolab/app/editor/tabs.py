@@ -1,6 +1,7 @@
 """에디터 아래쪽 탭 (명세: 화면과 조작 > 에디터 > 배치).
 
-세계 설정, 사건·종료 조건, 점수 블록과 수식, 랜덤 범위, 생성기, 평가 설정, 뇌 설정, 매개변수, 검사 결과.
+세계 설정, 사건·종료 조건, 점수 블록과 수식, 랜덤 범위, 생성기, 평가 설정, 뇌 설정, 구조(v2.1, editor/structure.py),
+매개변수, 검사 결과.
 칸 위젯은 속성 패널과 같은 폼 엔진(forms.py)을 쓰고, 모든 편집은 문서(EnvDocument)를 거친다.
 """
 
@@ -67,6 +68,7 @@ from evolab.app.editor.forms import (
     type_info,
     watch_focus,
 )
+from evolab.app.editor.structure import StructureTab
 from evolab.spec import model as m
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvFileError, Issue
@@ -996,12 +998,14 @@ class BottomTabs(QTabWidget):
         self.generators_tab = GeneratorsTab(doc)
         self.eval_tab = EvaluationTab(doc)
         self.brain_tab = BrainTab(doc)
+        self.structure_tab = StructureTab(doc)
         self.params_tab = ParamsTab(doc)
         self.issues_tab = IssuesTab(doc)
         for w, title in ((self.world_tab, S.EDP_TAB_WORLD), (self.events_tab, S.EDP_TAB_EVENTS),
                          (self.scoring_tab, S.EDP_TAB_SCORING), (self.random_tab, S.EDP_TAB_RANDOM),
                          (self.generators_tab, S.EDP_TAB_GENERATORS), (self.eval_tab, S.EDP_TAB_EVAL),
-                         (self.brain_tab, S.EDP_TAB_BRAIN), (self.params_tab, S.EDP_TAB_PARAMS),
+                         (self.brain_tab, S.EDP_TAB_BRAIN), (self.structure_tab, S.ED_TAB_STRUCTURE),
+                         (self.params_tab, S.EDP_TAB_PARAMS),
                          (self.issues_tab, S.EDP_TAB_ISSUES)):
             self.addTab(w, title)
         self.issues_tab.issue_activated.connect(self._on_issue)

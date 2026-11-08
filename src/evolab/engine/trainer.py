@@ -20,6 +20,11 @@
 타이머는 원래 실행마다 다르다). 요약이 실패해도(코드 결함) 학습은 이어지고 그 세대 대표는 관찰 키 없이 써진다
 (observe_problem에 남김: 세계 범위만 못 만든 실패와 요약 실패를 따로, 무거운 쪽으로 한 번씩).
 
+구조 뒤집기(v2.1, 설계 4.12·D41): 유전 알고리즘·담금질은 ga_structure_flip·sa_structure_flip 확률로 있음 유전자
+(GenomeLayout.on_genes)의 부호를 뒤집는다(learners/structure.py). 데이터클래스 기본값은 0(끔)이라 키가 없는 예전 설정·상태는
+v2.0과 비트 단위로 같게 돌고, 새 실행은 환경에 있음 유전자가 있을 때만 for_new_run(spec)이 STRUCTURE_FLIP_NEW_RUN을 넣는다.
+확률 0이거나 있음 유전자가 없으면 make_learner가 학습 방법 설정에 구조 칸을 넘기지 않는다(상태도 v2.0과 같은 키).
+
 조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 조립되지 않는 (개체, 시험) 쌍은 평가가 점수 NaN으로 돌려준다(evaluate.py).
 집계 점수는 NaN이 그대로 퍼지고(그 개체 = 실패), 학습 방법은 tell에서 sanitize_scores(유한한 최솟값 − 1)로 바꾼다. 통계,
 세대 대표, 관찰 기록, 화면에 보내는 점수는 같은 규칙으로 바꾼 값(agg_s)이라 실패 개체는 늘 그 세대 꼴찌다. 검증 점수가
@@ -35,7 +40,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import numpy as np
 
@@ -67,6 +72,10 @@ NEW_RUN_DEFAULTS: dict[str, Any] = {
 
 RECOMMENDED_RESTART_PATIENCE = 20000
 """자동 재시작을 켤 때의 권장 P(시험 수). 실험실 칸의 처음 값과 명세 A25."""
+
+STRUCTURE_FLIP_NEW_RUN: Final = 0.05
+"""구조 뒤집기 확률의 새 실행 권장값(v2.1, 설계 D41). 환경에 있음 유전자가 있을 때만 for_new_run(spec)이 GA·담금질
+둘 다에 넣는다(실험실 폼, 명령줄 train, 반복 실행). NEW_RUN_DEFAULTS와 달리 환경에 따라 정해진다."""
 
 SWITCH_NONE, SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION, SWITCH_QUALIFY_NEXT, SWITCH_QUALIFY_PICK = 0, 1, 2, 3, 4
 """통계 열 switch 값: 이 세대 끝에 일어난 학습 방법 교체(0 없음, 1 처음 상태에서 새로 시작, 2 챔피언에서 새로 시작,
@@ -157,12 +166,16 @@ class TrainConfig:
     ga_mutation_rate: float = 0.1
     ga_mutation_sigma: float = 0.1
     ga_sigma_decay: float = 1.0
+    ga_structure_flip: float = 0.0
+    """구조 뒤집기 확률(v2.1): 자식마다, 있음 유전자마다. 0이면 끔(v2.0과 같음). 새 실행 권장값은 for_new_run(spec)."""
     # 담금질(method="sa"). popsize는 쓰지 않고, 한 세대 후보 수 = sa_neighbors + 1(현재해).
     sa_neighbors: int = 8
     sa_step: float = 0.1
     sa_initial_temperature: float | None = None
     """None이면 첫 이웃들 점수의 표준편차."""
     sa_cooling: float = 0.995
+    sa_structure_flip: float = 0.0
+    """구조 뒤집기 확률(v2.1): 이웃마다, 있음 유전자마다. 0이면 끔(v2.0과 같음). 새 실행 권장값은 for_new_run(spec)."""
     # 학습 안정성(v1.1). 기본값은 끔: 키가 없는 예전 설정은 v1.0과 같게 돈다. 새 실행은 for_new_run()으로 권장값.
     restart_patience: int | None = None
     """지금 학습 방법의 검증 최고점이 그 학습 방법의 학습 시험 이만큼 동안 오르지 않으면 새 학습 방법으로 바꾼다. None = 끔."""
@@ -223,7 +236,7 @@ class TrainConfig:
             self.method == "ga" and self.ga_tournament > self.popsize
         ):
             raise bad("ga_tournament")
-        for name in ("ga_crossover", "ga_mutation_rate"):
+        for name in ("ga_crossover", "ga_mutation_rate", "ga_structure_flip", "sa_structure_flip"):
             if not is_num(getattr(self, name)) or not 0 <= getattr(self, name) <= 1:
                 raise bad(name)
         for name in ("ga_mutation_sigma", "sa_step"):
@@ -260,9 +273,22 @@ class TrainConfig:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     @classmethod
-    def for_new_run(cls, **values: Any) -> TrainConfig:
-        """새 실행의 설정: NEW_RUN_DEFAULTS(자동 재시작 등 권장값) 위에 values."""
-        return cls(**{**NEW_RUN_DEFAULTS, **values})
+    def for_new_run(cls, spec: EnvSpec | None = None, /, **values: Any) -> TrainConfig:
+        """새 실행의 설정: NEW_RUN_DEFAULTS(자동 재시작 등 권장값) 위에 values.
+
+        spec(v2.1)을 주면 그 환경에 있음 유전자(layout.on_genes)가 있을 때 GA·담금질 구조 뒤집기 확률을
+        STRUCTURE_FLIP_NEW_RUN으로 둔다(values가 더 우선). 유전자 배치를 만들 수 없는 환경은 넣지 않는다(학습을 시작할 때
+        Trainer가 같은 오류를 한국어로 알린다).
+        """
+        structure: dict[str, Any] = {}
+        if spec is not None:
+            try:
+                on = layout_for(spec).on_genes
+            except ValueError:  # GenomeError 포함
+                on = ()
+            if on:
+                structure = {"ga_structure_flip": STRUCTURE_FLIP_NEW_RUN, "sa_structure_flip": STRUCTURE_FLIP_NEW_RUN}
+        return cls(**{**NEW_RUN_DEFAULTS, **structure, **values})
 
 
 @dataclass
@@ -411,9 +437,33 @@ def check_initial_body(spec: EnvSpec, layout: GenomeLayout) -> None:
         raise EpisodeBuildError(S.TRAIN_INITIAL_BODY_FAILED.format(reason=str(exc).strip())) from exc
 
 
+def structure_flip_of(config: TrainConfig) -> float:
+    """지금 학습 방법의 구조 뒤집기 확률(GA·담금질, v2.1). CMA-ES에는 없어 0."""
+    return {"ga": config.ga_structure_flip, "sa": config.sa_structure_flip}.get(config.method, 0.0)
+
+
+def structure_note(config: TrainConfig, layout: GenomeLayout) -> str | None:
+    """GA·담금질 실행인데 구조 뒤집기가 꺼져 있고 환경에 있음 유전자가 있으면 LAB_GA_NO_STRUCTURE 안내(한국어), 아니면 None.
+
+    v2.0에서 시작한 GA·담금질 실행(설정에 키가 없어 0)을 구조 환경에서 이어 갈 때 실험실·명령줄이 한 번 알린다(설계 6절).
+    """
+    from evolab.app import strings as S
+
+    if config.method in ("ga", "sa") and layout.on_genes and not structure_flip_of(config) > 0:
+        return S.LAB_GA_NO_STRUCTURE
+    return None
+
+
+def _structure_fields(p: float, layout: GenomeLayout) -> dict[str, Any]:
+    """GAConfig·SAConfig에 넘길 구조 뒤집기 칸. 확률 0이거나 있음 유전자가 없으면 비운다(학습 방법 설정·상태가 v2.0과 같음)."""
+    if not p > 0 or not layout.on_genes:
+        return {}
+    return {"structure_flip": float(p), "structure_genes": layout.on_genes}
+
+
 def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x0: np.ndarray | None = None) -> Learner:
     """설정대로 학습 방법을 만든다. index = 실행 안에서 만든 순서(시드 단어, 0은 v1.0과 같은 시드),
-    x0 = 출발 유전자(None이면 처음 유전자: 몸 초깃값, 뇌 0)."""
+    x0 = 출발 유전자(None이면 처음 유전자: 몸 초깃값, 뇌 0). GA·담금질의 구조 뒤집기는 layout.on_genes를 뒤집는다."""
     start = layout.initial() if x0 is None else x0
     seed = seeds.learner_seed(config.run_seed, index)
     if config.method == "cmaes":
@@ -445,6 +495,7 @@ def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x
                 sigma_decay=config.ga_sigma_decay,
                 seed=seed,
                 bounded_dims=layout.n_body,
+                **_structure_fields(config.ga_structure_flip, layout),
             ),
         )
     if config.method == "sa":
@@ -459,6 +510,7 @@ def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x
                 cooling=config.sa_cooling,
                 seed=seed,
                 bounded_dims=layout.n_body,
+                **_structure_fields(config.sa_structure_flip, layout),
             ),
         )
     raise ValueError(config.method)

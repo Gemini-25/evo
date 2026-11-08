@@ -5,6 +5,9 @@
 
 signature()는 유전자의 "뜻"을 정하는 것(몸 유전자 id와 범위, 신경망 구조, 입력·출력 채널 이름과
 출력 범위)만으로 만든 해시다. 환경을 고친 뒤 이어하기가 되는지(같은 유전자가 같은 뜻인지) 판단할 때 쓴다.
+
+on_genes(v2.1)는 몸 구조를 정하는 있음 유전자의 번호다(GA·담금질의 구조 뒤집기가 쓴다). 물체의 exists 수식에서 나오므로
+서명과 to_dict에 넣지 않는다(수식 고치기는 서명을 바꾸지 않는다는 원칙). 그래서 from_dict로 읽은 배치에는 없다.
 """
 
 from __future__ import annotations
@@ -14,15 +17,17 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from evolab.app import strings as S
 from evolab.policy.brain import ACTIVATIONS, BrainLayout
+from evolab.scoring.expr import formula_body
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import EnvSpec
+from evolab.spec.structure import EXISTS_THRESHOLD
 
 LAYOUT_FORMAT = 1
 """to_dict와 signature의 형식 번호. 파라미터 순서나 사상 규칙을 바꾸면 올린다."""
@@ -75,6 +80,9 @@ class GenomeLayout:
     """뇌 입력 채널 이름(순서대로). 비우면 이름 없음."""
     outputs: tuple[str, ...] = ()
     """뇌 출력 채널 이름(순서대로). 비우면 이름 없음."""
+    on_genes: tuple[int, ...] = field(default=(), compare=False)
+    """있음 유전자(v2.1): 몸 구조를 정하는 몸 유전자 번호. layout_for가 오름차순으로 채운다(_on_genes 규칙).
+    배치의 뜻이 아니라 exists 수식에서 나오므로 서명·to_dict·같음 비교에 넣지 않는다."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "body", tuple(self.body))
@@ -92,6 +100,12 @@ class GenomeLayout:
             raise ValueError(f"{len(self.inputs)} input names for {self.brain.n_in} brain inputs")
         if self.outputs and len(self.outputs) != self.brain.n_out:
             raise ValueError(f"{len(self.outputs)} output names for {self.brain.n_out} brain outputs")
+        on = tuple(self.on_genes)
+        if any(isinstance(k, bool) or not isinstance(k, (int, np.integer)) or not 0 <= k < len(self.body) for k in on):
+            raise ValueError(f"on_genes must be body gene indices below {len(self.body)}: {on}")
+        if len(set(on)) != len(on):
+            raise ValueError(f"duplicate on_genes: {on}")
+        object.__setattr__(self, "on_genes", tuple(int(k) for k in on))
 
     # ---- 크기 ----
 
@@ -279,8 +293,33 @@ def _names(x: Any) -> tuple[str, ...]:
     return tuple(x)
 
 
+def _on_genes(spec: EnvSpec, body: Sequence[BodyGene]) -> tuple[int, ...]:
+    """있음 유전자 번호(오름차순, 설계 4.12): 에이전트 물체의 exists가 정확히 "=p.<id>"(공백 무시)이고 그 매개변수가
+    진화하는 몸 유전자.
+
+    구조 뒤집기는 유전자 공간에서 부호를 뒤집으므로(−0.5·sign) 유전자 0이 있음 문턱(물리 값 0.5)이어야 뒤집기가 곧 구조
+    바꾸기다. 그래서 범위의 가운데가 0.5인 매개변수만 센다(에디터가 만드는 <id>_on은 0..1). 다른 범위나 다른 수식
+    (예: "=p.n > 1.5")으로 켜는 물체는 뒤집지 않는다(CMA-ES와 가우시안 돌연변이가 그대로 다룬다).
+    """
+    index = {g.id: k for k, g in enumerate(body)}
+    found: set[int] = set()
+    for b in spec.file.bodies:
+        if b.owner != "agent" or not isinstance(b.exists, str):
+            continue
+        text = "".join(formula_body(b.exists).split())
+        k = index.get(text[2:]) if text.startswith("p.") else None
+        if k is None:
+            continue
+        g = body[k]
+        threshold = 2.0 * (EXISTS_THRESHOLD - g.low) / (g.high - g.low) - 1.0  # 문턱의 유전자 공간 위치
+        if abs(threshold) <= 1e-9:
+            found.add(k)
+    return tuple(sorted(found))
+
+
 def layout_for(spec: EnvSpec) -> GenomeLayout:
-    """환경의 유전자 구조. 몸 유전자는 evolve=True 매개변수(선언 순서), 뇌는 spec.inputs -> hidden -> spec.outputs."""
+    """환경의 유전자 구조. 몸 유전자는 evolve=True 매개변수(선언 순서), 뇌는 spec.inputs -> hidden -> spec.outputs.
+    on_genes(v2.1)는 있음 유전자(_on_genes)."""
     body: list[BodyGene] = []
     for p in sy.evolved_params(spec.file):
         if p.min is None or p.max is None:  # 검사(EnvSpec.build)에서 이미 걸러진다
@@ -299,4 +338,5 @@ def layout_for(spec: EnvSpec) -> GenomeLayout:
         output_ranges=ranges,
         inputs=tuple(spec.inputs),
         outputs=tuple(spec.outputs),
+        on_genes=_on_genes(spec, body),
     )

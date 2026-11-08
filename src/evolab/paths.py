@@ -39,8 +39,9 @@ def builtin_env_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "environments"
 
 
-BUILTIN_ORDER: tuple[str, ...] = ("lander", "track_car", "hill_car", "jump", "glider")
-"""내장 예제의 정해진 순서(파일 이름에서 .evoenv를 뺀 것): 착륙선, 트랙 자동차, 언덕 넘는 자동차, 점프 게임, 글라이더."""
+BUILTIN_ORDER: tuple[str, ...] = ("lander", "track_car", "hill_car", "jump", "glider", "wheels")
+"""내장 예제의 정해진 순서(파일 이름에서 .evoenv를 뺀 것): 착륙선, 트랙 자동차, 언덕 넘는 자동차, 점프 게임, 글라이더,
+(v2.1) 바퀴 고르는 언덕차."""
 
 
 def builtin_envs() -> list[Path]:

@@ -15,6 +15,13 @@ v1.2 「보는 재미」(설계 4.3, 5.1, D16·D17·D19·D24):
   시작한 타임라인·겹쳐 보기 재생을 지우지 않게). 한 번에 하나만 돌고, 돌고 있으면 새 작업을 띄우지 않는다.
 - 유전자 지도 점 두 번 누르기: 최근 64세대는 화면 메모리의 정확한 유전자, 아니면 세대 대표(GMAP_INEXACT).
 - 「세대끼리 경주」: app/race의 entries_from_generations + show_race.
+
+v2.1 몸 구조(설계 4.13·5.3·D41):
+- 「몸 구조」 타일(app/lab/structure_tile.py)에 실행의 환경 버전 목록을 준다(세대마다 그 세대를 계산한 환경으로 구조를
+  센다). 학습 중 환경을 바꾸면 그 버전을 더한다.
+- 클릭 검사 패널: 그 개체에서 없는 물체·관절에 단 센서 채널 옆에 「(없음)」(INSPECT_ABSENT).
+- 구조 환경에서 구조 뒤집기가 꺼진 유전 알고리즘·담금질 실행(v2.0에서 시작한 실행 등)을 이어 가면 LAB_GA_NO_STRUCTURE를
+  실행마다 한 번 알린다. 새 실행의 기본 설정은 TrainConfig.for_new_run(환경)(있음 유전자가 있으면 구조 뒤집기 0.05).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import gc
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +84,11 @@ from evolab.engine.trainer import (
     TrainConfig,
     generation_trials,
     qualify_budget_problem,
+    structure_note,
 )
 from evolab.policy.genome import GenomeLayout, layout_for
+from evolab.spec import model as m
+from evolab.spec import structure as st
 from evolab.spec.compiled import EnvFileError, EnvSpec
 from evolab.spec.editor_meta import view_box
 from evolab.spec.io import compile_env, env_hash
@@ -254,6 +265,8 @@ class InspectPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.replay: Replay | None = None
+        self.absent: frozenset[str] = frozenset()
+        """없는 물체·관절에 단 센서의 신경망 입력 채널 이름(v2.1): 그 줄은 값 대신 이름 옆에 「(없음)」."""
         self.title = QLabel()
         self.title.setWordWrap(True)
         self.time_label = QLabel()
@@ -275,8 +288,10 @@ class InspectPanel(QWidget):
         lay.addWidget(scroll, 1)
         lay.addWidget(close)
 
-    def set_replay(self, index: int, rep: Replay) -> None:
+    def set_replay(self, index: int, rep: Replay, absent: AbstractSet[str] = frozenset()) -> None:
+        """absent: 이 개체에서 없는 물체·관절에 단 센서의 입력 채널 이름(absent_inputs, v2.1). 그 채널은 늘 0이다."""
         self.replay = rep
+        self.absent = frozenset(absent)
         self.title.setText(S.LAB_INSPECT_TITLE.format(index=index, score=rep.result.score, end=rep.result.end_label))
         self.show_time(0.0)
 
@@ -304,17 +319,54 @@ class InspectPanel(QWidget):
                 lines.append(f"  {name:<12} {float(v):+5.2f} {_bar(float(v))}")
         self.body.setText("\n".join(lines))
 
-    @staticmethod
-    def _sensor_lines(rep: Replay, k: int) -> list[str]:
-        """센서 제목과 센서마다 (정규화 전 → 신경망 입력) 한 줄, 끝에 빈 줄."""
+    def _sensor_lines(self, rep: Replay, k: int) -> list[str]:
+        """센서 제목과 센서마다 (정규화 전 → 신경망 입력) 한 줄, 끝에 빈 줄. 없는 부품의 센서(늘 0)는 값 대신 이름 바로
+        옆에 「(없음)」: 좁은 패널(1280×800 창에서 약 13글자)에서도 가로로 밀지 않고 보인다."""
         lines = [S.LAB_INSPECT_SENSORS]
         raw = rep.raw[k] if rep.raw else {}
         for i, name in enumerate(rep.inputs):
+            if name in self.absent:
+                lines.append(f"{name} {S.INSPECT_ABSENT}")
+                continue
             v = float(rep.observations[k, i])
             r = raw.get(name)
             lines.append(f"{name:<14} {'' if r is None else f'{r:9.3f}'} → {v:+6.2f} {_bar(v / 5.0)}")
         lines.append("")
         return lines
+
+
+def absent_inputs(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray) -> frozenset[str]:
+    """그 개체(유전자)에서 없는 물체·관절에 단 센서의 신경망 입력 채널 이름(v2.1 클릭 검사 「(없음)」).
+
+    없는 물체 = 에이전트 물체 − structure.present(몸 수치)로 Episode.absent와 같은 규칙(몸 수치만의 함수, 설계 T57).
+    런타임(Episode._sensor_fn)처럼 센서의 body가 없는 물체이거나 관절 각도 센서의 관절이 없는 관절(끝 하나가 없는
+    물체)이면 그 센서의 모든 채널이다. 있음 칸을 쓰지 않는 환경이면 빈 집합."""
+    env = spec.file
+    if all(b.exists is None for b in env.bodies):
+        return frozenset()
+    g = np.asarray(genome, dtype=np.float64).reshape(-1)
+    body = layout.body_values(g) if layout.n_body else None
+    absent = frozenset(b.id for b in env.bodies if b.owner == "agent") - st.present(spec, st.param_values(env, body))
+    if not absent:
+        return frozenset()
+    joints = {j.id for j in env.joints if j.a in absent or j.b in absent}
+    sensors = {s.id for s in env.sensors
+               if getattr(s, "body", None) in absent or (isinstance(s, m.JointAngle) and s.joint in joints)}
+    return frozenset(name for name in spec.inputs
+                     if (ch := spec.sensor_channels.get(name)) is not None and ch.owner in sensors)
+
+
+def structure_notice(config: Mapping[str, Any], spec: EnvSpec | None) -> str | None:
+    """구조 환경(있음 유전자가 있음)에서 구조 뒤집기가 꺼진 유전 알고리즘·담금질 실행이면 LAB_GA_NO_STRUCTURE, 아니면
+    None. 키가 없는 예전(v2.0) 설정은 데이터클래스 기본값 0(꺼짐)으로 읽는다. 판단은 명령줄 이어하기와 같은
+    trainer.structure_note(실행 설정 사전과 환경으로 부르는 껍데기)."""
+    if spec is None:
+        return None
+    try:
+        layout = layout_for(spec)
+    except ValueError:  # 유전자 배치를 만들 수 없는 환경(학습이 따로 알린다)
+        return None
+    return structure_note(TrainConfig.from_dict(dict(config)), layout)
 
 
 def _bar(v: float, width: int = 10) -> str:
@@ -406,6 +458,10 @@ class LabView(QWidget):
         self.run_busy: Callable[[Path], bool] | None = None
         """주 창이 넣는다: 그 실행 폴더를 지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중인가."""
         self._inspect_index: int | None = None
+        self._inspect_absent: tuple[int, frozenset[str]] | None = None
+        """클릭 검사 재생 작업(_replay_tag)과 그 개체의 없는 부품 센서 채널(InspectPanel의 「(없음)」)."""
+        self._structure_noted: set[str] = set()
+        """LAB_GA_NO_STRUCTURE를 이미 알린 실행 폴더(실행마다 한 번)."""
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
         self._timer.setInterval(16)
@@ -816,6 +872,7 @@ class LabView(QWidget):
         self.state = "idle"
         self.env_path, self.env_text, self.spec, self.layout = path, text, spec, layout
         self._set_watch_meta()
+        self._set_structure_envs()  # 몸 구조 타일: 학습 전에도 이 환경의 빈 상태·안내를 보인다
         self.env_label.setText(f"{spec.file.name}\n{where}")
         # 복제할 때만 칸이 없는 설정까지 가져간다(검토 24). 그냥 환경을 불러오면 그런 값은 기본값으로 돌아간다.
         self._base_config = dict(config) if config else None
@@ -879,7 +936,16 @@ class LabView(QWidget):
     def config_from_form(self) -> TrainConfig:
         """설정 칸의 값. 칸이 없는 값(validate_every 등)은 복제한 실행의 설정에서, 아니면 새 실행 기본값(for_new_run)."""
         method = str(self.method.currentData())
-        base = TrainConfig.from_dict(self._base_config) if self._base_config else TrainConfig.for_new_run()
+        fresh = TrainConfig.for_new_run(self.spec)  # 있음 유전자가 있는 환경이면 구조 뒤집기 0.05(v2.1, D41)
+        if self._base_config:
+            base = TrainConfig.from_dict(self._base_config)
+            # 복제한 설정에 구조 뒤집기 키가 없으면(v2.0까지 만든 실행) 새 실행 기본값을 쓴다
+            missing = {k: getattr(fresh, k) for k in ("ga_structure_flip", "sa_structure_flip")
+                       if k not in self._base_config and hasattr(fresh, k)}
+            if missing:
+                base = dataclasses.replace(base, **missing)
+        else:
+            base = fresh
         fields = {key: self._form_value(key, widget, convert) for key, widget, convert in (
             ("run_seed", self.seed, _same), ("popsize", self.popsize, _same), ("sigma0", self.sigma, _same),
             ("trials", self.trials, _or_none), ("ga_elites", self.ga_elites, _same),
@@ -1157,6 +1223,7 @@ class LabView(QWidget):
         # 보는 재미: 이름표를 주고 세대 대표 파일의 관찰 기록을 배경으로 읽는다(새 실행도: 앞 세대 대표를 파일에서 읽게)
         self._set_watch_meta()
         self.dashboard.load_history(self.run_dir, self.rows)
+        self._set_structure_envs()
         self._warn_other_platform()
         self.timeline.setMaximum(max(1, self.generation))
         self.timeline.setValue(max(1, self.generation))
@@ -1203,6 +1270,7 @@ class LabView(QWidget):
     def _on_started(self, msg: dict[str, Any]) -> None:
         self._adopt_run(msg)
         self.status.setText(S.LAB_STARTED_RUN.format(path=self.run_dir))
+        self._check_structure_notice()
         if self.run_dir is not None:
             self.run_started.emit(self.run_dir)
         if not msg.get("spectate"):
@@ -1271,6 +1339,11 @@ class LabView(QWidget):
             self.env_text = str(msg["env_text"])
             self.spec = compile_env(self.env_text)
             self._spec_cache.clear()
+            if env_changed:  # 몸 구조 타일: 이 세대 뒤(gen + 1부터)는 바뀐 환경으로 센다
+                add = getattr(self.dashboard.tile("structure"), "add_env_version", None)
+                if callable(add):
+                    add(gen, self.spec)
+            self._check_structure_notice()
         # 상태 글을 바뀐 설정(정체 판단 시험, 자동 재시작 끔·켬)으로 다시 만든다: 멈춘 동안에는 다음 세대 알림이 오지 않는다
         self._update_status()
         if self.state == "finished" and self._stopped_line:
@@ -1611,7 +1684,8 @@ class LabView(QWidget):
         if kind == "inspect":
             index = info
             self._inspect_index = index
-            self.inspect.set_replay(index, result[0])
+            held = self._inspect_absent
+            self.inspect.set_replay(index, result[0], held[1] if held is not None and held[0] == seq else frozenset())
             self.inspect.show()
             rep = result[0]
             self.canvas.set_overlay([(rep.trajectory, rep.agent, COLOR_NOW, str(index))])
@@ -1782,8 +1856,13 @@ class LabView(QWidget):
         gen = int(msg["generation"])
         spec = self.spec_for(msg.get("env_version"), gen)
         genome = np.asarray(msg["population"][index], dtype=np.float64)
+        try:
+            absent = absent_inputs(spec, self.layout, genome)
+        except (ValueError, KeyError):  # 몸 수치를 읽을 수 없는 유전자: 재생이 같은 오류를 알린다
+            absent = frozenset()
         self._next_brain = (S.GMAP_LABEL_INDIVIDUAL.format(gen=gen, index=index), gen)
         self._run_replays(("inspect", index), [(spec, self.layout, genome, Trial(int(seed), track), True)])
+        self._inspect_absent = (self._replay_tag, absent)
 
     def _close_inspect(self) -> None:
         self._inspect_index = None
@@ -1798,6 +1877,43 @@ class LabView(QWidget):
     # ------------------------------------------------------------------
     # 보는 재미(v1.2): 기록, 보는 세대, 세대 넘겨 보기, 뇌 원천, 지도 점, 궤적 밀도 세계, 세대끼리 경주
     # ------------------------------------------------------------------
+    def _set_structure_envs(self) -> None:
+        """「몸 구조」 타일에 이 실행의 환경 버전 목록(run.json env_versions 순서)을 준다. 지금 환경과 같은 글이면 이미
+        컴파일한 self.spec을, 아니면 글을 준다(타일이 쓸 때 컴파일). 기록을 읽을 수 없으면 지금 환경 하나."""
+        tile = self.dashboard.tile("structure")
+        setter = getattr(tile, "set_env_versions", None)
+        if not callable(setter) or self.spec is None:
+            return
+        versions: list[tuple[int, EnvSpec | str]] = []
+        records = [v for v in self.run_info.get("env_versions") or [] if isinstance(v, dict)]
+        if self.run_dir is not None and records:
+            from evolab.runs.store import RunStore, RunStoreError
+
+            try:
+                store = RunStore.open(self.run_dir)
+                for v in records:
+                    text = store.env_text(str(v["id"]))
+                    versions.append((int(v.get("from_generation", 0)), self.spec if text == self.env_text else text))
+            except (RunStoreError, OSError, KeyError, ValueError, TypeError):
+                versions = []
+        setter(versions or [(0, self.spec)])
+
+    def _check_structure_notice(self) -> None:
+        """구조 뒤집기가 꺼진 유전 알고리즘·담금질 실행을 구조 환경에서 이어 가면 LAB_GA_NO_STRUCTURE(실행마다 한 번)."""
+        if self.run_dir is None:
+            return
+        key = str(self.run_dir)
+        if key in self._structure_noted:
+            return
+        try:
+            note = structure_notice(self.run_info.get("config") or {}, self.spec)
+        except (TypeError, ValueError):
+            return
+        if note:  # 학습 프로세스의 알림처럼 상태 글 끝줄(세대가 와서 상태 글을 다시 만들어도 남는다)
+            self._structure_noted.add(key)
+            self._session_note = note
+            self.status.setText(self.status.text() + "\n" + note)
+
     def _set_watch_meta(self) -> None:
         """대시보드 「보는 재미」 이름표(유전자 구조, 몸 수치, 구동기, 신경망 입출력 이름)를 지금 환경으로."""
         if self.spec is None or self.layout is None:
@@ -2192,7 +2308,7 @@ class LabView(QWidget):
             # 닫혀도 경주 창은 남아 있고(닫힘 알림을 받지 않음), 프로그램이 끝날 때 돌던 QThread가 지워지면 abort
             from evolab.app.race.view import shutdown_race
 
-            self.dashboard.shutdown()
+            self.dashboard.shutdown()  # 「몸 구조」 타일의 챔피언 몸 그림(배경 Episode)도 기다린다
             shutdown_race(self._race_dialog)
         finally:
             self._closing = False

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -1030,6 +1031,419 @@ def rotate_body(doc: EnvDocument, ref: Ref, angle: float, merge_key: str | None 
 def delete(doc: EnvDocument, refs: list[Ref]) -> None:
     if refs:
         doc.remove(list(refs))
+
+
+# ---------------------------------------------------------------------------
+# v2.1 배열로 늘리기 (설계 5.1 「배열로 늘리기…」, 7.3 replicate, D40)
+# ---------------------------------------------------------------------------
+
+REPLICATE_LAYOUTS: tuple[str, ...] = ("line", "circle", "mirror")
+REPLICATE_COUNT: tuple[int, int] = (2, 16)
+"""개수 N의 범위(원본 포함). 좌우 거울은 늘 2."""
+_TRAILING_NUMBER = re.compile(r"^(.*?)(\d+)$")
+_SIMPLE_EXPR = re.compile(r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_.\uac00-\ud7a3]*$")
+Affine = tuple[float, float, float, float, float, float]
+"""2차원 아핀 변환 (a, b, c, d, e, f): x' = a·x + b·y + e, y' = c·x + d·y + f."""
+
+
+def _split_number(text: str) -> tuple[str, int | None]:
+    """끝의 숫자를 뗀다: 'wheel1' -> ('wheel', 1), '바퀴1' -> ('바퀴', 1), 'j_r' -> ('j_r', None)."""
+    mt = _TRAILING_NUMBER.match(text)
+    if mt is None or not mt.group(1):
+        return text, None
+    return mt.group(1), int(mt.group(2))
+
+
+def numbered(text: str, k: int, sep: str = "") -> str:
+    """k번째 사본(1부터)의 이름: 끝에 숫자가 있으면 그 수 + k('wheel1' -> 'wheel2'), 없으면 원본을 1번으로 보고 k + 1을
+    붙인다('wheel' -> 'wheel2'; 설계 5.1 「<id>2, <id>3 …, 원본 그대로」). 표시 이름은 sep=' '('뒷바퀴' -> '뒷바퀴 2')."""
+    stem, num = _split_number(text)
+    return f"{stem}{num + k}" if num is not None else f"{text}{sep}{k + 1}"
+
+
+def copy_label(label: str, body_label: str, k: int) -> str:
+    """사본 부품의 표시 이름. 늘리는 물체의 이름이 들어 있으면 그 부분만 번호를 바꾼다('바퀴1 축' -> '바퀴2 축'),
+    아니면 끝 번호를 바꾸거나 번호를 붙인다. 빈 이름은 그대로."""
+    if not label:
+        return label
+    if body_label and body_label in label:
+        return label.replace(body_label, numbered(body_label, k, " "), 1)
+    return numbered(label, k, " ")
+
+
+def tidy(x: float) -> float:
+    """부동소수 잡음만 지운다(0.30000000000000004 -> 0.3). clean과 달리 π/2 같은 값은 그대로 둔다."""
+    r = round(float(x), 6)
+    return (r if abs(float(x) - r) < 1e-9 else float(x)) + 0.0
+
+
+def _fmt_num(x: float) -> str:
+    v = tidy(x)
+    return str(int(v)) if v == int(v) and abs(v) < 1e15 else repr(v)
+
+
+def lin_comb(terms: Iterable[tuple[float, Any]], const: float = 0.0) -> Any:
+    """Σ 계수 × 값 + const. 값은 숫자 또는 수식('=식'). 수식이 없으면 숫자(tidy), 있으면 수식 글자를 만든다(수식 칸은
+    수식으로 남아 진화하는 몸 수치를 계속 따른다: x = "=-p.half"인 바퀴의 거울 사본은 "=p.half")."""
+    total = float(const)
+    parts: list[str] = []
+    for coef, value in terms:
+        if abs(coef) < 1e-12:
+            continue
+        if is_number(value):
+            total += coef * float(value)
+            continue
+        if not is_formula(value):
+            raise ValueError(f"not a number or formula: {value!r}")  # map_vec·map_num이 미리 거른다
+        expr = str(value)[1:].strip()
+        negated = expr.startswith("-") and bool(_SIMPLE_EXPR.match(expr[1:].strip()))
+        if negated:  # "-p.half" 같은 이름 하나의 부호 바꾸기: 괄호 없이
+            coef, expr = -coef, expr[1:].strip()
+        body = expr if _SIMPLE_EXPR.match(expr) else f"({expr})"
+        if abs(coef - 1.0) < 1e-12:
+            parts.append(body)
+        elif abs(coef + 1.0) < 1e-12:
+            parts.append(f"-{body}")
+        else:
+            parts.append(f"{_fmt_num(coef)} * {body}")
+    if not parts:
+        return tidy(total)
+    if abs(total) > 1e-9:
+        parts.append(_fmt_num(total))
+    text = parts[0]
+    for part in parts[1:]:
+        text += f" - {part[1:]}" if part.startswith("-") else f" + {part}"
+    return "=" + text
+
+
+def _compose(m1: Affine, m2: Affine) -> Affine:
+    """m1 ∘ m2 (m2를 먼저)."""
+    a1, b1, c1, d1, e1, f1 = m1
+    a2, b2, c2, d2, e2, f2 = m2
+    return (a1 * a2 + b1 * c2, a1 * b2 + b1 * d2, c1 * a2 + d1 * c2, c1 * b2 + d1 * d2,
+            a1 * e2 + b1 * f2 + e1, c1 * e2 + d1 * f2 + f1)
+
+
+def _pose_affine(pose: Pose) -> Affine:
+    """물체 좌표 -> 바깥 좌표 (자세 pose의 회전 뒤 이동)."""
+    c, s = math.cos(pose[2]), math.sin(pose[2])
+    return (c, -s, s, c, pose[0], pose[1])
+
+
+def _inverse(mt: Affine) -> Affine:
+    a, b, c, d, e, f = mt
+    det = a * d - b * c
+    ia, ib, ic, id_ = d / det, -b / det, -c / det, a / det
+    return (ia, ib, ic, id_, -(ia * e + ib * f), -(ic * e + id_ * f))
+
+
+def map_vec(value: Any, mt: Affine) -> Any:
+    """Vec2 값(숫자·수식 칸)을 아핀 변환한 새 값. 모양이 맞지 않으면 그대로."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2 or not all(is_number(v) or is_formula(v) for v in value):
+        return value
+    a, b, c, d, e, f = mt
+    x, y = value
+    return [lin_comb([(a, x), (b, y)], e), lin_comb([(c, x), (d, y)], f)]
+
+
+def map_num(value: Any, scale: float, offset: float) -> Any:
+    """숫자·수식 칸 v -> scale·v + offset. 다른 값은 그대로."""
+    if not (is_number(value) or is_formula(value)):
+        return value
+    return lin_comb([(scale, value)], offset)
+
+
+_MIRROR_LOCAL: Affine = (-1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+def _mirror_shape(shape: dict[str, Any]) -> dict[str, Any]:
+    """물체 좌표의 모양을 세로 축(x = 0)에 비춘다. 다각형은 꼭짓점 순서를 뒤집어 감는 방향을 지킨다."""
+    s = copy.deepcopy(shape)
+    kind = s.get("kind")
+    if "offset" in s:
+        s["offset"] = map_vec(s["offset"], _MIRROR_LOCAL)
+    if kind == "box" and "angle" in s:
+        s["angle"] = map_num(s["angle"], -1.0, 0.0)
+    elif kind in ("poly", "chain") and isinstance(s.get("points"), list):
+        pts = [map_vec(p, _MIRROR_LOCAL) for p in s["points"]]
+        s["points"] = pts[::-1] if kind == "poly" else pts
+    elif kind == "radial" and isinstance(s.get("radii"), list) and s["radii"]:
+        r = s["radii"]
+        s["radii"] = [r[0], *r[:0:-1]]  # 방향 각 angle + 2πi/n -> π - 그것: 반지름 순서 r0, r(n-1), ..., r1
+        s["angle"] = map_num(s.get("angle", 0.0), -1.0, math.pi)
+    elif kind == "wing":
+        s["le"] = map_vec(s.get("le", [0.0, 0.0]), _MIRROR_LOCAL)
+        s["angle"] = map_num(s.get("angle", 0.0), -1.0, math.pi)
+        s["camber"] = map_num(s.get("camber", 0.0), -1.0, 0.0)  # 시위 법선이 뒤집히므로 휨 부호도 바꿔 같은 모양
+    return s
+
+
+def replicate_error(doc: EnvDocument, body: str) -> str | None:
+    """이 물체를 배열로 늘릴 수 없는 이유(한국어). 늘릴 수 있으면 None."""
+    from evolab.app.editor.forms import root_body_id
+
+    b = body_data(doc, body)
+    if b is None:
+        return S.EDC_ERR_NO_BODY
+    if b.get("owner", "agent") != "agent":
+        return S.ED_REPLICATE_NEED_AGENT
+    if body == root_body_id(doc.data):
+        return S.ED_REPLICATE_ROOT
+    return None
+
+
+def replicate_group(doc: EnvDocument, body: str) -> list[str]:
+    """함께 복사할 물체(선언 순서): 그 물체와, 그 물체가 없으면 관절로 뿌리와 이어지지 않게 되는 물체(이어짐 규칙 D34,
+    spec.structure.absent_from: 다리를 늘리면 발도 함께). 구조가 잘못된 문서면 그 물체 하나."""
+    from evolab.spec import structure
+    from evolab.spec.compiled import EnvFileError
+    from evolab.spec.io import parse_env
+
+    try:
+        group = structure.absent_from(parse_env(doc.data), {body})
+    except (EnvFileError, ValueError, TypeError):
+        group = frozenset({body})
+    return [str(b.get("id")) for b in doc.items("bodies") if str(b.get("id")) in group]
+
+
+def _agent_poses(doc: EnvDocument) -> dict[str, Pose]:
+    """물체마다 미리보기 시작 자세(에이전트 좌표: 에이전트 물체 pos와 같은 좌표계). 캔버스 장면에서 읽는다."""
+    from evolab.app.editor.canvas import build_scene
+
+    scene = build_scene(doc)
+    sp = scene.spawn
+    out: dict[str, Pose] = {}
+    for b in scene.bodies:
+        if b.ref[0] != "bodies":
+            continue
+        x, y = to_local(sp, (b.pose[0], b.pose[1]))
+        out[b.id] = (x, y, b.pose[2] - sp[2])
+    return out
+
+
+def replicate_layout(layout: dict[str, Any], count: int, origin: Point) -> tuple[int, list[tuple[Affine, float]]]:
+    """놓는 방식 -> (개수, 사본 k = 1..N-1의 (에이전트 좌표 아핀 변환, 회전각)). 거울이면 회전각 자리에 nan.
+
+    - line: start(기본 = 원본 자리 origin)부터 end까지 N칸 같은 간격. k번째 사본이 start + (end - start)·k/(N-1)에
+      오게 원본 모양 그대로 옮긴다(원본은 그대로).
+    - circle: center(기본 0, 0)를 중심으로 2πk/N씩 돌린다. radius가 있으면 그 반지름 위에 놓는다.
+    - mirror: x = axis(기본 0)인 세로 축에 비춘 사본 하나(N = 2).
+    """
+    kind = layout.get("kind", "line")
+    if kind not in REPLICATE_LAYOUTS:
+        raise ValueError(f"layout {kind!r}")
+    if kind == "mirror":
+        x0 = float(layout.get("x", layout.get("axis", 0.0)))
+        return 2, [((-1.0, 0.0, 0.0, 1.0, 2.0 * x0, 0.0), math.nan)]
+    n = int(count)
+    if not REPLICATE_COUNT[0] <= n <= REPLICATE_COUNT[1]:
+        raise ValueError(f"count {n}")
+    out: list[tuple[Affine, float]] = []
+    if kind == "line":
+        sx, sy = (float(v) for v in layout.get("start", origin))
+        ex, ey = (float(v) for v in layout.get("end", (sx + n - 1.0, sy)))
+        for k in range(1, n):
+            f = k / (n - 1)
+            out.append(((1.0, 0.0, 0.0, 1.0, sx + (ex - sx) * f - origin[0], sy + (ey - sy) * f - origin[1]), 0.0))
+        return n, out
+    cx, cy = (float(v) for v in layout.get("center", (0.0, 0.0)))
+    d0 = math.hypot(origin[0] - cx, origin[1] - cy)
+    a0 = math.atan2(origin[1] - cy, origin[0] - cx) if d0 > 1e-9 else 0.0
+    r = float(layout["radius"]) if layout.get("radius") is not None else d0
+    for k in range(1, n):
+        th = 2.0 * math.pi * k / n
+        c, s = math.cos(th), math.sin(th)
+        ux, uy = math.cos(a0 + th), math.sin(a0 + th)
+        e = cx - (c * cx - s * cy) + (r - d0) * ux
+        f = cy - (s * cx + c * cy) + (r - d0) * uy
+        out.append(((c, -s, s, c, e, f), th))
+    return n, out
+
+
+def replicate(doc: EnvDocument, body: str, count: int, layout: dict[str, Any], evolve: bool,
+              one_count: bool) -> list[Ref]:
+    """물체 하나를 관절·모터·구동기·센서와 함께 N개(원본 포함)로 늘린다. 되돌리기 한 단계. 새 부품의 Ref(물체, 관절,
+    구동기, 센서, 매개변수 순)를 돌려준다. 할 수 없으면 ToolError(replicate_error).
+
+    - 함께 복사: replicate_group의 물체들, 그 물체에 끝이 닿은 관절, 그 물체의 추진기·차량·점프·공기역학, 복사한 관절의
+      모터, 그 물체·관절에 단 센서. 연료 탱크·영역·사건·점수는 복사하지 않는다(추진기는 같은 탱크를 쓴다).
+    - id: k번째 사본은 numbered(id, k)('wheel1' -> 'wheel2', 'j1' -> 'j2'; 겹치면 doc.unique_id). 사본 안의 참조(관절
+      a·b, place_by, 구동기 물체·관절, 센서 물체·대상·맞을 것, 수식의 부품 이름)는 사본끼리 바꿔 쓴다(forms.id_renamer).
+      표시 이름은 copy_label. 원본은 이름을 바꾸지 않는다.
+    - 자리: replicate_layout의 변환으로 물체 pos·angle과, 바깥 물체(부모) 쪽 관절 앵커·쉬는 각도·각도 제한을 옮긴다. 수식
+      칸은 수식으로 남는다(lin_comb). 거울이면 사본의 모양·앵커·추진기·레이를 물체 좌표에서 비춘다.
+    - evolve: 원본(있음 칸이 비었거나 숫자일 때)과 사본마다 있음 몸 수치 <id>_on(0..1, 처음 원본만 있음 0.75, 사본 0.25).
+    - one_count: 몸 수치 <이름>_count(1..N, 진화, 처음 1) 하나와 k번째 부품(원본 k = 1)의 있음 "=p.<이름>_count > k - 0.5"
+      (D40). evolve보다 앞선다.
+    - 뇌 입력·출력이 목록이면(all이 아니면) 사본 센서·구동기 채널을 원본 채널 뒤에 차례로 더한다.
+    """
+    from evolab.app.editor.forms import EXISTS_OFF, EXISTS_ON, id_renamer
+
+    err = replicate_error(doc, body)
+    if err is not None:
+        raise ToolError(err)
+    group = replicate_group(doc, body)
+    in_group = set(group)
+    joints = [j for j in doc.items("joints") if j.get("a") in in_group or j.get("b") in in_group]
+    joint_ids = {str(j.get("id")) for j in joints}
+    actuators = [a for a in doc.items("actuators") if a.get("kind") != "fuel_tank"
+                 and (a.get("body") in in_group or (a.get("kind") == "motor" and a.get("joint") in joint_ids))]
+    sensors = [s for s in doc.items("sensors") if s.get("body") in in_group
+               or (s.get("kind") == "joint_angle" and s.get("joint") in joint_ids)]
+    parts: list[tuple[str, dict[str, Any]]] = (
+        [("bodies", b) for b in doc.items("bodies") if str(b.get("id")) in in_group]
+        + [("joints", j) for j in joints] + [("actuators", a) for a in actuators] + [("sensors", s) for s in sensors])
+
+    poses = _agent_poses(doc)
+    origin = poses.get(body, (0.0, 0.0, 0.0))
+    n, transforms = replicate_layout(layout, count, (origin[0], origin[1]))
+    mirror = layout.get("kind") == "mirror"
+    source = body_data(doc, body) or {}
+    body_label = str(source.get("label") or "")
+
+    # 사본 k의 id 표
+    taken: set[str] = set()
+    renames: list[dict[Ref, str]] = []
+    for k in range(1, n):
+        table: dict[Ref, str] = {}
+        for section, item in parts:
+            new = doc.unique_id(numbered(str(item.get("id")), k), taken)
+            taken.add(new)
+            table[(section, str(item.get("id")))] = new
+        renames.append(table)
+
+    def frame_map(bid: str, mt: Affine) -> Affine:
+        """바깥 물체 bid 좌표에서 본 변환: pose⁻¹ ∘ mt ∘ pose."""
+        pose = _pose_affine(poses.get(bid, (0.0, 0.0, 0.0)))
+        return _compose(_inverse(pose), _compose(mt, pose))
+
+    def put(out: dict[str, Any], key: str, value: Any, default: Any) -> None:
+        """칸을 쓴다. 원본에 없던 칸은 기본값과 다를 때만(파일에 기본값 칸이 늘지 않게)."""
+        if key in out or value != default:
+            out[key] = value
+
+    def copy_part(section: str, item: dict[str, Any], k: int, mt: Affine, turn: float,
+                  fix: Callable[[Any, str | None], Any]) -> dict[str, Any]:
+        out = fix(copy.deepcopy(item), None)
+        out["id"] = renames[k - 1][(section, str(item.get("id")))]
+        if "label" in out:
+            out["label"] = copy_label(str(item.get("label") or ""), body_label, k)
+        zero = [0.0, 0.0]
+        if section == "bodies":
+            put(out, "pos", map_vec(out.get("pos", zero), mt), zero)
+            angle = out.get("angle", 0.0)
+            put(out, "angle", map_num(angle, -1.0, 0.0) if mirror else map_num(angle, 1.0, turn), 0.0)
+            if mirror and isinstance(out.get("shapes"), list):
+                out["shapes"] = [_mirror_shape(s) if isinstance(s, dict) else s for s in out["shapes"]]
+        elif section == "joints":
+            ends = [(e, item.get(e)) for e in ("a", "b")]
+            for end, bid in ends:
+                key = f"anchor_{end}"
+                if bid in in_group:
+                    if mirror:
+                        put(out, key, map_vec(out.get(key, zero), _MIRROR_LOCAL), zero)
+                else:
+                    put(out, key, map_vec(out.get(key, zero), frame_map(str(bid), mt)), zero)
+            inside = [bid in in_group for _e, bid in ends]
+            if all(inside):
+                scale, offset = (-1.0, 0.0) if mirror else (1.0, 0.0)
+            else:
+                g_is_b = inside[1]
+                other = str(item.get("a") if g_is_b else item.get("b"))
+                ao = poses.get(other, (0.0, 0.0, 0.0))[2]
+                if mirror:  # 사본 각도 = -원본 각도(에이전트 좌표). b - a를 바깥 물체 각도 ao로 다시 계산
+                    scale, offset = (-1.0, -2.0 * ao) if g_is_b else (-1.0, 2.0 * ao)
+                else:
+                    scale, offset = (1.0, turn) if g_is_b else (1.0, -turn)
+            put(out, "rest_angle", map_num(out.get("rest_angle", 0.0), scale, offset), 0.0)
+            lim = out.get("limit")
+            if isinstance(lim, (list, tuple)) and len(lim) == 2:
+                lo, hi = map_num(lim[0], scale, offset), map_num(lim[1], scale, offset)
+                out["limit"] = [hi, lo] if scale < 0 else [lo, hi]
+        elif mirror and section == "actuators":
+            if out.get("kind") == "thruster":
+                put(out, "at", map_vec(out.get("at", zero), _MIRROR_LOCAL), zero)
+                put(out, "dir", map_num(out.get("dir", math.pi / 2), -1.0, math.pi), math.pi / 2)
+            elif out.get("kind") == "jump":
+                put(out, "dir", map_num(out.get("dir", math.pi / 2), -1.0, math.pi), math.pi / 2)
+        elif mirror and section == "sensors" and out.get("kind") == "rays":
+            put(out, "origin", map_vec(out.get("origin", zero), _MIRROR_LOCAL), zero)
+            put(out, "center", map_num(out.get("center", 0.0), -1.0, math.pi), 0.0)
+        return out
+
+    copies: dict[str, list[dict[str, Any]]] = {"bodies": [], "joints": [], "actuators": [], "sensors": []}
+    for k, (mt, turn) in enumerate(transforms, start=1):
+        fix = id_renamer(renames[k - 1])
+        for section, item in parts:
+            copies[section].append(copy_part(section, item, k, mt, turn, fix))
+
+    # 있음 칸과 몸 수치 (원본 = 1번, 사본 = 2..N번)
+    new_params: list[dict[str, Any]] = []
+    exists_of: dict[str, Any] = {}
+    b_copies = [renames[k - 1][("bodies", body)] for k in range(1, n)]
+    labels = [body_label or body] + [copy_label(body_label, body_label, k) or b_copies[k - 1] for k in range(1, n)]
+    taken_params = set(taken)
+    if one_count:
+        stem = re.sub(r"_?\d+$", "", body) or body
+        pid = doc.unique_id(f"{stem}_count", taken_params)
+        taken_params.add(pid)
+        name = _split_number(body_label)[0].strip() if body_label else stem
+        new_params.append({"id": pid, "label": S.ED_PARAM_COUNT_LABEL.format(label=name), "value": 1.0,
+                           "evolve": True, "min": 1.0, "max": float(n)})
+        for k, bid in enumerate([body, *b_copies]):
+            exists_of[bid] = f"=p.{pid} > {_fmt_num(k + 0.5)}"
+    elif evolve:
+        current = source.get("exists")
+        if current is None or is_number(current):
+            pid = doc.unique_id(f"{body}_on", taken_params)
+            taken_params.add(pid)
+            on = current is None or float(current) > 0.5
+            new_params.append({"id": pid, "label": S.ED_PARAM_ON_LABEL.format(label=labels[0]),
+                               "value": EXISTS_ON if on else EXISTS_OFF, "evolve": True, "min": 0.0, "max": 1.0})
+            exists_of[body] = f"=p.{pid}"
+        for k, bid in enumerate(b_copies, start=1):
+            pid = doc.unique_id(f"{bid}_on", taken_params)
+            taken_params.add(pid)
+            new_params.append({"id": pid, "label": S.ED_PARAM_ON_LABEL.format(label=labels[k]), "value": EXISTS_OFF,
+                               "evolve": True, "min": 0.0, "max": 1.0})
+            exists_of[bid] = f"=p.{pid}"
+    for item in copies["bodies"]:
+        if item["id"] in exists_of:
+            item["exists"] = exists_of[item["id"]]
+
+    channel_sources = {"inputs": {str(s.get("id")) for s in sensors},
+                       "outputs": {str(a.get("id")) for a in actuators}}
+
+    def mutate(d: dict[str, Any]) -> None:
+        for section, new_items in copies.items():
+            if not new_items:
+                continue
+            lst = _list(d, section)
+            ids = {str(item.get("id")) for s, item in parts if s == section}
+            last = max((i for i, x in enumerate(lst) if isinstance(x, dict) and str(x.get("id")) in ids), default=len(lst) - 1)
+            lst[last + 1:last + 1] = copy.deepcopy(new_items)
+        if body in exists_of:
+            for b in d.get("bodies", []):
+                if isinstance(b, dict) and b.get("id") == body:
+                    b["exists"] = exists_of[body]
+        if new_params:
+            _list(d, "params").extend(copy.deepcopy(new_params))
+        brain = d.get("brain")
+        if isinstance(brain, dict):
+            for key, owners in channel_sources.items():
+                names = brain.get(key)
+                if not isinstance(names, list):
+                    continue
+                mine = [x for x in names if isinstance(x, str) and x.partition(".")[0] in owners]
+                for k in range(1, n):
+                    fix = id_renamer(renames[k - 1])
+                    names.extend(x for x in fix(mine, key) if x not in names)
+
+    doc.edit(S.ED_REPLICATE_TITLE, mutate)
+    new_refs: list[Ref] = [(section, str(item["id"])) for section, new_items in copies.items() for item in new_items]
+    new_refs += [("params", str(p["id"])) for p in new_params]
+    doc.select([("bodies", body), *[("bodies", bid) for bid in b_copies]])
+    return new_refs
 
 
 # ---------------------------------------------------------------------------

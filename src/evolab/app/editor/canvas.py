@@ -11,6 +11,9 @@
   (preview_time, 아래 PreviewBar의 슬라이더·▶)을 옮기면 그 시각의 자세(motion.pose_at)로 그린다. 재생 중에는 움직이지
   않는 그림을 이미지로 한 번 그려 두고 움직이는 물체만 덧그린다. 문서가 바뀌면 멈추고 0초로 돌아간다.
 - (v2) 기본 보기(editor.view, 해시 밖): 「전체 보기」는 기본 보기가 있으면 그 상자로, 한 번 더 누르면 장면 전체로.
+- (v2.1) 없어질 수 있는 물체(spec.structure.optional_bodies)는 점선 테두리와 「?」 표지. 처음 몸에 없는 물체(Episode.absent)와
+  거기 붙은 부품은 「없는 부품도 보기」(show_absent)가 켜져 있으면 옅게, 꺼져 있으면 그리지도 누르지도 않는다. 구조 탭에서
+  고른 줄의 물체와 함께 사라지는 부품은 점선 강조(set_structure_highlight). 물체 오른쪽 메뉴에 「배열로 늘리기…」.
 """
 
 from __future__ import annotations
@@ -21,11 +24,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
+    QContextMenuEvent,
     QFont,
     QFontMetricsF,
     QImage,
@@ -40,11 +44,12 @@ from PySide6.QtGui import (
     QShowEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QSlider, QToolButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QSizePolicy, QSlider, QToolButton, QWidget
 
 from evolab.app import strings as S
 from evolab.app.editor import tools as T
 from evolab.app.editor.document import EnvDocument, Ref, where_to_ref
+from evolab.app.editor.structure import attached_parts, initial_absent
 from evolab.app.play.window import (
     COLOR_AGENT,
     COLOR_AGENT_EDGE,
@@ -83,6 +88,10 @@ ROW_WINDOW_S = 15.0
 """장애물 줄은 이 시간(초) 안에 선수 자리(x = 0)에 닿을 장애물만 그린다(나머지는 「→ 장애물 n개」)."""
 DEFAULT_MAX_TIME = 20.0
 MODE_SYMBOLS = {"once": "\u2192", "loop": "\u21bb", "pingpong": "\u2194"}
+OPTIONAL_BADGE = "?"
+"""없어질 수 있는 물체 표지(v2.1 설계 5.1)."""
+ABSENT_OPACITY = 0.35
+"""처음 몸에 없는 부품을 그리는 불투명도(「없는 부품도 보기」)."""
 """길 방식 기호: 한 번(→), 돌기(↻), 왕복(↔)."""
 
 COLOR_GRID = QColor(255, 255, 255, 12)
@@ -178,6 +187,10 @@ class BodyItem:
     """장애물 줄에서 shapes에 안 넣은(나중에 오는) 장애물 수."""
     wing_les: list[Point] = field(default_factory=list)
     """날개 모양의 앞전(물체 좌표)."""
+    optional: bool = False
+    """진화로 없어질 수 있는 물체(v2.1, spec.structure.optional_bodies)."""
+    absent: bool = False
+    """처음 몸(미리보기)에 없는 물체(v2.1, Episode.absent). 모양은 숫자로 계산해 그린다."""
     polys: list[list[Point]] = field(default_factory=list)
     circles: list[tuple[Point, float]] = field(default_factory=list)
     segments: list[tuple[Point, Point, float]] = field(default_factory=list)
@@ -375,6 +388,12 @@ class Scene:
     exact: bool = False
     """문서 전체가 검사를 통과해 런타임 그대로 그렸다."""
     message: str = ""
+    optional: frozenset[str] = frozenset()
+    """진화로 없어질 수 있는 물체 id(v2.1)."""
+    absent: frozenset[str] = frozenset()
+    """처음 몸에 없는 물체 id(v2.1)."""
+    absent_parts: frozenset[Ref] = frozenset()
+    """처음 몸에 없는 물체에 붙어 함께 없는 부품(관절·모터·구동기·센서, v2.1)."""
 
     def body(self, body_id: str) -> BodyItem | None:
         for b in self.bodies:
@@ -1071,9 +1090,40 @@ def build_scene(doc: EnvDocument, trial_index: int = 0) -> Scene:
     if not exact and not message:
         message = S.EDC_PREVIEW_PARTIAL
     try:
-        return _SceneBuilder(data, ep, exact, message).build()
+        scene = _SceneBuilder(data, ep, exact, message).build()
     except Exception:  # noqa: BLE001
         return Scene(message=message)
+    try:
+        _mark_structure(scene, doc, ep)
+    except Exception:  # noqa: BLE001 (구조 표시는 덤: 실패해도 그림은 그린다)
+        pass
+    return scene
+
+
+def _mark_structure(scene: Scene, doc: EnvDocument, ep: Any) -> None:
+    """(v2.1) 없어질 수 있는 물체와 처음 몸에 없는 물체를 장면에 적는다. 없는 물체는 런타임이 만들지 않아 _SceneBuilder가
+    숫자로 계산해 넣었다(그래서 「없는 부품도 보기」로 그릴 수 있다)."""
+    from evolab.spec import structure
+    from evolab.spec.compiled import EnvFileError
+    from evolab.spec.io import parse_env
+
+    spec = doc.spec()
+    try:
+        env = spec.file if spec is not None else parse_env(doc.data)
+    except (EnvFileError, ValueError, TypeError):
+        return
+    optional = structure.optional_bodies(env)
+    if not optional:
+        return
+    absent = frozenset(ep.absent) if ep is not None else (initial_absent(doc, env) or frozenset())
+    absent &= optional
+    scene.optional = optional
+    scene.absent = absent
+    scene.absent_parts = frozenset(attached_parts(doc.data, absent))
+    for b in scene.bodies:
+        if b.ref[0] == "bodies":
+            b.optional = b.id in optional
+            b.absent = b.id in absent
 
 
 # ---------------------------------------------------------------------------
@@ -1142,6 +1192,10 @@ class EditorCanvas(QWidget):
     """장면에 정해진 움직임 물체가 생겼다(True)·없어졌다(False)."""
     preview_trial_changed = Signal(int)
     """미리보기 시험 번호가 바뀌었다(「미리보기 시험 바꾸기」)."""
+    replicate_requested = Signal(str)
+    """물체 오른쪽 메뉴의 「배열로 늘리기…」(v2.1): 늘릴 물체 id. 늘릴 수 없는 물체면 내지 않고 이유를 상태 줄에."""
+    show_absent_changed = Signal(bool)
+    """「없는 부품도 보기」가 바뀌었다(v2.1)."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1201,6 +1255,14 @@ class EditorCanvas(QWidget):
         self._fit_camera: tuple[Point, float] | None = None
         self.drawn_poses: dict[str, Pose] = {}
         """마지막으로 그린 정해진 움직임 물체의 자세(물체 id -> 세계 자세). 테스트와 화면 확인용."""
+        # v2.1 몸 구조
+        self.show_absent = True
+        """「없는 부품도 보기」: 처음 몸에 없는 부품을 옅은 점선으로 그린다(끄면 그리지도 누르지도 않는다)."""
+        self.structure_highlight: frozenset[Ref] = frozenset()
+        """구조 탭이 강조하라는 부품(고른 물체와 함께 사라지는 부품)."""
+        self.drawn_optional: dict[str, str] = {}
+        """마지막 정적 그림에서 점선으로 그린 없어질 수 있는 물체(id -> "present" | "absent"). 테스트와 화면 확인용."""
+        self._right_cancelled = False
         doc.changed.connect(self._on_doc_changed)
         tool_request = getattr(doc, "tool_request", None)
         if tool_request is not None:
@@ -1266,6 +1328,98 @@ class EditorCanvas(QWidget):
 
     def issue_severity(self, ref: Ref) -> str | None:
         return self._issue_refs.get(ref)
+
+    # ------------------------------------------------------------------
+    # v2.1 몸 구조: 없는 부품 보기, 구조 탭 강조, 오른쪽 메뉴
+    # ------------------------------------------------------------------
+    def set_show_absent(self, on: bool) -> None:
+        """「없는 부품도 보기」를 켜고 끈다."""
+        on = bool(on)
+        if on == self.show_absent:
+            return
+        self.show_absent = on
+        self._badge_cache = None
+        self._static_cache = None
+        if not on:  # 숨는 부품을 고르고 있었으면 고르기를 푼다(보이지 않는 것을 끌지 않게)
+            hidden = [r for r in self.doc.selection if not self.visible_ref(r)]
+            if hidden:
+                self.doc.select([r for r in self.doc.selection if r not in hidden])
+        self.show_absent_changed.emit(on)
+        self.update()
+
+    def set_structure_highlight(self, refs: Iterable[Ref]) -> None:
+        """구조 탭이 고른 물체와 함께 사라지는 부품을 점선으로 강조한다(빈 목록이면 끈다)."""
+        new = frozenset(tuple(r) for r in refs)  # type: ignore[misc]
+        if new != self.structure_highlight:
+            self.structure_highlight = new
+            self._static_cache = None
+            self.update()
+
+    def _absent_ref(self, ref: Ref) -> bool:
+        """처음 몸에 없는 부품인가(없는 물체 또는 거기 붙은 부품)."""
+        scene = self._scene
+        if scene is None or not scene.absent:
+            return False
+        return (ref[0] == "bodies" and ref[1] in scene.absent) or ref in scene.absent_parts
+
+    def visible_ref(self, ref: Ref) -> bool:
+        """그리고 누를 수 있나: 처음 몸에 없는 부품은 「없는 부품도 보기」가 꺼져 있으면 아니다."""
+        return self.show_absent or not self._absent_ref(ref)
+
+    def _fade(self, p: QPainter, ref: Ref) -> bool:
+        """처음 몸에 없는 부품이면 옅게 그린다(불투명도를 낮춤). 낮췄으면 True(그린 뒤 _unfade)."""
+        if self._absent_ref(ref):
+            p.setOpacity(ABSENT_OPACITY)
+            return True
+        return False
+
+    @staticmethod
+    def _unfade(p: QPainter, faded: bool) -> None:
+        if faded:
+            p.setOpacity(1.0)
+
+    def linked(self, ref: Ref) -> bool:
+        """구조 탭이 강조하는 부품인가."""
+        return ref in self.structure_highlight
+
+    def body_menu(self, body_id: str) -> QMenu:
+        """물체 오른쪽 메뉴: 「배열로 늘리기…」."""
+        menu = QMenu(self)
+        act = menu.addAction(S.ED_REPLICATE)
+        err = T.replicate_error(self.doc, body_id)
+        act.setToolTip(err or S.ED_REPLICATE_HINT.format(name=body_id))
+        act.triggered.connect(lambda _c=False, b=body_id: self.request_replicate(b))
+        return menu
+
+    def request_replicate(self, body_id: str) -> bool:
+        """「배열로 늘리기…」를 고른 것: 늘릴 수 있으면 replicate_requested를 내고, 아니면 이유를 상태 줄에."""
+        err = T.replicate_error(self.doc, body_id)
+        if err is not None:
+            self.message(err)
+            return False
+        self.replicate_requested.emit(body_id)
+        return True
+
+    def contextMenuEvent(self, ev: QContextMenuEvent) -> None:  # noqa: N802
+        if self._right_cancelled:  # 오른쪽 단추로 그리던 것을 취소했다: 메뉴는 띄우지 않는다
+            self._right_cancelled = False
+            return
+        body = None
+        if ev.reason() == QContextMenuEvent.Reason.Mouse:
+            picked = self.pick_body(self.screen_to_world(QPointF(ev.pos())))
+            if picked is not None and not picked.generated and picked.ref[0] == "bodies":
+                body = picked.id
+                if picked.ref not in self.doc.selection:
+                    self.doc.select([picked.ref])
+        else:
+            body = next((cid for section, cid in self.doc.selection if section == "bodies"), None)
+        if body is None:
+            return
+        self.show_menu(self.body_menu(body), ev.globalPos())
+
+    def show_menu(self, menu: QMenu, global_pos: QPoint) -> None:
+        """메뉴를 띄운다(끝날 때까지 기다림). 테스트가 바꿔 끼운다."""
+        menu.exec(global_pos)
 
     # ------------------------------------------------------------------
     # 장면
@@ -1634,7 +1788,7 @@ class EditorCanvas(QWidget):
 
     def _ordered_bodies(self, scene: Scene) -> list[BodyItem]:
         """위에 그린 것부터: 에이전트 물체, 세계 물체, 생성기 물체."""
-        agent = [b for b in scene.bodies if b.owner == "agent" and not b.generated]
+        agent = [b for b in scene.bodies if b.owner == "agent" and not b.generated and self.visible_ref(b.ref)]
         world = [b for b in scene.bodies if b.owner != "agent" and not b.generated]
         gen = [b for b in scene.bodies if b.generated]
         return agent[::-1] + world[::-1] + gen
@@ -1658,7 +1812,7 @@ class EditorCanvas(QWidget):
                 return Pick(item.ref, "badge")
         for t in scene.thrusters:
             pts = self.thruster_points(t)
-            if pts is None:
+            if pts is None or not self.visible_ref(t.ref):
                 continue
             base, tip = pts
             if self._near(tip, w, HANDLE_PX):
@@ -1666,12 +1820,14 @@ class EditorCanvas(QWidget):
             if self._near(base, w, HANDLE_PX) or geo.dist_point_segment(w, base, tip) <= tol * 0.7:
                 return Pick(t.ref, "thruster", center=base)
         for j in scene.joints:
+            if not self.visible_ref(j.ref):
+                continue
             if self._near(j.pa, w, HANDLE_PX):
                 return Pick(j.ref, "joint", 0, center=j.pa)
             if j.kind == "spring" and self._near(j.pb, w, HANDLE_PX):
                 return Pick(j.ref, "joint", 1, center=j.pb)
         for r in scene.rays:
-            if self._near(r.origin, w, HANDLE_PX * 0.75):
+            if self.visible_ref(r.ref) and self._near(r.origin, w, HANDLE_PX * 0.75):
                 return Pick(r.ref, "ray", center=r.origin)
         for c in scene.checkpoints:
             if not c.editable:
@@ -1729,6 +1885,8 @@ class EditorCanvas(QWidget):
     def pick_joint(self, w: Point) -> str | None:
         best: tuple[float, str] | None = None
         for j in self.scene().joints:
+            if not self.visible_ref(j.ref):
+                continue
             for p in (j.pa, j.pb):
                 d = math.dist(p, w) * self.scale
                 if d <= HANDLE_PX * 1.5 and (best is None or d < best[0]):
@@ -1751,7 +1909,7 @@ class EditorCanvas(QWidget):
             return all(rect.contains(self.world_to_screen(*p)) for p in pts)
 
         for b in scene.bodies:
-            if not b.generated and inside((b.bbox[0], b.bbox[1]), (b.bbox[2], b.bbox[3])):
+            if not b.generated and self.visible_ref(b.ref) and inside((b.bbox[0], b.bbox[1]), (b.bbox[2], b.bbox[3])):
                 out.append(b.ref)
         for r in scene.regions:
             if not r.generated and inside((r.bbox[0], r.bbox[1]), (r.bbox[2], r.bbox[3])):
@@ -1762,11 +1920,11 @@ class EditorCanvas(QWidget):
                 sets[c.ref] = sets.get(c.ref, True) and inside(c.a, c.b)
         out += [r for r, ok in sets.items() if ok]
         for j in scene.joints:
-            if inside(j.pa):
+            if self.visible_ref(j.ref) and inside(j.pa):
                 out.append(j.ref)
         for t in scene.thrusters:
             pts = self.thruster_points(t)
-            if pts is not None and inside(pts[0]):
+            if pts is not None and self.visible_ref(t.ref) and inside(pts[0]):
                 out.append(t.ref)
         for item, brect in self.badge_rects():
             if rect.contains(brect) and item.ref not in out:
@@ -1781,7 +1939,7 @@ class EditorCanvas(QWidget):
 
     def badge_rects(self) -> list[tuple[BadgeItem, QRectF]]:
         scene = self.scene()
-        key = (id(scene), self.center, self.scale, self.width(), self.height())
+        key = (id(scene), self.center, self.scale, self.width(), self.height(), self.show_absent)
         if self._badge_cache is not None and self._badge_cache[0] == key:
             return self._badge_cache[1]
         fm = QFontMetricsF(self._badge_font())
@@ -1799,6 +1957,8 @@ class EditorCanvas(QWidget):
         out: list[tuple[BadgeItem, QRectF]] = []
         sx, sy, _ = scene.spawn
         for item in scene.badges:
+            if not self.visible_ref(item.ref):
+                continue
             body = scene.body(item.body) if item.body else None
             if item.joint is not None and item.joint in joints:
                 anchor = self.world_to_screen(*joints[item.joint].pa) + QPointF(8, -18)
@@ -1864,7 +2024,8 @@ class EditorCanvas(QWidget):
         for b in [x for x in scene.bodies if not x.generated and x.owner != "agent" and not self._terrain_like(x)
                   and x.motion is None]:
             self._paint_body(p, b)
-        for b in [x for x in scene.bodies if not x.generated and x.owner == "agent"]:
+        self.drawn_optional = {}
+        for b in [x for x in scene.bodies if not x.generated and x.owner == "agent" and self.visible_ref(x.ref)]:
             self._paint_body(p, b)
         self._paint_rays(p, scene)
         self._paint_targets(p, scene)
@@ -1875,7 +2036,8 @@ class EditorCanvas(QWidget):
 
     def _static_key(self, scene: Scene) -> Any:
         return (id(scene), self.center, self.scale, self.width(), self.height(), self.devicePixelRatioF(),
-                tuple(self.doc.selection), id(self._issue_refs), self._tool_id, self.snap_step)
+                tuple(self.doc.selection), id(self._issue_refs), self._tool_id, self.snap_step, self.show_absent,
+                self.structure_highlight)
 
     def _static_image(self, scene: Scene) -> QImage:
         """움직이지 않는 그림을 그린 이미지(같은 장면·카메라·선택이면 다시 그리지 않는다)."""
@@ -1931,7 +2093,7 @@ class EditorCanvas(QWidget):
         p.drawRect(QRectF(self._q((x0, y1)), self._q((x1, y0))))
 
     def _outline(self, p: QPainter, ref: Ref, draw: Any, under: bool) -> None:
-        """문제 윤곽(굵게, 아래)과 선택 윤곽(위)."""
+        """문제 윤곽(굵게, 아래)과 선택 윤곽(위). 구조 탭 강조는 선택 색 점선(v2.1)."""
         color, selected = self._highlight(ref)
         p.setBrush(Qt.BrushStyle.NoBrush)
         if under and color is not None:
@@ -1939,6 +2101,9 @@ class EditorCanvas(QWidget):
             draw()
         if not under and selected:
             p.setPen(_pen(COLOR_SELECT, 2.0))
+            draw()
+        elif not under and self.linked(ref):
+            p.setPen(_pen(COLOR_SELECT, 2.5, Qt.PenStyle.DashLine))
             draw()
 
     def _paint_regions(self, p: QPainter, scene: Scene) -> None:
@@ -2035,8 +2200,12 @@ class EditorCanvas(QWidget):
             if b.placeholder:
                 p.drawEllipse(self._q((x, y)), 0.3 * self.scale + 4, 0.3 * self.scale + 4)
 
+        faded = self._fade(p, b.ref)
         self._outline(p, b.ref, outline, True)
-        p.setPen(_pen(COLOR_AGENT_EDGE, 1.0))
+        if b.optional:  # v2.1 없어질 수 있는 물체: 점선 테두리
+            p.setPen(_pen(COLOR_AGENT_EDGE, 1.5, Qt.PenStyle.DashLine))
+        else:
+            p.setPen(_pen(COLOR_AGENT_EDGE, 1.0))
         p.setBrush(QBrush(fill))
         for poly in b.polys:
             p.drawPolygon(self._poly(poly))
@@ -2067,6 +2236,23 @@ class EditorCanvas(QWidget):
             p.setPen(_pen(COLOR_SELECT, 1.0))
             p.drawLine(o + QPointF(-4, 0), o + QPointF(4, 0))
             p.drawLine(o + QPointF(0, -4), o + QPointF(0, 4))
+        if b.optional:
+            self._paint_optional_badge(p, b)
+            self.drawn_optional[b.id] = "absent" if b.absent else "present"
+        self._unfade(p, faded)
+
+    def _paint_optional_badge(self, p: QPainter, b: BodyItem) -> None:
+        """없어질 수 있는 물체의 「?」 표지: 물체 상자 왼쪽 위(오른쪽 위는 센서·구동기 표지 자리)."""
+        lo = self.world_to_screen(b.bbox[0], b.bbox[1])
+        hi = self.world_to_screen(b.bbox[2], b.bbox[3])
+        if math.hypot(hi.x() - lo.x(), hi.y() - lo.y()) < BADGE_MIN_BODY_PX:
+            return
+        c = QPointF(lo.x() - 2, hi.y() - 2)
+        p.setPen(_pen(COLOR_BADGE_TEXT, 1.0))
+        p.setBrush(QBrush(COLOR_BADGE_SENSOR))
+        p.drawEllipse(c, 7.0, 7.0)
+        p.setFont(self._badge_font())
+        p.drawText(QRectF(c.x() - 7, c.y() - 7, 14, 14), Qt.AlignmentFlag.AlignCenter, OPTIONAL_BADGE)
 
     def _scene_aero(self) -> set[str]:
         return self._scene.aero_bodies if self._scene is not None else set()
@@ -2183,9 +2369,11 @@ class EditorCanvas(QWidget):
         """점프 추진기: 물체 위쪽에 뛰는 방향 화살표(이름은 표지에)."""
         for j in scene.jumps:
             body = scene.body(j.body)
-            if body is None:
+            if body is None or not self.visible_ref(j.ref):
                 continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(j.ref) else 1.0)
             _color, selected = self._highlight(j.ref)
+            selected = selected or self.linked(j.ref)
             top = self._q(((body.bbox[0] + body.bbox[2]) / 2.0, body.bbox[3]))
             base = top + QPointF(0, -4)
             tip = base + QPointF(26 * math.cos(j.dir), -26 * math.sin(j.dir))
@@ -2196,11 +2384,16 @@ class EditorCanvas(QWidget):
             for side in (-1, 1):
                 a2 = ang + math.pi + side * 0.5
                 p.drawLine(tip, tip + QPointF(7 * math.cos(a2), 7 * math.sin(a2)))
+        p.setOpacity(1.0)
 
     def _paint_joints(self, p: QPainter, scene: Scene) -> None:
         for j in scene.joints:
+            if not self.visible_ref(j.ref):
+                continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(j.ref) else 1.0)
             pa, pb = self._q(j.pa), self._q(j.pb)
             color, selected = self._highlight(j.ref)
+            selected = selected or self.linked(j.ref)
             p.setBrush(Qt.BrushStyle.NoBrush)
             thin = QColor(COLOR_JOINT)
             thin.setAlpha(110)
@@ -2233,6 +2426,7 @@ class EditorCanvas(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 if j.kind == "rot_spring":
                     p.drawArc(QRectF(pa.x() - 8, pa.y() - 8, 16, 16), 30 * 16, 240 * 16)
+        p.setOpacity(1.0)
 
     def _zigzag(self, p: QPainter, a: QPointF, b: QPointF) -> None:
         dx, dy = b.x() - a.x(), b.y() - a.y()
@@ -2254,10 +2448,12 @@ class EditorCanvas(QWidget):
     def _paint_thrusters(self, p: QPainter, scene: Scene) -> None:
         for t in scene.thrusters:
             pts = self.thruster_points(t)
-            if pts is None:
+            if pts is None or not self.visible_ref(t.ref):
                 continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(t.ref) else 1.0)
             base, tail = self._q(pts[0]), self._q(pts[1])
             color, selected = self._highlight(t.ref)
+            selected = selected or self.linked(t.ref)
             if color is not None:
                 p.setPen(_pen(color, 6.0))
                 p.drawLine(base, tail)
@@ -2270,10 +2466,15 @@ class EditorCanvas(QWidget):
                 p.drawLine(base, base + QPointF(8 * math.cos(a2), 8 * math.sin(a2)))
             p.setBrush(QBrush(main))
             p.drawEllipse(tail, 3.0, 3.0)
+        p.setOpacity(1.0)
 
     def _paint_rays(self, p: QPainter, scene: Scene) -> None:
         for r in scene.rays:
+            if not self.visible_ref(r.ref):
+                continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(r.ref) else 1.0)
             color, selected = self._highlight(r.ref)
+            selected = selected or self.linked(r.ref)
             line = QColor(COLOR_SELECT if selected else COLOR_RAY)
             if selected:
                 line.setAlpha(170)
@@ -2291,19 +2492,23 @@ class EditorCanvas(QWidget):
             p.setPen(_pen(COLOR_SELECT if selected else COLOR_JOINT, 1.5))
             p.setBrush(QBrush(COLOR_BG))
             p.drawEllipse(o, 3.0, 3.0)
+        p.setOpacity(1.0)
 
     def _paint_targets(self, p: QPainter, scene: Scene) -> None:
         for t in scene.targets:
             body = scene.body(t.body)
-            if body is None:
+            if body is None or not self.visible_ref(t.ref):
                 continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(t.ref) else 1.0)
             _color, selected = self._highlight(t.ref)
+            selected = selected or self.linked(t.ref)
             p.setPen(_pen(COLOR_SELECT if selected else COLOR_TARGET, 1.5, Qt.PenStyle.DashLine))
             a, b = self._q((body.pose[0], body.pose[1])), self._q(t.point)
             p.drawLine(a, b)
             p.setPen(_pen(COLOR_SELECT if selected else COLOR_TARGET, 1.5))
             p.drawLine(b + QPointF(-5, -5), b + QPointF(5, 5))
             p.drawLine(b + QPointF(-5, 5), b + QPointF(5, -5))
+        p.setOpacity(1.0)
 
     def _paint_spawn(self, p: QPainter, scene: Scene) -> None:
         (x, y), d = self.spawn_handles()
@@ -2329,7 +2534,9 @@ class EditorCanvas(QWidget):
     def _paint_badges(self, p: QPainter) -> None:
         p.setFont(self._badge_font())
         for item, rect in self.badge_rects():
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(item.ref) else 1.0)
             color, selected = self._highlight(item.ref)
+            selected = selected or self.linked(item.ref)
             bg = COLOR_BADGE_ACTUATOR if item.kind in ACTUATOR_BADGES else COLOR_BADGE_SENSOR
             if color is not None:
                 p.setPen(_pen(color, 3.0))
@@ -2340,6 +2547,7 @@ class EditorCanvas(QWidget):
             p.drawRoundedRect(rect, 3, 3)
             p.setPen(COLOR_BADGE_TEXT)
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, BADGE_TEXT.get(item.kind, item.kind))
+        p.setOpacity(1.0)
 
     def _paint_handles(self, p: QPainter) -> None:
         if self._tool_id != "select":
@@ -2389,7 +2597,8 @@ class EditorCanvas(QWidget):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
         if ev.button() == Qt.MouseButton.RightButton:
-            if self._tool.busy():
+            self._right_cancelled = self._tool.busy()
+            if self._right_cancelled:
                 self._tool.cancel()
             return
         if ev.button() != Qt.MouseButton.LeftButton:

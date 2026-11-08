@@ -11,7 +11,8 @@
   failed로 알린다.
 - RepeatDialog: 환경 파일(내장 예제 + 파일 열기), 학습 방법, 개체 수(담금질은 이웃 수), 시험 횟수, 정체하면 새로 시작
   (기본 켬), 반복 횟수(기본 5), 첫 시드, 정지 조건(최대 시험 횟수 기본 30,000 또는 최대 시간), 워커 수, 묶음 이름.
-  설정은 새 실행 권장값(TrainConfig.for_new_run) 위에 폼 값이다. 예선이 예산에 비해 크면(예산 이상이거나 절반 넘음) 끈다.
+  설정은 새 실행 권장값(TrainConfig.for_new_run(spec): 있음 유전자가 있는 환경이면 v2.1 구조 뒤집기 0.05도) 위에 폼
+  값이다. 예선이 예산에 비해 크면(예산 이상이거나 절반 넘음) 끈다.
   학습 방법 목록에는 make_learner가 실제로 받는 방법만 보인다(available_methods). 아직 만들지 않은 방법은
   ValueError·NotImplementedError를 내고, 만드는 중인 모듈은 가져오기나 인자에서 다른 예외를 낼 수 있어 모두 뺀다.
 """
@@ -426,6 +427,8 @@ class RepeatDialog(QDialog):
         self.env_text: str | None = None
         self.env_name = ""
         self.layout_obj: Any = None
+        self.spec_obj: Any = None
+        """고른 환경을 컴파일한 EnvSpec(없거나 잘못되면 None). 새 실행 권장값(구조 뒤집기)이 환경에 따라 달라 쓴다."""
         self._methods: list[str] = []
 
         self.env_combo = QComboBox()
@@ -567,7 +570,7 @@ class RepeatDialog(QDialog):
         from evolab.policy.genome import layout_for
         from evolab.spec.io import compile_env
 
-        self.env_path, self.env_text, self.env_name, self.layout_obj = path, None, "", None
+        self.env_path, self.env_text, self.env_name, self.layout_obj, self.spec_obj = path, None, "", None, None
         error = ""
         if path is None:
             error = S.CMP_REPEAT_NO_ENV
@@ -576,7 +579,7 @@ class RepeatDialog(QDialog):
                 text = path.read_bytes().decode("utf-8-sig")
                 spec = compile_env(text)
                 self.layout_obj = layout_for(spec)
-                self.env_text, self.env_name = text, spec.file.name
+                self.env_text, self.env_name, self.spec_obj = text, spec.file.name, spec
             except Exception as exc:  # 파일 오류(EnvFileError 등)
                 error = S.CMP_REPEAT_ENV_FAILED.format(path=path, reason=str(exc) or type(exc).__name__)
         self.env_error.setText(error)
@@ -653,10 +656,11 @@ class RepeatDialog(QDialog):
     def config(self) -> TrainConfig:
         """폼의 학습 설정(run_seed는 첫 시드). 값이 잘못되면 TrainerChangeError(ValueError, 한국어).
 
-        바탕은 새 실행 권장값(자동 재시작 등)이고, '정체하면 새로 시작'을 끄면 restart_patience = None(끔)이다.
+        바탕은 새 실행 권장값(자동 재시작 등, 구조 환경이면 GA·담금질 구조 뒤집기 0.05)이고, '정체하면 새로 시작'을 끄면
+        restart_patience = None(끔)이다.
         """
         m = str(self.method.currentData() or "cmaes")
-        c = TrainConfig.for_new_run(method=m, run_seed=self.base_seed.value())
+        c = TrainConfig.for_new_run(self.spec_obj, method=m, run_seed=self.base_seed.value())
         setattr(c, size_key(m), self.size_spin.value())
         c.trials = self.trials.value() or None
         if not self.restart.isChecked():

@@ -15,6 +15,9 @@
 - 다음 후보(현재해와 이웃)는 tell()에서 바로 만들어 두므로 ask()는 난수를 쓰지 않는다. 그래서 ask()와 tell() 사이의
   state_dict()도 그 단계 경계 상태이고, 불러온 뒤 ask()는 같은 후보를 낸다.
 - best()는 현재해.
+- 구조 뒤집기(v2.1, structure_flip > 0): 이웃을 만든 뒤(현재해 제외) 이웃 순서로, 있음 유전자(structure_genes)마다 확률
+  structure_flip으로 부호를 뒤집어 ∓0.5에 둔다(learners/structure.flip_structure). 확률이 0이면 난수를 쓰지 않아 v2.0과
+  비트 단위로 같고, 상태(state_dict)의 설정에 structure_* 키도 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from evolab.learners.base import (
     sanitize_scores,
     state_array,
 )
+from evolab.learners.structure import check_structure_config, config_for_state, flip_structure
 
 STATE_FORMAT: Final = 1
 ACCEPTANCE_WINDOW: Final = 50
@@ -60,6 +64,10 @@ class SAConfig:
     """학습 방법 전용 난수 생성기 시드(0 ≤ seed < 2**32). Trainer가 실행 시드에서 만든다."""
     bounded_dims: int = 0
     """앞쪽 k차원(몸 유전자)은 [-1, 1]을 넘으면 잘라낸다. 나머지(뇌 가중치)는 경계 없음."""
+    structure_flip: float = 0.0
+    """구조 뒤집기 확률(v2.1): 이웃마다, 있음 유전자마다 이 확률로 부호를 뒤집는다. 0이면 끔(난수를 쓰지 않음)."""
+    structure_genes: tuple[int, ...] = ()
+    """있음 유전자 번호(GenomeLayout.on_genes, 몸 유전자 안). 상태에서 읽은 목록은 tuple로 바꾼다."""
 
     def __post_init__(self) -> None:
         if not is_int(self.neighbors) or self.neighbors < 1:
@@ -75,6 +83,8 @@ class SAConfig:
             raise ValueError(S.LEARNER_ERR_SEED.format(value=self.seed))
         if not is_int(self.bounded_dims) or self.bounded_dims < 0:
             raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS.format(value=self.bounded_dims))
+        genes = check_structure_config(self.structure_flip, self.structure_genes, self.bounded_dims)
+        object.__setattr__(self, "structure_genes", genes)
 
 
 def initial_temperature(neighbor_scores: np.ndarray) -> float:
@@ -185,7 +195,7 @@ class SimulatedAnnealing:
         return {
             "format": STATE_FORMAT,
             "name": self.name,
-            "config": asdict(self._config),
+            "config": config_for_state(asdict(self._config)),  # 구조 뒤집기를 끄면 v2.0과 같은 키
             "dim": self._dim,
             "generation": self._generation,
             "evaluations": self._evaluations,
@@ -229,6 +239,7 @@ class SimulatedAnnealing:
             rng = generator_from_state(d["rng"])
         except (KeyError, TypeError, ValueError) as e:  # 빠진 항목, 모르는 설정 이름, 잘못된 값
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=e)) from e
+        # 설정의 structure_* 키가 없으면(v2.0 상태, 뒤집기를 끈 상태) 데이터클래스 기본값 0이다.
         if temperature is not None and not (math.isfinite(temperature) and temperature >= 0):
             raise ValueError(S.LEARNER_ERR_STATE_BROKEN.format(reason=f"temperature={temperature}"))
         if generation < 0 or evaluations < 0 or not 0 <= accepted <= generation:
@@ -249,10 +260,11 @@ class SimulatedAnnealing:
 
     # ------------------------------------------------------------------ 내부
     def _propose(self) -> np.ndarray:
-        """[현재해, 이웃 1..K]. 이웃 잡음은 전용 생성기에서 (K, 차원) 한 번에 뽑는다."""
+        """[현재해, 이웃 1..K]. 이웃 잡음은 전용 생성기에서 (K, 차원) 한 번에 뽑는다. 구조 뒤집기는 그 뒤 이웃 순서로."""
         c = self._config
         out = np.empty((c.neighbors + 1, self._dim), dtype=np.float64)
         out[0] = self._current
         out[1:] = self._current + float(c.step) * self._rng.standard_normal((c.neighbors, self._dim))
         clip_bounded(out, c.bounded_dims)
+        flip_structure(out, range(1, c.neighbors + 1), c.structure_genes, c.structure_flip, self._rng)
         return out
