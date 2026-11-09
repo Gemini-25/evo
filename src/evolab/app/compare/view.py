@@ -688,6 +688,8 @@ class CompareView(QWidget):
         self.folder_label = QLabel()
         self.folder_label.setWordWrap(True)
         self.folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # 줄을 바꿔도 윈도우 경로(\로 이어진 한 덩어리)는 끊을 자리가 없어 그 너비가 창의 최소 너비가 됐다
+        self.folder_label.setMinimumWidth(1)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(list(S.CMP_LIST_COLUMNS))

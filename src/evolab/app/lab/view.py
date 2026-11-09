@@ -353,6 +353,24 @@ class InspectPanel(QWidget):
         return lines
 
 
+class _PanelScroll(QScrollArea):
+    """실험실 오른쪽 패널의 스크롤 영역: 처음 너비가 내용의 최소 너비보다 좁지 않다(v3.0 윈도우 CI 고침, 설계 D17·T16).
+
+    QScrollArea.sizeHint는 너비를 글자 높이의 36배에서 자르고 세로 스크롤 막대 자리를 넣지 않는다. 스플리터는 패널(늘림 0)에 그
+    너비를 주므로, 글자 높이에 비해 글이 넓은 글꼴이면 내용(최소 너비)이 영역보다 넓어 가로 스크롤 막대가 생기고 「멈춤」·「재생
+    배속」이 오른쪽에서 잘린다. 창 왼쪽(캔버스)에 자리가 남아도 그랬다. 윈도우 CI의 offscreen 플랫폼(글꼴 폴더가 없어 모든 글자가
+    12px 너비 네모)에서 내용 672px · 영역 432px로 잘렸다. 리눅스 기본 글꼴(9pt)은 영역 536 → 550px(세로 막대 자리 14px만큼
+    넓어짐, 그만큼 캔버스가 좁아짐). 바라는 너비만 고치고 최소 너비(300)는 그대로다: 사용자는 여전히 끌어서 좁힐 수 있다."""
+
+    def sizeHint(self) -> Any:  # QSize
+        hint = super().sizeHint()
+        panel = self.widget()
+        if panel is not None:
+            need = panel.minimumSizeHint().width() + 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
+            hint.setWidth(max(hint.width(), need))
+        return hint
+
+
 def absent_inputs(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray) -> frozenset[str]:
     """그 개체(유전자)에서 없는 물체·관절에 단 센서의 신경망 입력 채널 이름(v2.1 클릭 검사 「(없음)」).
 
@@ -594,7 +612,7 @@ class LabView(QWidget):
 
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(center)
-        panel_scroll = QScrollArea()
+        panel_scroll = _PanelScroll()  # 처음 너비 = 내용 최소 너비 이상(가로로 잘리지 않게, T16)
         panel_scroll.setWidgetResizable(True)
         panel_scroll.setWidget(self._build_panel())
         panel_scroll.setMinimumWidth(300)

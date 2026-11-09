@@ -314,7 +314,9 @@ def _check_deletable(run: Path, runs_dir: Path) -> Path:
 def _rmtree_once(path: Path) -> None:
     def retry_writable(func: Any, p: str, exc: BaseException) -> None:
         # 윈도우: 읽기 전용 표시가 있는 파일은 지울 수 없다. 표시를 풀고 한 번 더.
-        if not isinstance(exc, PermissionError):
+        # 다시 부르는 것은 경로 하나만 받는 지우기 함수뿐이다: 리눅스·맥의 rmtree는 못 연 하위 폴더에 os.open을
+        # 넘기는데 os.open(p)는 TypeError라 OSError만 잡는 호출하는 쪽을 뚫고 나갔다.
+        if not isinstance(exc, PermissionError) or func not in (os.unlink, os.remove, os.rmdir):
             raise exc
         os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
         func(p)

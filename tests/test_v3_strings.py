@@ -1,4 +1,4 @@
-"""v3 0단계·0'단계 문자열 (v3 설계 8.1 T2, 6절, 2.5): 새 상수(v3.0, v3.1), format 자리, 도움말 쪽의 자리·「」 규칙·링크·빠짐.
+"""v3.0 0단계 문자열 (v3 설계 8.1 T2, 6절, 2.5): 새 상수, format 자리, 도움말 쪽의 자리·「」 규칙·링크·빠짐.
 
 도움말 쪽 그리기·찾기(T11), 진짜 에디터 아래 탭과의 빠짐(T12)은 B 묶음 테스트가 다시 본다. 여기서는 strings.py만으로 볼 수 있는
 것(자리가 모두 풀림, 「」 안은 자리만, 링크 형식, 타일·탭·내장 예제·낱말 빠짐)을 본다.
@@ -50,29 +50,9 @@ V30_NAMES: tuple[str, ...] = (
 """v3 설계 6절의 v3.0 새 상수(ABOUT_TEXT는 ABOUT_TEXT_V3로: strings.py v3.0 머리말 참고). ERR_DETAILS는 통합에서 뺐다:
 오류 상자의 「자세히」는 Qt의 표준 단추(qtbase_ko 번역 「자세한 정보 표시...」)라 쓰는 곳이 없다."""
 
-V31_NAMES: tuple[str, ...] = (
-    "INST_PUBLISHER", "INST_TASKS_GROUP", "INST_TASK_DESKTOP", "INST_RUN_NOW", "INST_REPORT_SHORTCUT",
-    "INST_NEWER_INSTALLED", "INST_ASK_SETTINGS", "INST_DATA_KEPT", "PORTABLE_README_NAME", "PORTABLE_README", "EXP_WHAT",
-    "EXP_WHAT_REPLAY", "EXP_WHAT_RACE", "EXP_FORMAT", "EXP_FORMAT_MP4", "EXP_FORMAT_GIF", "EXP_FORMAT_HTML", "EXP_SIZE",
-    "EXP_SIZE_SMALL", "EXP_SIZE_MEDIUM", "EXP_CAMERA", "EXP_CAMERA_FIXED", "EXP_CAMERA_FOLLOW", "EXP_INFO_LENGTH",
-    "EXP_INFO_MF", "EXP_INFO_BUILTIN", "EXP_INFO_BUILTIN_TIP", "EXP_BIG_ASK", "EXP_PROGRESS_FRAMES", "EXP_DONE",
-    "EXP_OPEN_FOLDER", "EXP_FAILED", "EXP_MF_FALLBACK", "EXP_PROCESS_DIED", "EXP_FILTER_MP4", "EXP_FILTER_HTML",
-    "EXP_BAD_SUFFIX", "EXP_ENCODER_MF", "EXP_ENCODER_BUILTIN", "EXP_MF_OFF", "EXP_MF_NOT_WINDOWS", "EXP_SAVE", "EXP_CLOSE",
-    "PHONE_TITLE", "PHONE_TOO_BIG", "PHONE_HOW_TO_TITLE", "PHONE_HOW_TO", "PHONE_HOW_TO_DONT_SHOW", "PHONE_TEXT",
-    "CLI_HELP_EXPORT", "CLI_HELP_EXPORT_FORMAT", "CLI_HELP_EXPORT_GEN", "CLI_HELP_EXPORT_WHAT", "CLI_HELP_EXPORT_SIZE",
-    "CLI_HELP_EXPORT_CAMERA", "CLI_HELP_EXPORT_ENCODER", "CLI_HELP_EXPORT_OUT", "CLI_EXPORT_DONE", "CLI_HELP_VIDEO_PROBE",
-    "CLI_VIDEO_PROBE_LINE", "SELFTEST_CHECK_EXPORT", "SELFTEST_EXPORT_DETAIL",
-)
-"""v3 설계 6절의 v3.1 새 상수(설치 프로그램, 휴대용 zip, 내보내기 대화 상자, 폰 재생 파일, 명령줄 내보내기, 자체 점검)와
-0'단계가 더한 셋(PORTABLE_README_NAME: D44, EXP_SAVE·EXP_CLOSE: 5.6의 단추). v3.0에는 없던 것을 v3.1 0'단계가 더했다."""
-
-INST_NAMES = ("INST_PUBLISHER", "INST_TASKS_GROUP", "INST_TASK_DESKTOP", "INST_RUN_NOW", "INST_REPORT_SHORTCUT",
-              "INST_NEWER_INSTALLED", "INST_ASK_SETTINGS", "INST_DATA_KEPT")
-"""설치 프로그램 [CustomMessages]로 옮기는 문구(설계 2.10, D42). %1·%2는 Inno 인자, %n은 줄 바꿈."""
-
-PHONE_TEXT_KEYS = {"play", "pause", "restart", "speed", "seconds", "camera_fit", "camera_follow", "score", "rank",
-                   "legend_hint", "rotate", "newer", "noscript", "footer"}
-"""폰 재생기가 자료 JSON의 "text"에서 찾는 키(설계 2.8, 6절)."""
+V31_NAMES = ("INST_PUBLISHER", "PORTABLE_README", "EXP_FORMAT", "EXP_INFO_MF", "PHONE_TEXT", "PHONE_TOO_BIG",
+             "CLI_HELP_EXPORT", "CLI_HELP_VIDEO_PROBE", "SELFTEST_CHECK_EXPORT")
+"""v3.1 0단계가 더할 상수(설치, 내보내기, 폰 재생 파일, 명령줄 내보내기): v3.0에는 아직 없다."""
 
 HELP_PAGE_IDS = ("start", "lab", "dashboard", "editor", "play", "compare", "race", "records", "examples", "trouble",
                  "words", "install")
@@ -111,11 +91,11 @@ def _resolved() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # 상수
 # ---------------------------------------------------------------------------
-def test_v30_and_v31_constants_exist() -> None:
-    """v3.0 상수와 v3.1 0'단계 상수가 모두 있다(v3.0판의 「v3.1 상수는 아직 없음」 검사를 v3.1에서 바꿈)."""
-    missing = [n for n in V30_NAMES + V31_NAMES if not hasattr(S, n)]
+def test_v30_constants_exist_and_v31_ones_do_not_yet() -> None:
+    missing = [n for n in V30_NAMES if not hasattr(S, n)]
     assert not missing, missing
-    assert len(set(V30_NAMES + V31_NAMES)) == len(V30_NAMES) + len(V31_NAMES)
+    early = [n for n in V31_NAMES if hasattr(S, n)]
+    assert not early, early
 
 
 def test_no_name_is_assigned_twice_in_strings_py() -> None:
@@ -135,8 +115,6 @@ def test_no_name_is_assigned_twice_in_strings_py() -> None:
 
 def test_changed_constants() -> None:
     assert S.LAB_START == "▶ 학습 시작"  # 설계 D17: 「정체하면 새로 시작」과 헷갈리던 「새로 시작」
-    # v3.1(설계 6절, D48): 실험실·경주 창의 저장 단추가 형식을 고르는 내보내기 대화 상자를 연다
-    assert S.VIDEO_SAVE == "내보내기…" and S.RACE_SAVE_GIF == "내보내기…" and S.VIDEO_SAVE_TITLE == "내보내기"
     fields = {f for _, f, _, _ in string.Formatter().parse(S.ABOUT_TEXT_V3) if f}
     assert fields == {"name", "version", "data_dir", "state_dir", "notices"}
     assert "문서\\진화실험실" not in S.ABOUT_TEXT_V3  # 데이터 폴더를 글자로 박지 않음(설정에서 바꿀 수 있음)
@@ -154,7 +132,7 @@ def _strings_of(value: Any) -> list[str]:
 
 def test_every_format_placeholder_fills_with_dummy_values() -> None:
     errors: list[str] = []
-    for name in V30_NAMES + V31_NAMES:
+    for name in V30_NAMES:
         if name == "HELP_PAGES":  # 도움말 쪽은 format이 아니라 {{자리}}로 채운다
             continue
         for text in _strings_of(getattr(S, name)):
@@ -265,37 +243,9 @@ def test_words_page_defines_every_glossary_term() -> None:
     assert len(set(S.HELP_GLOSSARY_TERMS)) == len(S.HELP_GLOSSARY_TERMS)
 
 
-def test_v31_pages_describe_installer_and_exports() -> None:
-    """v3.1판(v3.0판 「GIF만, zip만」 검사를 바꿈): 「기록과 내보내기」 쪽 「영상」 절은 MP4·GIF·폰 재생 파일, 「설치와 제거」
-    쪽은 설치 프로그램(설치·업데이트·제거) + 설치 없이 쓰는 zip 판, 실험실 내보내기 단추 풍선은 세 형식."""
+def test_v30_pages_describe_v30_features_only() -> None:
+    """v3.0판: 영상은 GIF만, 설치는 zip(설치 프로그램·MP4·폰 재생 파일은 v3.1에서 쪽 글을 바꾼다)."""
     resolved = _resolved()
-    video = resolved["records"].split("## " + S.HELP_HEADING_VIDEO + "\n", 1)[1]
-    assert all(word in video for word in ("**MP4**", "**GIF**", ".html", S.VIDEO_SAVE))
-    assert _headings(resolved["install"]) == ["설치와 제거", "설치", "업데이트", "제거", "설치 없이 쓰기"]
-    assert "설치 파일" in resolved["install"] and "zip" in resolved["install"]
-    assert "**지우지 않습니다**" in resolved["install"]  # 제거해도 데이터 폴더는 지우지 않는다(설계 D41)
-    assert "GIF 영상으로" not in resolved["race"] and S.RACE_SAVE_GIF in resolved["race"]
-    assert "MP4" in S.HELP_TIPS["lab.video"] and "폰 재생 파일" in S.HELP_TIPS["lab.video"]
-
-
-def test_installer_messages_fit_inno_custom_messages() -> None:
-    """[CustomMessages] 한 줄 = 한 값: 줄 바꿈은 %n으로만, Inno 상수 괄호({…})와 파이썬 format 자리가 없다."""
-    for name in INST_NAMES:
-        text = getattr(S, name)
-        assert isinstance(text, str) and text.strip(), name
-        assert not any(c in text for c in "\r\n{}"), name
-    assert "%1" in S.INST_NEWER_INSTALLED and "%2" in S.INST_NEWER_INSTALLED
-    assert "%1" in S.INST_ASK_SETTINGS and "%1" in S.INST_DATA_KEPT
-    assert S.INST_PUBLISHER == S.APP_NAME
-    assert S.PORTABLE_README.endswith("\r\n") and "\n" not in S.PORTABLE_README.replace("\r\n", "")  # 메모장 줄 끝
-    assert S.PORTABLE_README_NAME.endswith(".txt") and "/" not in S.PORTABLE_README_NAME
-    assert "\\" + S.DATA_DIR_NAME in S.PORTABLE_README
-
-
-def test_phone_text_keys_and_export_format_labels() -> None:
-    assert set(S.PHONE_TEXT) == PHONE_TEXT_KEYS
-    assert all(isinstance(v, str) and v.strip() for v in S.PHONE_TEXT.values())
-    assert all(k.isascii() for k in S.PHONE_TEXT)
-    # 대화 상자 형식 글이 형식 이름을 담는다(사용자가 고를 때 확장자와 맞춰 봄)
-    assert "MP4" in S.EXP_FORMAT_MP4 and "GIF" in S.EXP_FORMAT_GIF and "HTML" in S.EXP_FORMAT_HTML
-    assert "640×360" in S.EXP_SIZE_SMALL and "1280×720" in S.EXP_SIZE_MEDIUM  # export.job.MP4_SIZES와 같은 크기
+    assert "MP4" not in resolved["records"] and ".html" not in resolved["records"]
+    assert "zip" in resolved["install"] and "설치 파일" not in resolved["install"]
+    assert "MP4" not in S.HELP_TIPS["lab.video"]

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from typing import Any
@@ -296,6 +297,39 @@ def test_delete_cleans_leftover_with_read_only_file(tmp_path: Path, monkeypatch:
         m.setattr(catalog.os, "unlink", windows_unlink)
         delete_run(store.root, runs)
     assert list(runs.iterdir()) == []
+
+
+@pytest.mark.skipif(not shutil.rmtree.avoids_symlink_attacks,
+                    reason="하위 폴더를 os.open으로 여는 rmtree(리눅스·맥)의 일: 윈도우의 rmtree는 os.open을 쓰지 않는다")
+def test_delete_survives_a_folder_it_cannot_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """지우는 중 열 수 없는(권한 없는) 하위 폴더가 있어도 delete_run이 터지지 않고, 남은 것은 다음 삭제 때 치운다.
+
+    리눅스·맥의 shutil.rmtree는 하위 폴더를 os.open으로 열고, 못 열면 onexc에 os.open을 넘긴다. 읽기 전용 표시를
+    풀고 func(p)로 다시 부르던 처리기가 os.open(p)를 불러 TypeError(flags 없음)가 났고, OSError만 잡는 남은 폴더
+    치우기와 _rmtree를 뚫고 delete_run(과 branch_run) 밖으로 나갔다. 다시 부르는 것은 이제 os.unlink·os.rmdir뿐이다.
+    """
+    runs = tmp_path / "runs"
+    store = RunStore.create(runs, "지울 실행", {"env_name": "e"})
+    leftover = runs / ".deleting-1-0-못 여는 폴더"
+    (leftover / "잠김").mkdir(parents=True)
+    (store.root / "잠김").mkdir()
+    real_open = os.open
+
+    def denied_open(path: Any, flags: int, mode: int = 0o777, *, dir_fd: Any = None) -> int:
+        if os.path.basename(os.fsdecode(path)) == "잠김":
+            raise PermissionError(13, "Permission denied", os.fsdecode(path))
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(catalog.os, "open", denied_open)
+        m.setattr(store_mod, "_sleep", lambda delay: None)
+        delete_run(store.root, runs)
+    assert not store.root.exists() and list_runs(runs) == []  # 목록에서는 사라졌다
+    assert leftover.is_dir()  # 못 지운 것은 숨긴 폴더로 두고(기다리지 않는다)
+    assert [p.name for p in runs.iterdir() if not p.name.startswith(".deleting-")] == []
+    other = RunStore.create(runs, "다음 실행", {"env_name": "e"})
+    delete_run(other.root, runs)
+    assert list(runs.iterdir()) == []  # 다음 삭제 때 앞서 남은 것도 치웠다
 
 
 # ---------------------------------------------------------------------------

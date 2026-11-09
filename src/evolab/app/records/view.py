@@ -130,6 +130,8 @@ class RecordsView(QWidget):
 
         self.folder_label = QLabel()
         self.folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # 경로 글의 너비가 주 창의 최소 너비가 되지 않게(긴 데이터 폴더, 윈도우 CI의 네모 글자): 넘치면 잘리고 풍선에 전체 경로
+        self.folder_label.setMinimumWidth(1)
         self.empty_label = QLabel(S.REC_EMPTY)
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setWordWrap(True)
@@ -219,6 +221,7 @@ class RecordsView(QWidget):
         self._by_path = {str(s.path): s for s in self._runs}
         self._fill()
         self.folder_label.setText(S.REC_FOLDER.format(count=len(self._runs), path=base))
+        self.folder_label.setToolTip(str(base))
         self.empty_label.setVisible(not self._runs)
         if keep is not None:
             self.select_run(keep)
