@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -689,10 +688,15 @@ class RepeatDialog(QDialog):
         try:
             self.plan()
         except ValueError as exc:
-            self.show_error(str(exc))
+            from evolab.app import errors
+
+            why = errors.reason(exc)  # 폼 검사 글(한국어)은 그대로, 모르는 예외는 종류 이름만(v3.1, v3.0 고침 13)
+            self.show_error(why)
             return
         super().accept()
 
     def show_error(self, message: str) -> None:
-        """테스트는 이 메서드를 바꿔 끼운다."""
-        QMessageBox.warning(self, S.CMP_REPEAT_TITLE, message)
+        """오류 상자(다음 할 일 + 오류 보고 묶음 단추, errors.show_error). 테스트는 이 메서드를 바꿔 끼운다."""
+        from evolab.app import errors
+
+        errors.show_error(self, S.CMP_REPEAT_TITLE, message)

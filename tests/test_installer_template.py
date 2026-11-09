@@ -746,3 +746,18 @@ def test_workflow_steps_needing_the_exe_follow_the_build(workflow: dict[str, Any
         if name in ("Exe file version", "Copy exe folder to a Korean path", "Unsigned PE list",
                     "Build installers (current and old 2.99.0)", "Portable zip and checksums"):
             assert "!cancelled()" in step["if"] and "steps.build.outcome == 'success'" in step["if"], name
+
+
+def test_workflow_text_runs_the_yaml_checks_and_compares_the_exe_mp4() -> None:
+    """PyYAML 없이도(이 저장소의 잠금 환경) 글로 확인한다: tests job이 위 윈도우 CI 설정 검사를 PyYAML을 얹어 돌리고(그렇지
+    않으면 어느 CI에서도 건너뛰어짐), W7이 exe 내장 MP4의 프레임 수와 소스로 만든 같은 파일의 SHA-256을 비교하고(9.3 기준 4),
+    W6의 cl이 표준 전처리기(/Zc:preprocessor)로 mf_abi.c를 빌드한다(v3.1 검토)."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    tests_job = text.split("\n  tests:\n", 1)[1].split("\n  package:\n", 1)[0]
+    assert "uv run --with pyyaml pytest -q tests/test_installer_template.py -k workflow" in tests_job
+    assert "uv run pytest -q\n" in tests_job  # 빠른 테스트 전체(W1)는 그대로
+    w7 = text.split("- name: Exports with the console exe (Korean path)", 1)[1].split("\n      - name:", 1)[0]
+    assert "uv run evolab export $run --format mp4 --encoder builtin --out $srcMp4" in w7
+    assert "frame_count(job)" in w7 and "Get-FileHash -Algorithm SHA256 -LiteralPath $exeMp4" in w7
+    assert "if ($exeHash -ne $srcHash)" in w7
+    assert "cl /nologo /W3 /Zc:preprocessor packaging\\ci\\mf_abi.c" in text

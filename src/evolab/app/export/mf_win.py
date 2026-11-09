@@ -15,7 +15,10 @@ AddBuffer·SetSampleTime·SetSampleDuration(100ns 단위)·WriteSample → Final
   순서·인자 마샬링·Release 짝을 리눅스에서도 검사한다.
 - 이 모듈은 어디서나 불러올 수 있다(리눅스 테스트): 윈도우 DLL은 load_api()를 부를 때만 연다.
 - 내보내기 자식 프로세스 안에서만 쓴다(설계 D49): ctypes COM 실수가 화면·학습을 죽이지 않게.
-- 실패한 호출은 MfError(호출 이름 + HRESULT 16진수). mp4.write_mp4가 받아 내장 쓰기로 처음부터 다시 만든다.
+- 실패한 호출은 MfError(호출 이름 + HRESULT 16진수). mp4.write_mp4가 받아 내장 쓰기로 처음부터 다시 만든다. ctypes가
+  외부 호출에서 낸 잘못(윈도우 SEH 접근 위반이 바뀐 OSError, 인자 마샬링의 ctypes.ArgumentError)도 그 호출 이름을 단
+  MfError로 바꾼다(_fault): 시험(probe)이 이미 그렇게 보듯 쓰는 중에도 내장 쓰기로 다시 만들게. 파일 일(os.replace의
+  PermissionError 등)은 바꾸지 않아 그대로 파일 오류로 알린다.
 """
 
 from __future__ import annotations
@@ -57,6 +60,23 @@ class MfError(RuntimeError):
         self.what = what
         self.hresult = int(hresult) & 0xFFFFFFFF
         super().__init__(f"{what} 0x{self.hresult:08X}" if hresult else what)
+
+
+_FAULTS: Final = (OSError, ctypes.ArgumentError)
+"""ctypes가 외부 호출(COM 메서드, DLL 함수, memmove)에서 내는 잘못. _fault가 MfError로 바꾼다."""
+
+
+def _fault(what: str, exc: BaseException) -> MfError:
+    """ctypes 잘못 하나를 그 호출 이름을 단 MfError로(까닭 글 = 「호출 이름: 종류: 내용」)."""
+    return MfError(f"{what}: {type(exc).__name__}: {exc}")
+
+
+def _flat(api: SimpleNamespace, name: str, *args: Any) -> int:
+    """DLL 함수 하나를 부르고 HRESULT(정수)를 돌려준다. ctypes 잘못은 MfError."""
+    try:
+        return int(getattr(api, name)(*args) or 0)
+    except _FAULTS as exc:
+        raise _fault(name, exc) from exc
 
 
 class GUID(Structure):
@@ -222,9 +242,12 @@ class _Com:
         if proto is None:
             restype, argtypes = _METHODS[method]
             proto = self._protos[method] = FUNCTYPE(restype, c_void_p, *argtypes)
-        vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p)))[0]
-        fn = proto(vtbl[VTABLE[iface][method]])
-        return int(fn(obj, *args) or 0)
+        try:
+            vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p)))[0]
+            fn = proto(vtbl[VTABLE[iface][method]])
+            return int(fn(obj, *args) or 0)
+        except _FAULTS as exc:
+            raise _fault(f"{iface}::{method}", exc) from exc
 
     def check(self, obj: int | None, iface: str, method: str, *args: Any) -> None:
         hr = self.call(obj, iface, method, *args)
@@ -248,13 +271,13 @@ class _Session:
         self.api = api
         self.com = False
         self.mf = False
-        hr = int(api.CoInitializeEx(None, CONSTANTS["COINIT_MULTITHREADED"]) or 0)
+        hr = _flat(api, "CoInitializeEx", None, CONSTANTS["COINIT_MULTITHREADED"])
         if hr >= 0:  # S_OK, S_FALSE(이미 같은 방식): 짝으로 CoUninitialize
             self.com = True
         elif hr & 0xFFFFFFFF != CONSTANTS["RPC_E_CHANGED_MODE"]:  # 다른 방식으로 이미 초기화돼 있으면 그대로 쓴다
             raise MfError("CoInitializeEx", hr)
         try:
-            _check(api.MFStartup(CONSTANTS["MF_VERSION"], CONSTANTS["MFSTARTUP_FULL"]), "MFStartup")
+            _check(_flat(api, "MFStartup", CONSTANTS["MF_VERSION"], CONSTANTS["MFSTARTUP_FULL"]), "MFStartup")
         except BaseException:
             self.close()
             raise
@@ -305,7 +328,7 @@ class MfWriter:
     # ---- 시작
     def _new(self, factory: str, *args: Any) -> int:
         out = c_void_p()
-        _check(getattr(self._api, factory)(*args, byref(out)), factory)
+        _check(_flat(self._api, factory, *args, byref(out)), factory)
         if not out.value:
             raise MfError(f"{factory} NULL")
         return int(out.value)
@@ -321,7 +344,7 @@ class MfWriter:
 
     def _create_attributes(self, size: int) -> int:
         out = c_void_p()
-        _check(self._api.MFCreateAttributes(byref(out), size), "MFCreateAttributes")
+        _check(_flat(self._api, "MFCreateAttributes", byref(out), size), "MFCreateAttributes")
         if not out.value:
             raise MfError("MFCreateAttributes NULL")
         return int(out.value)
@@ -359,7 +382,7 @@ class MfWriter:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._unlink_tmp()
             out = c_void_p()
-            hr = api.MFCreateSinkWriterFromURL(os.path.abspath(self.tmp), None, attrs, byref(out))
+            hr = _flat(api, "MFCreateSinkWriterFromURL", os.path.abspath(self.tmp), None, attrs, byref(out))
             _check(hr, "MFCreateSinkWriterFromURL")
             if not out.value:
                 raise MfError("MFCreateSinkWriterFromURL NULL")
@@ -428,7 +451,10 @@ class MfWriter:
             try:
                 if not ptr.value or cap.value < n:
                     raise MfError("IMFMediaBuffer::Lock size")
-                ctypes.memmove(ptr.value, data.ctypes.data, n)
+                try:
+                    ctypes.memmove(ptr.value, data.ctypes.data, n)
+                except _FAULTS as exc:
+                    raise _fault("IMFMediaBuffer memmove", exc) from exc
             finally:
                 com.call(buf, "IMFMediaBuffer", "Unlock")
             com.check(buf, "IMFMediaBuffer", "SetCurrentLength", n)

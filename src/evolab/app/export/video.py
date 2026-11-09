@@ -7,7 +7,11 @@
 
 나란히 경주 영상(v1.2, 설계 D31): render_race_frames가 칸마다 관전 캔버스를 하나씩 두고 프레임마다 한 그림의 격자
 자리(칸 320×200)에 그린다. 끝 장면을 1초 더 보여 주고, export_race_gif가 같은 방식으로 GIF 하나에 담는다.
-MP4는 챔피언 영상과 같은 이유(A19)로 만들지 않는다.
+
+v3.1(설계 D48~D50, 7.1): 그리기는 export.frames로 옮겼다. 이 모듈의 _iter_frames·_iter_race_frames는 frames 위의 얇은 껍데기라
+export_gif·export_race_gif·render_frames의 서명과 결과(「따라가기」 카메라 그림)는 v3.0 그대로다. 내보내기 대화 상자(MP4·GIF·폰
+재생 파일, 고정 카메라)는 내보내기 자식 프로세스(export.worker)가 같은 frames와 이 모듈의 _GifWriter로 만든다. 경로를 주는 옛
+호출(lab.save_video(path)·race.save_gif(path))은 지금처럼 이 모듈로 화면 프로세스에서 GIF를 만든다.
 """
 
 from __future__ import annotations
@@ -18,8 +22,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from PySide6.QtCore import QPoint, QRect
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QImage
 
 from evolab.app import strings as S
 from evolab.engine.replay import Replay
@@ -29,37 +32,16 @@ DEFAULT_FPS = 20
 RACE_PANE = (320, 200)
 """경주 영상의 칸 하나 크기."""
 RACE_TAIL = 1.0
-"""경주 영상에서 가장 긴 칸이 끝난 뒤 더 보여 주는 시간(초)."""
-RACE_BAR = 3
-"""경주 영상 칸 위쪽의 칸 색 띠 두께(화소): 칸 색으로 어느 칸인지 알아보게."""
-RACE_SEPARATOR = QColor(255, 255, 255, 40)
+"""경주 영상에서 가장 긴 칸이 끝난 뒤 더 보여 주는 시간(초, = frames.RACE_TAIL)."""
 
 
 def _iter_frames(items: Sequence[tuple[Replay, QColor, str]], *, size: tuple[int, int], fps: int, speed: float,
                  title: str) -> Iterator[tuple[int, int, QImage]]:
-    """render_frames의 몸통: (번호, 전체 수, 프레임)을 하나씩 만든다(프레임을 쌓아 두지 않는다)."""
-    from evolab.app.lab.canvas import SpectatorCanvas
+    """render_frames의 몸통: (번호, 전체 수, 프레임)을 하나씩 만든다(프레임을 쌓아 두지 않는다). frames.overlay_frames의
+    「따라가기」(맞춤) 카메라 그대로."""
+    from evolab.app.export import frames
 
-    if not items:
-        return
-    canvas = SpectatorCanvas()
-    try:
-        canvas.resize(*size)
-        first = items[0][0]
-        canvas.set_scene(first.geometry, None, channels=first.channels)
-        canvas.set_overlay([(r.trajectory, r.agent, color, label) for r, color, label in items])
-        canvas.set_follow("fit")
-        duration = canvas.duration() + 0.5
-        count = max(1, math.ceil(duration * fps / max(speed, 1e-6)) + 1)
-        for k in range(count):
-            t = min(duration, k * speed / fps)
-            canvas.set_time(t)
-            canvas.set_hud(S.VIDEO_HUD.format(title=title, t=t) if title else S.VIDEO_HUD_TIME.format(t=t))
-            img = QImage(size[0], size[1], QImage.Format.Format_RGB32)
-            canvas.render(img)
-            yield k, count, img
-    finally:
-        canvas.deleteLater()
+    return frames.overlay_frames(items, size=size, fps=fps, speed=speed, title=title)
 
 
 def render_frames(items: Sequence[tuple[Replay, QColor, str]], *, size: tuple[int, int] = DEFAULT_SIZE,
@@ -190,56 +172,17 @@ def export_gif(items: Sequence[tuple[Replay, QColor, str]], path: Path, *, size:
 
 
 def race_frame_count(duration: float, fps: int = DEFAULT_FPS) -> int:
-    """경주 영상 프레임 수: ⌈(가장 긴 재생 + 1초) × fps⌉ + 1(0초 프레임 포함)."""
+    """경주 영상 프레임 수: ⌈(가장 긴 재생 + 1초) × fps⌉ + 1(0초 프레임 포함, = frames.race_count)."""
     return max(1, math.ceil((float(duration) + RACE_TAIL) * fps) + 1)
 
 
 def _iter_race_frames(lanes: Sequence[tuple[Replay, QColor, str]], cols: int, *, pane: tuple[int, int], fps: int,
                       title: str) -> Iterator[tuple[int, int, QImage]]:
-    """render_race_frames의 몸통: (번호, 전체 수, 프레임)을 하나씩 만든다(프레임을 쌓아 두지 않는다)."""
-    from evolab.app.lab.canvas import COLOR_BG, SpectatorCanvas
+    """render_race_frames의 몸통: (번호, 전체 수, 프레임)을 하나씩 만든다(프레임을 쌓아 두지 않는다). frames.lane_frames의
+    「따라가기」(칸 개체) 카메라 그대로."""
+    from evolab.app.export import frames
 
-    if not lanes:
-        return
-    cols = max(1, min(int(cols), len(lanes)))
-    rows = math.ceil(len(lanes) / cols)
-    pw, ph = int(pane[0]), int(pane[1])
-    canvases: list[SpectatorCanvas] = []
-    try:
-        for rep, color, _label in lanes:
-            c = SpectatorCanvas()
-            c.setMinimumSize(1, 1)  # 관전 캔버스의 화면용 최소 크기보다 작은 칸(320×200)도 그린다
-            c.resize(pw, ph)
-            c.set_scene(rep.geometry, None, channels=rep.channels)
-            c.set_overlay([(rep.trajectory, rep.agent, QColor(color), "")])
-            c.set_follow("champion")
-            canvases.append(c)
-        longest = max(rep.trajectory.duration for rep, _c, _l in lanes)
-        end = longest + RACE_TAIL
-        count = race_frame_count(longest, fps)
-        for k in range(count):
-            t = min(end, k / fps)
-            img = QImage(cols * pw, rows * ph, QImage.Format.Format_RGB32)
-            img.fill(COLOR_BG)
-            for i, c in enumerate(canvases):
-                label = lanes[i][2]
-                hud = S.VIDEO_HUD.format(title=label, t=t) if label else S.VIDEO_HUD_TIME.format(t=t)
-                c.set_time(t)
-                c.set_hud(f"{title}\n{hud}" if i == 0 and title else hud)
-                c.render(img, QPoint((i % cols) * pw, (i // cols) * ph))
-            p = QPainter(img)
-            for i, (_rep, color, _label) in enumerate(lanes):
-                p.fillRect(QRect((i % cols) * pw, (i // cols) * ph, pw, RACE_BAR), QColor(color))
-            p.setPen(RACE_SEPARATOR)
-            for col in range(1, cols):
-                p.drawLine(col * pw, 0, col * pw, rows * ph)
-            for row in range(1, rows):
-                p.drawLine(0, row * ph, cols * pw, row * ph)
-            p.end()
-            yield k, count, img
-    finally:
-        for c in canvases:
-            c.deleteLater()
+    return frames.lane_frames(lanes, cols, pane=pane, fps=fps, title=title)
 
 
 def render_race_frames(lanes: Sequence[tuple[Replay, QColor, str]], cols: int, *,

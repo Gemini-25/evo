@@ -60,6 +60,14 @@ jobs:
         timeout-minutes: 40
         run: uv run pytest -q
 
+      # tests/test_installer_template.py의 윈도우 CI 설정 검사(W4·W5·W10·W11: release의 needs·if·permissions, 서명 조건,
+      # 단계 순서)는 PyYAML이 있어야 돈다. PyYAML은 실행 의존성이 아니라 uv.lock에 없으므로 이 단계에서만 일회용 환경에
+      # 얹는다(--with: 잠금 파일은 그대로). 위 단계가 실패해도 돈다.
+      - name: Workflow structure tests (PyYAML for this step only)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: uv run --with pyyaml pytest -q tests/test_installer_template.py -k workflow
+
   package:
     runs-on: windows-latest
     # tests에 기대지 않는다(needs 없음). 자체 점검 둘(uv run, 안내 10세대 약 1분 반) + exe 묶기(약 1분 반) + exe 점검.
@@ -412,7 +420,7 @@ jobs:
           @(
             "@echo off",
             "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul || exit /b 1",
-            "cl /nologo /W3 packaging\ci\mf_abi.c /Febuild\mf_abi.exe /Fobuild\mf_abi.obj mfuuid.lib mfplat.lib mfreadwrite.lib ole32.lib || exit /b 1",
+            "cl /nologo /W3 /Zc:preprocessor packaging\ci\mf_abi.c /Febuild\mf_abi.exe /Fobuild\mf_abi.obj mfuuid.lib mfplat.lib mfreadwrite.lib ole32.lib || exit /b 1",
             "build\mf_abi.exe > build\mf_abi.json || exit /b 1"
           ) | Set-Content -Encoding ascii -LiteralPath $bat
           & cmd.exe /d /c $bat
@@ -466,6 +474,38 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           uv run python tests\h264_subset_decoder.py (Join-Path $out "챔피언.mp4")
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # 9.3 기준 4(exe의 내장 MP4가 원본과 같음): 프레임 수가 frames.frame_count(같은 실행·같은 옵션의 작업)와 같고,
+          # 같은 실행을 소스(uv run evolab export)로 같은 옵션으로 만든 파일과 바이트까지 같다(MP4에 시각·날짜가 없다).
+          $exeMp4 = Join-Path $out "챔피언.mp4"
+          $srcMp4 = Join-Path $env:RUNNER_TEMP "w7_source.mp4"
+          uv run evolab export $run --format mp4 --encoder builtin --out $srcMp4
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the source export of the same run failed"; exit 1 }
+          $check = Join-Path $env:RUNNER_TEMP "w7_frames.py"
+          @'
+          import os
+          import sys
+          from pathlib import Path
+
+          from evolab.app.export import job as J
+          from evolab.app.export import mp4
+          from evolab.app.export.frames import frame_count
+
+          job = J.job_from_run(Path(os.environ["W7_RUN"]), "mp4", generation=None, what="champion", size="medium",
+                               camera="fixed", encoder="builtin")
+          want = frame_count(job)
+          got = [mp4.read_info(os.environ[k])["frames"] for k in ("W7_EXE_MP4", "W7_SRC_MP4")]
+          print(f"frames: exe {got[0]}, source {got[1]}, expected {want}")
+          sys.exit(0 if got == [want, want] else 1)
+          '@ | Set-Content -Encoding utf8 -LiteralPath $check
+          $env:W7_RUN = $run
+          $env:W7_EXE_MP4 = $exeMp4
+          $env:W7_SRC_MP4 = $srcMp4
+          uv run python $check
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the exe MP4 does not have the expected frame count"; exit 1 }
+          $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exeMp4).Hash
+          $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $srcMp4).Hash
+          "SHA-256: exe $exeHash, source $srcHash"
+          if ($exeHash -ne $srcHash) { Write-Host "::error::the exe MP4 differs from the source MP4 of the same run"; exit 1 }
 
       # W9: 폰 재생 파일을 헤드리스 Edge로 열어 재생기가 떴는지(캔버스가 있고 스크립트 없을 때의 끝 장면 그림 id="poster"가 숨음).
       - name: Phone file opens in headless Edge

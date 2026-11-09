@@ -1753,7 +1753,10 @@ class LabView(QWidget):
         self._start_clock()
 
     def save_video(self, path: Path | None = None) -> Path | None:
-        """지금 보고 있는 재생(타임라인 세대 대표, 1세대 vs 지금, 고속 모드 챔피언)을 GIF로 저장한다."""
+        """지금 보고 있는 재생(타임라인 세대 대표, 1세대 vs 지금, 고속 모드 챔피언)을 내보낸다.
+
+        path가 없으면 내보내기 대화 상자(MP4·GIF·폰 재생 파일, 고정·따라가기 카메라, 내보내기 자식 프로세스: v3.1 설계 D48·D49).
+        path를 주면 v3.0처럼 이 프로세스에서 GIF 하나를 쓴다(따라가기 카메라, 진행 창)."""
         from PySide6.QtWidgets import QApplication, QProgressDialog
 
         from evolab.app.export.video import export_gif
@@ -1765,12 +1768,28 @@ class LabView(QWidget):
             return None
         items, label = last
         if path is None:
+            from evolab.app.export import job as export_job
+            from evolab.app.export.dialog import choose_and_export
+            from evolab.spec.io import env_hash
+
+            # 폰 재생 파일 정보 줄: 실행 이름, 세대·환경(이 재생을 요청할 때의 세대와 환경 버전, 없으면 지금 환경)
+            meta: dict[str, str] = {}
+            if self.run_dir is not None:
+                meta[export_job.META_RUN] = self.run_dir.name
+            asked = getattr(self, "_replay_brain", None)
+            spec = asked[4] if asked is not None else self.spec
+            if asked is not None and asked[2] is not None:
+                meta[export_job.META_GENERATION] = str(asked[2])
+            if spec is not None:
+                meta[export_job.META_ENV] = str(spec.file.name)
+                meta[export_job.META_ENV_HASH] = env_hash(spec.file)[:16]
             folder = (self.run_dir / "exports") if self.run_dir is not None else paths.data_dir()
-            default = folder / f"{sanitize_folder_name(label)}.gif"
-            chosen, _ = QFileDialog.getSaveFileName(self, S.VIDEO_SAVE_TITLE, str(default), S.VIDEO_FILTER)
-            if not chosen:
-                return None
-            path = Path(chosen)
+            out = choose_and_export(self, kind="replay", items=items, title=label,
+                                    default_name=sanitize_folder_name(label), meta=meta,
+                                    view=getattr(self, "_replay_view", None), folder=folder, settings=self.settings)
+            if out is not None:
+                self.status.setText(self.status.text() + "\n" + S.EXP_DONE.format(path=out))
+            return out
         dlg = QProgressDialog(S.VIDEO_PROGRESS, S.VIDEO_CANCEL, 0, 100, self)
         dlg.setMinimumDuration(300)
 

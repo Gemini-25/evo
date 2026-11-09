@@ -613,8 +613,8 @@ def test_race_view_saves_gif(qtbot: Any, runs: Runs, owner: QWidget, tmp_path: P
     wait_ready(qtbot, view)
     default = view.default_gif_path()
     assert default.parent == runs.a / "exports" and default.suffix == ".gif"
-    view.ask_save_path = lambda d: tmp_path / "split"  # type: ignore[method-assign]
-    out = view.save_gif()
+    # v3.1: 경로 없이 부르면 내보내기 대화 상자(test_export_dialog가 시험). 경로를 주는 길은 v3.0 GIF 그대로.
+    out = view.save_gif(tmp_path / "split")
     assert out == tmp_path / "split.gif" and out.exists()
     assert view.message.text() == S.VIDEO_DONE.format(path=out)
     with Image.open(out) as im:

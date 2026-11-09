@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from evolab import paths
+from evolab.app import errors
 from evolab.app import strings as S
 from evolab.runs.catalog import RunSummary, branch_run, delete_run, list_runs, read_summary, set_memo
 from evolab.runs.store import RunStore, RunStoreError
@@ -339,7 +340,8 @@ class RecordsView(QWidget):
         try:
             out = fn(s.path, Path(chosen))
         except (OSError, ValueError) as exc:
-            self.show_error(f"{S.REC_EXPORT_FAILED}: {exc}")
+            why = errors.reason(exc)  # 날것 예외 글 대신 한국어 까닭(v3.1, v3.0 고침 13)
+            self.show_error(f"{S.REC_EXPORT_FAILED}: {why}")
             return
         QMessageBox.information(self, S.REC_TITLE, S.REC_EXPORT_DONE.format(path=out))
 
@@ -492,7 +494,8 @@ class RecordsView(QWidget):
         return answer == QMessageBox.StandardButton.Yes
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, S.REC_TITLE, text)
+        """오류 상자(다음 할 일 + 오류 보고 묶음 단추, errors.show_error). 테스트는 이 메서드를 바꿔 끼운다."""
+        errors.show_error(self, S.REC_TITLE, text)
 
     # ------------------------------------------------------------------
     # 단추와 표
@@ -519,7 +522,8 @@ class RecordsView(QWidget):
             self._check_can_resume(s.path)  # 체크포인트를 묻고 분기를 확인받기 전에
             gens = RunStore.open(s.path).checkpoints()
         except (RunStoreError, OSError) as exc:
-            self.show_error(S.REC_RESUME_FAILED.format(reason=exc))
+            why = errors.reason(exc)
+            self.show_error(S.REC_RESUME_FAILED.format(reason=why))
             return
         if not gens:
             self.show_error(S.RUNS_NO_CHECKPOINT.format(path=s.path))
@@ -534,7 +538,8 @@ class RecordsView(QWidget):
         try:
             self.resume_run(s.path, g)
         except (RunStoreError, ValueError, OSError) as exc:
-            self.show_error(S.REC_RESUME_FAILED.format(reason=exc))
+            why = errors.reason(exc)
+            self.show_error(S.REC_RESUME_FAILED.format(reason=why))
 
     def _on_delete(self) -> None:
         s = self.selected_run()
@@ -543,7 +548,8 @@ class RecordsView(QWidget):
         try:
             self.delete(s.path)
         except (RunStoreError, OSError) as exc:
-            self.show_error(S.REC_DELETE_FAILED.format(reason=exc))
+            why = errors.reason(exc)
+            self.show_error(S.REC_DELETE_FAILED.format(reason=why))
 
     def _on_edit_memo(self) -> None:
         s = self._selected_ok()
@@ -572,7 +578,8 @@ class RecordsView(QWidget):
         try:
             self.save_memo(s.path, item.text())
         except (RunStoreError, OSError) as exc:
-            self.show_error(S.REC_MEMO_FAILED.format(reason=exc))
+            why = errors.reason(exc)
+            self.show_error(S.REC_MEMO_FAILED.format(reason=why))
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)

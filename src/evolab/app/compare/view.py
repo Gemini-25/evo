@@ -49,7 +49,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -1431,7 +1430,10 @@ class CompareView(QWidget):
         return Path(path) if path else None
 
     def show_error(self, message: str) -> None:
-        QMessageBox.warning(self, S.CMP_ERROR_TITLE, message)
+        """오류 상자(다음 할 일 + 오류 보고 묶음 단추, errors.show_error). 테스트는 이 메서드를 바꿔 끼운다."""
+        from evolab.app import errors
+
+        errors.show_error(self, S.CMP_ERROR_TITLE, message)
 
     def _on_save_png(self) -> None:
         path = self.ask_save_path(S.CMP_SAVE_PNG, S.CMP_PNG_NAME, S.CMP_PNG_FILTER)
@@ -1451,7 +1453,10 @@ class CompareView(QWidget):
         try:
             self.save_table_csv(path)
         except OSError as exc:
-            self.show_error(S.CMP_SAVE_FAILED.format(path=path, reason=exc.strerror or exc))
+            from evolab.app import errors
+
+            why = errors.reason(exc)  # 날것 예외 글 대신 한국어 까닭(v3.1, v3.0 고침 13)
+            self.show_error(S.CMP_SAVE_FAILED.format(path=path, reason=why))
 
     # ------------------------------------------------------------------
     # 나란히 경주

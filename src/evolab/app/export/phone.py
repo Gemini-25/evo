@@ -10,15 +10,19 @@
   잇는다)를 Int32 리틀 엔디언 base64로, 출력은 0..100 정수(양수 쪽만: 관전 캔버스 불꽃과 같은 규칙)를 같은 방식으로.
   DEFLATE는 쓰지 않는다(D57). JSON 안의 "<"는 \\u003c로 써서 </script>로 끊기지 않게 한다.
 - v2 움직이는 세계 물체(BodyGeom.motion)는 궤적에 없으므로 세계마다 일정한 간격(그 세계를 쓰는 칸들의 프레임 간격 중 가장
-  짧은 것)으로 0초부터 가장 긴 재생 + 꼬리(TAIL)까지 pose_at을 미리 계산해 넣는다. 표본 시각이 칸 프레임 시각과 같아
-  재생기가 표본 사이를 선형으로 이어도 개체와 맞물린다(움직임 규칙을 JS로 두 벌 두지 않는다: v2 D7, 심사).
+  짧은 것)으로 0초부터 파일 전체에서 가장 긴 재생 + 꼬리(TAIL)까지(= 재생기의 전체 길이: 경주 칸의 짧은 칸도 경주 창처럼
+  끝까지 움직인다) pose_at을 미리 계산해 넣는다. 표본 시각이 칸 프레임 시각과 같아 재생기가 표본 사이를 선형으로 이어도
+  개체와 맞물린다(움직임 규칙을 JS로 두 벌 두지 않는다: v2 D7, 심사).
 - v2.1 없는 물체는 Replay.agent·geometry에 이미 빠져 있어 칸의 물체 목록이 그대로 맞다(불꽃도 있는 물체의 추진기만).
 - 배치: overlay(한 세계 = 첫 칸 재생의 세계: 관전 캔버스 겹쳐 보기·GIF와 같음, 칸 색·범례), lanes(경주: 칸마다 자기 세계와
-  카메라, 같은 세계는 하나로 합쳐 담음).
+  카메라, 같은 세계는 하나로 합쳐 담음: 세계 JSON이 그리는 것(경계·기본 보기·정적 물체·영역·움직이는 물체의 모양과 움직임)이
+  모두 같을 때만).
 - 끝 장면 그림: 화면(자식 프로세스)이 관전 캔버스로 그린 마지막 프레임(QImage)을 64색 PNG로. 그림을 주지 않으면 이 모듈이
   자료로 그린 SVG(Qt 없이, 같은 세계·궤적·마지막 자세).
-- 상한(설계 2.8): 칸 PHONE_MAX_ENTRIES, 칸마다 물체 PHONE_MAX_BODIES, 프레임 PHONE_MAX_FRAMES 간격(0초 프레임은 따로라
-  최대 시간 120초 ÷ 2스텝 = 3,600 간격 + 1 = 3,601프레임까지). 넘으면 PhoneTooBig(PHONE_TOO_BIG).
+- 상한(설계 2.8): 칸 PHONE_MAX_ENTRIES, 칸마다 물체 PHONE_MAX_BODIES, 칸마다 프레임 PHONE_MAX_FRAMES 간격(0초 프레임은
+  따로라 3,601프레임까지). 3,600 간격은 dt 1/60초·2스텝마다 기록(내장 환경)에서 120초(내장 환경 가운데 가장 긴 글라이더의
+  최대 시간)에 맞춘 값이다. 에디터는 최대 시간 3,600초까지, dt는 더 작게도 받으므로 그런 환경의 긴 재생은 넘을 수 있다.
+  넘으면 PhoneTooBig(PHONE_TOO_BIG, 프레임 수와 상한을 알림).
 
 이 모듈은 맨 위에서 Qt를 불러오지 않는다(QColor·QImage는 쓰는 함수 안에서만).
 """
@@ -64,7 +68,9 @@ PHONE_MAX_ENTRIES: Final = 6
 PHONE_MAX_BODIES: Final = 32
 """칸 하나의 움직이는 물체 수 상한(세계마다 움직이는 세계 물체 수 상한도 같다)."""
 PHONE_MAX_FRAMES: Final = 3600
-"""칸 하나의 프레임 간격 수 상한(환경 최대 시간 120초 ÷ 2스텝). 0초 프레임이 따로 있어 프레임 수는 3,601까지."""
+"""칸 하나의 프레임 간격 수 상한. 0초 프레임이 따로 있어 프레임 수는 3,601까지. dt 1/60초·2스텝마다 기록이면 120초(내장
+환경 가운데 가장 긴 글라이더의 최대 시간)에 맞춘 값이다. 환경의 최대 시간 상한(3,600초)이 아니다: 에디터가 받는 더 긴 최대
+시간이나 더 작은 dt의 재생은 넘을 수 있고, 그러면 PhoneTooBig으로 알린다(칸마다 셈, 자료 전체 크기가 아님)."""
 
 POS_UNIT: Final = 0.001
 """위치 정수 한 칸(m): 1mm."""
@@ -133,9 +139,7 @@ def build_payload(job: ExportJob) -> dict[str, Any]:
             world_of.append(0)
             continue
         geom = it.replay.geometry
-        static = _static_json(geom)
-        key = json.dumps([geom.bounds, it.view, static, [repr(b.motion) for b in geom.bodies if _is_mover(b)]],
-                         default=str)
+        key = _world_key(geom, it.view)
         if key in world_keys:
             world_of.append(world_keys.index(key))
             continue
@@ -144,11 +148,11 @@ def build_payload(job: ExportJob) -> dict[str, Any]:
         world_of.append(len(world_src) - 1)
     ranks = list(job.ranks) if job.ranks is not None else [None] * len(items)
     entries = [_entry_json(it, w, r) for it, w, r in zip(items, world_of, ranks, strict=True)]
+    # 움직이는 세계 물체는 파일 전체 길이(재생기의 total = 가장 긴 재생 + TAIL)까지: 경주 창처럼 짧은 칸의 장애물도 계속 움직임
+    horizon = max(e["last"] for e in entries) + TAIL
     worlds = []
     for w, (geom, view) in enumerate(world_src):
-        users = [e for e in entries if e["world"] == w]
-        step = min(e["step"] for e in users)
-        horizon = max(e["last"] for e in users) + TAIL
+        step = min(e["step"] for e in entries if e["world"] == w)
         worlds.append(_world_json(geom, view, step, horizon))
     meta = dict(job.meta)
     return {
@@ -293,13 +297,14 @@ def svg_poster(payload: Mapping[str, Any], size: tuple[int, int] = GIF_SIZE) -> 
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
            f'viewBox="0 0 {width} {height}"><rect width="{width}" height="{height}" fill="{col["bg"]}"/>']
     fit = dec.get("fit", (FIT_MARGIN, FIT_MIN))
+    t_end = max(e["last"] for e in entries) + float(dec.get("tail", TAIL))  # 재생기의 끝 장면 시각(움직이는 물체)
     for g, idxs in enumerate(groups):
         group = [entries[i] for i in idxs]
         world = worlds[group[0]["world"]]
         x0, y0, x1, y1 = fit_box([e["box"] for e in group], world["box"], world["bounds"], *fit)
         out.append(f'<svg x="{_n((g % cols) * pw)}" y="{_n((g // cols) * ph)}" width="{_n(pw)}" height="{_n(ph)}" '
                    f'viewBox="{_n(x0)} {_n(-y1)} {_n(x1 - x0)} {_n(y1 - y0)}" preserveAspectRatio="xMidYMid meet">')
-        out.extend(_svg_world(world, col, max(e["last"] for e in group)))
+        out.extend(_svg_world(world, col, t_end))
         for e in group:
             out.extend(_svg_entry(e, col))
         out.append("</svg>")
@@ -416,6 +421,16 @@ def _entry_json(item: ExportItem, world: int, rank: int | None) -> dict[str, Any
         "time": _finite(res.time),
         "rank": None if rank is None else int(rank),
     }
+
+
+def _world_key(geom: WorldGeometry, view: Sequence[float] | None) -> str:
+    """lanes에서 같은 세계를 하나로 합치는 열쇠: 세계 JSON이 그리는 것 모두(경계, 기본 보기, 정적 물체, 영역(목표 점·따라가기
+    카메라 대상도 여기서 나옴), 움직이는 물체마다 모양과 움직임). 표본(poses·mstep·mframes)은 움직임과 시간에서 나오므로 뺀다.
+    영역만 다르거나 장애물 모양만 다른(생성기 높이·폭 등) 두 환경은 다른 세계다."""
+    movers = [([_shape_json(s) for s in b.shapes], repr(b.motion)) for b in geom.bodies if _is_mover(b)]
+    regions = [(r.kind, _flat(r.points)) for r in geom.regions]
+    return json.dumps([[_n(v) for v in geom.bounds], None if view is None else [_n(v) for v in view],
+                       _static_json(geom), regions, movers], default=str)
 
 
 def _world_json(geom: WorldGeometry, view: Sequence[float] | None, step: float, horizon: float) -> dict[str, Any]:

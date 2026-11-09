@@ -8,6 +8,10 @@ v3.0 점검 넷(설계 4.11, D16, D25): 도움말 쪽, 기록 폴더 쓰기와 �
 세그폴트가 faults.log에 남는지도), Qt 한국어 번역, 처음 실행 안내 자동 진행(창 → 1세대 재생 초, `--tour full`이면 → 10세대).
 새 점검은 데이터·상태 폴더를 임시 폴더로 바꿔(EVOLAB_DATA_DIR·EVOLAB_STATE_DIR, 설계 D5) 사용자의 문서 폴더·settings.ini를
 건드리지 않고, 끝나면 지운다.
+
+v3.1 점검 하나(설계 D59): 「내보내기」 — 착륙선 내장 예제를 영 유전자로 다시 시뮬레이션한 앞 2초를 내보내기 자식 프로세스(화면의
+「내보내기…」와 같은 spawn 자식, 묶인 exe에서는 같은 exe)로 내장 MP4·폰 재생 파일로 만들어 상자 구조·프레임 수·자료 왕복을
+확인하고, Media Foundation 시험 결과를 정보로 적는다(없어도 통과). 창이 필요 없어 --no-gui에서도 돈다.
 """
 
 from __future__ import annotations
@@ -520,6 +524,78 @@ def _check_logs() -> str:
     return detail
 
 
+EXPORT_SECONDS: Final = 2.0
+"""「내보내기」 점검이 쓰는 재생 앞부분(초, 설계 D59)."""
+EXPORT_TIMEOUT_S: Final = 300.0
+
+
+def _first_seconds(rep: Any, seconds: float) -> Any:
+    """재생의 앞 seconds초(궤적 프레임만 자름, 세계·모양·결과는 그대로)."""
+    import dataclasses
+
+    tr = rep.trajectory
+    n = min(tr.frames, int(seconds / (tr.every * tr.dt) + 1e-9) + 1)
+    short = dataclasses.replace(tr, poses=tr.poses[:n].copy(), outputs=tr.outputs[:n].copy(),
+                                end_step=None if n < tr.frames else tr.end_step)
+    return dataclasses.replace(rep, trajectory=short, observations=None, activations=None, raw=None, rays=None)
+
+
+def _check_export() -> str:
+    """「내보내기」 점검(v3.1, 설계 D59): 내보내기 자식 프로세스로 내장 MP4(640×360, 고정 카메라)와 폰 재생 파일을 임시 폴더에
+    만들고 MP4 상자 구조·크기·프레임 수, 폰 파일 자료 왕복(궤적 1mm 안)을 본다. MF 시험 결과는 정보로(윈도우면 작은 자식)."""
+    import dataclasses
+
+    from evolab.app.export import job as export_job
+    from evolab.app.export import mp4, phone, runner
+    from evolab.app.export.frames import frame_count
+    from evolab.engine import seeds
+    from evolab.engine.replay import replay
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import load_env
+
+    spec = load_env(paths.builtin_env_dir() / "lander.evoenv")
+    layout = layout_for(spec)
+    rep = _first_seconds(replay(spec, layout, np.zeros(layout.dim), seeds.display_trial()), EXPORT_SECONDS)
+    items = [(rep, export_job.NOW_COLOR, S.LAB_LABEL_REP.format(gen=0))]
+    meta = {export_job.META_ENV: str(spec.file.name)}
+    parts: dict[str, str] = {}
+    first: list[float] = []
+    with temporary_user_dirs(keep_logs="export") as base:
+        work = base / "data" / S.VIDEO_SAVE_TITLE  # 한글 폴더 이름(묶인 exe의 한글 경로 점검)
+        job = dataclasses.replace(export_job.job_from_replays(items, "mp4", size="small", camera="fixed",
+                                                              title=S.SELFTEST_CHECK_EXPORT, meta=meta),
+                                  encoder="builtin")
+        try:
+            done = runner.run_in_child(job, work / "selftest.mp4", timeout=EXPORT_TIMEOUT_S)
+        except runner.ExportFailed as exc:
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"mp4: {exc.message}\n{exc.detail}")) from None
+        first.append(float(done.get("first_message_s") or 0.0))
+        info = mp4.read_info(done["path"])
+        want = frame_count(job)
+        if (info["boxes"][:1] != ["ftyp"] or "moov" not in info["boxes"] or info["frames"] != want
+                or (info["width"], info["height"]) != job.size or done["encoder"] != "builtin"):
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"mp4 {info} (frames {want}, size {job.size})"))
+        parts["mp4"] = S.SELFTEST_EXPORT_PART.format(frames=info["frames"], kb=done["bytes"] / 1024)
+        job = export_job.job_from_replays(items, "html", size="small", camera="fixed", title=S.SELFTEST_CHECK_EXPORT,
+                                          meta=meta)
+        try:
+            done = runner.run_in_child(job, work / "selftest.html", timeout=EXPORT_TIMEOUT_S)
+        except runner.ExportFailed as exc:
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"html: {exc.message}\n{exc.detail}")) from None
+        first.append(float(done.get("first_message_s") or 0.0))
+        entry = phone.decode_payload(phone.read_phone_html(done["path"]))["entries"][0]
+        src = np.asarray(rep.trajectory.poses, dtype=np.float64)
+        got = np.asarray(entry["poses"])
+        if got.shape != src.shape or float(np.abs(got[..., :2] - src[..., :2]).max()) > phone.POS_UNIT:
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=f"html poses {got.shape} vs {src.shape}"))
+        parts["html"] = S.SELFTEST_EXPORT_PART.format(frames=got.shape[0], kb=done["bytes"] / 1024)
+        # 시험 자식(윈도우)도 임시 상태 폴더를 물려받게 이 안에서(자식의 faults.log가 실제 로그 폴더에 생기지 않게, 설계 D5)
+        kind, detail = runner.probe_in_child() if runner.probe_needs_child() else runner.probe_in_process()
+    mf = S.EXP_ENCODER_MF.format(name=detail) if kind == "mf" else detail
+    line = S.SELFTEST_EXPORT_DETAIL.format(mp4=parts["mp4"], html=parts["html"], mf=mf)
+    return f"{line}\nchild first message: {' / '.join(f'{v:.2f}s' for v in first)}"
+
+
 def _has_hangul(text: str) -> bool:
     return any(0xAC00 <= ord(ch) <= 0xD7A3 for ch in text)
 
@@ -686,6 +762,7 @@ def selftest_checks(workers: int, check_gui: bool = True, tour: str = "gen1") ->
         (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(workers)),
         (S.SELFTEST_CHECK_ENV, _check_builtin_env),
         (S.SELFTEST_CHECK_BUNDLE, _check_bundle_files),
+        (S.SELFTEST_CHECK_EXPORT, _check_export),
         (S.SELFTEST_CHECK_HELP, _check_help),
         (S.SELFTEST_CHECK_LOGS, _check_logs),
     ]

@@ -415,10 +415,11 @@ def raw_exception_wrapper_calls(source: str) -> list[tuple[str, int]]:
 
 
 RAW_WRAPPER_BASELINE: dict[str, int] = {
-    "records/view.py": 5, "race/view.py": 1, "compare/repeat.py": 1, "compare/view.py": 1,
+    "records/view.py": 0, "race/view.py": 0, "compare/repeat.py": 0, "compare/view.py": 0,
 }
-"""v2.1 그대로 남은 「화면 자체 show_error(text) 도우미에 예외 글」 자리(검토 수정 때 센 값). 설계 7.1이 이 화면들을 v3.0에서
-「바꾸지 않음」으로 두어 v3.0은 고치지 않는다(v3.1에서 errors.show_error·errors.reason으로). 이 수는 줄기만 해야 한다."""
+"""v2.1 그대로 남았던 「화면 자체 show_error(text) 도우미에 예외 글」 자리(검토 수정 때 센 값: 기록 5, 경주 1, 반복 실행 1, 비교 1).
+설계 7.1이 이 화면들을 v3.0에서 「바꾸지 않음」으로 두어 v3.0은 고치지 않았고, v3.1(F 묶음)이 도우미 몸통을 errors.show_error로,
+까닭을 errors.reason으로 바꿔 모두 0이 됐다. 이 수는 줄기만 해야 한다."""
 
 
 def test_screen_error_wrappers_with_raw_exception_text_only_go_down() -> None:

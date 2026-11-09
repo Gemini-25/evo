@@ -313,6 +313,81 @@ def test_race_ranks_go_to_the_entries() -> None:
     assert payload["title"] == S.PHONE_TITLE.format(env=_env_name("lander"), label="경주")
 
 
+def _jump_glider_lanes() -> ExportJob:
+    """경주 칸 둘: 점프 게임(움직이는 장애물, 영 유전자는 곧 끝남)과 글라이더(영 유전자로 오래 감)."""
+    lanes = [(_replay("jump"), LANE_COLORS[0], "점프"), (_replay("glider"), LANE_COLORS[1], "글라이더")]
+    return J.job_from_race(lanes, race_model.lane_grid(2)[1], "html", size="medium", camera="follow", title="경주")
+
+
+def test_lane_movers_keep_moving_until_the_whole_file_ends() -> None:
+    """경주 칸: 짧은 칸(점프 게임)의 장애물도 파일 전체 길이(가장 긴 칸 + 꼬리 = 재생기 total)까지 pose_at 표본을 가진다
+    (경주 창은 짧은 칸의 장애물도 전체 시각으로 움직인다: 칸 자기 길이까지만 담아 장애물이 멈추던 v3.1 검토 결함)."""
+    job = _jump_glider_lanes()
+    payload = P.build_payload(job)
+    dec = P.decode_payload(payload)
+    entries = dec["entries"]
+    end = max(e["last"] for e in entries) + P.TAIL
+    assert entries[0]["last"] + P.TAIL < end - 5.0  # 점프 칸이 몇 초 넘게 먼저 끝난다(이 시험이 뜻을 가지려면)
+    assert len(dec["worlds"]) == 2
+    jump_world = dec["worlds"][entries[0]["world"]]
+    assert jump_world["movers"]
+    for w in dec["worlds"]:
+        assert (w["mframes"] - 1) * w["mstep"] >= end - 1e-9
+    movers = [b for b in job.items[0].replay.geometry.bodies if b.motion is not None and not b.moving]
+    for mv, body in zip(jump_world["movers"], movers, strict=True):
+        want = np.array([pose_at(body.motion, k * jump_world["mstep"]) for k in range(jump_world["mframes"])])
+        assert np.abs(mv["poses"][:, :2] - want[:, :2]).max() <= 0.5e-3 + 1e-9
+    # SVG 끝 장면도 같은 끝 시각의 장애물 자리(마지막 표본)를 쓴다
+    assert P.svg_poster(payload).count("<g transform=") >= len(movers)
+
+
+def _env_with(stem: str, change: Any) -> str:
+    data = json.loads(_text(stem))
+    change(data)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _replay_text(text: str) -> Replay:
+    spec = race_model.compile_cached(text)
+    layout = layout_for(spec)
+    return replay(spec, layout, np.zeros(layout.dim), seeds.display_trial())
+
+
+def test_lanes_with_different_regions_or_obstacle_shapes_get_their_own_worlds() -> None:
+    """세계를 합치는 열쇠는 세계 JSON이 그리는 것 모두: 영역만 다른 두 환경(언덕차 ± 목표 영역), 장애물 모양만 다른 두 환경
+    (점프 게임 생성기 높이)은 다른 세계(같은 환경은 여전히 하나로: test_lanes_get_their_own_worlds_and_equal_worlds_merge)."""
+    plain = _text("hill_car")
+    goal = _env_with("hill_car", lambda d: d.setdefault("regions", []).append(
+        {"id": "goal_zone", "kind": "goal", "shape": {"kind": "box", "w": 6.0, "h": 6.0}, "pos": [150.0, 10.0]}))
+    a, b = _replay_text(plain), _replay_text(goal)
+    assert len(b.geometry.regions) == len(a.geometry.regions) + 1
+    for first, second in ((a, b), (b, a)):
+        job = J.job_from_race([(first, LANE_COLORS[0], "A"), (second, LANE_COLORS[1], "B")],
+                              race_model.lane_grid(2)[1], "html", size="medium", camera="follow", title="경주")
+        payload = P.build_payload(job)
+        assert [e["world"] for e in payload["entries"]] == [0, 1]
+        regions = [len(it.replay.geometry.regions) for it in job.items]
+        assert [len(payload["worlds"][e["world"]]["regions"]) for e in payload["entries"]] == regions
+
+    def taller(d: dict[str, Any]) -> None:
+        d["generators"][0]["height"] = [1.0, 2.0]
+
+    a, b = _replay_text(_text("jump")), _replay_text(_env_with("jump", taller))
+
+    def mover_shapes(rep: Replay) -> list[Any]:
+        return [P._shape_json(s) for m in rep.geometry.bodies if m.motion is not None and not m.moving
+                for s in m.shapes]
+
+    assert mover_shapes(a) != mover_shapes(b)
+    job = J.job_from_race([(a, LANE_COLORS[0], "A"), (b, LANE_COLORS[1], "B")], race_model.lane_grid(2)[1], "html",
+                          size="medium", camera="follow", title="경주")
+    payload = P.build_payload(job)
+    assert [e["world"] for e in payload["entries"]] == [0, 1]
+    for e, it in zip(payload["entries"], job.items, strict=True):
+        drawn = [s for mv in payload["worlds"][e["world"]]["movers"] for s in mv["shapes"]]
+        assert drawn == mover_shapes(it.replay)
+
+
 def test_job_from_run_versus_round_trips(tmp_path: Path) -> None:
     run = tmp_path / "v11_run_restart"
     shutil.copytree(DATA / "v11_run_restart" / "run", run)
@@ -569,3 +644,117 @@ def test_headless_chrome_plays_the_file_offline(tmp_path: Path) -> None:
         assert r["drawn"] > 2 and r["views"] == views, r
         assert r["modes"][0] != r["modes"][1], r
         assert r["card"] and r["cardRows"] == rows and r["legend"] == legend, r
+
+
+_PROBE_RUNNER = r"""
+const { chromium } = require('playwright');
+const fs = require('fs');
+(async () => {
+  const exe = process.argv[2], specs = JSON.parse(fs.readFileSync(process.argv[3], 'utf8')), out = [];
+  const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox', '--disable-gpu'] });
+  try {
+    for (const spec of specs) {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, offline: true });
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on('console', m => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
+      page.on('pageerror', e => errors.push(String(e)));
+      await page.goto(spec.file, { waitUntil: 'load' });
+      await page.waitForTimeout(300);
+      const r = await page.evaluate((s) => {
+        const P = window.EVOLAB_PLAYER;
+        P.play(false);
+        const poses = s.poses.map(q => P.pose(q[0], q[1], q[2]));
+        const movers = s.movers.map(q => P.mover(q[0], q[1], q[2]));
+        P.seek(P.total);
+        const card = Array.from(document.querySelectorAll('#card .who')).map(n => n.textContent);
+        return { total: P.total, poses, movers, card };
+      }, spec);
+      r.errors = errors;
+      out.push(r);
+      await ctx.close();
+    }
+  } finally { await browser.close(); }
+  process.stdout.write(JSON.stringify(out));
+})().catch(e => { console.error(String(e)); process.exit(3); });
+"""
+
+
+def _short_turn(a: float, b: float) -> float:
+    """a에서 b로 짧은 쪽으로 도는 각도 차."""
+    return float(_wrap(np.array([b - a]))[0])
+
+
+def test_headless_chrome_player_poses_and_race_ranks(tmp_path: Path) -> None:
+    """T43 덧붙임: 재생기(JS)가 개체를 궤적 자리에, 움직이는 장애물을 pose_at 자리에 그리고(경주 칸에서 먼저 끝난 칸의
+    장애물도 끝까지 움직임), 「한 화면에 겹쳐서」 경주 파일의 끝 카드가 순위 차례로 「n등 · 이름」을 보인다."""
+    found = _browser()
+    if found is None:
+        pytest.skip("node + playwright + Chrome/Edge are not all available")
+    node, exe = found
+    # 1) 경주 칸 [점프 게임, 글라이더]: 개체 자세(프레임 시각·프레임 사이 가운데)와 장애물 자세
+    lanes = _jump_glider_lanes()
+    payload = P.build_payload(lanes)
+    glider = lanes.items[1].replay.trajectory
+    times = glider.times()
+    k = min(200, glider.frames - 3)
+    pose_q: list[list[float]] = []
+    pose_want: list[tuple[float, float, float]] = []
+    for b in range(glider.poses.shape[1]):
+        p0 = glider.poses[k, b].astype(np.float64)
+        p1 = glider.poses[k + 1, b].astype(np.float64)
+        pose_q.append([1, b, float(times[k])])
+        pose_want.append((p0[0], p0[1], p0[2]))
+        pose_q.append([1, b, float((times[k] + times[k + 1]) / 2)])
+        pose_want.append(((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, p0[2] + _short_turn(p0[2], p1[2]) / 2))
+    w_jump = payload["entries"][0]["world"]
+    world = payload["worlds"][w_jump]
+    step = float(world["mstep"])
+    total = max(e["last"] for e in payload["entries"]) + P.TAIL
+    body = next(b for b in lanes.items[0].replay.geometry.bodies if b.motion is not None and not b.moving)
+    k_end = math.floor((total - 0.1) / step)
+    assert k_end * step > lanes.items[0].replay.trajectory.duration + 5.0  # 점프 칸이 끝난 뒤 한참
+    mover_q: list[list[float]] = []
+    mover_want: list[tuple[float, float, float]] = []
+    for kk in (30, k_end):
+        mover_q.append([w_jump, 0, kk * step])
+        mover_want.append(tuple(pose_at(body.motion, kk * step)))
+        a, c = np.array(pose_at(body.motion, kk * step)), np.array(pose_at(body.motion, (kk - 1) * step))
+        mover_q.append([w_jump, 0, (kk - 0.5) * step])  # 표본 사이: 재생기는 선형으로 잇는다
+        mover_want.append(((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, c[2] + _short_turn(c[2], a[2]) / 2))
+    # 2) 경주 「한 화면에 겹쳐서」(대화 상자 build_job과 같은 길): 순위는 칸 작업 그대로
+    text = _text("lander")
+
+    def lane(k: int) -> SimpleNamespace:
+        spec = race_model.compile_cached(text)
+        entry = RaceEntry(label=f"칸 {k + 1}", sub="", color=LANE_COLORS[k], env_text=text,
+                          env_hash=race_model.env_hash_of(text), genome=np.zeros(layout_for(spec).dim), generation=1,
+                          run=None)
+        return SimpleNamespace(replay=_replay("lander", 40 + k), entry=entry)
+
+    race = J.job_from_race([lane(k) for k in range(3)], race_model.lane_grid(3)[1], "html", size="medium",
+                           camera="follow", title="경주")
+    assert race.ranks is not None and sorted(race.ranks) == [1, 2, 3]
+    merged = J.job_from_replays([(it.replay, it.color, it.label) for it in race.items], "html", size="medium",
+                                camera="follow", title="경주", meta=race.meta, view=race.items[0].view)
+    overlay = dataclasses.replace(merged, ranks=race.ranks)
+    order = sorted(range(3), key=lambda i: (race.ranks[i], i))
+    card_want = [f"{S.PHONE_TEXT['rank'].format(n=race.ranks[i])} · {race.items[i].label}" for i in order]
+    files = [P.write_phone_html(tmp_path / "경주 칸.html", lanes, None),
+             P.write_phone_html(tmp_path / "경주 겹쳐서.html", overlay, None)]
+    specs = [{"file": files[0].resolve().as_uri(), "poses": pose_q, "movers": mover_q},
+             {"file": files[1].resolve().as_uri(), "poses": [], "movers": []}]
+    (tmp_path / "specs.json").write_text(json.dumps(specs), encoding="utf-8")
+    script = tmp_path / "probe.js"
+    script.write_text(_PROBE_RUNNER, encoding="utf-8")
+    proc = subprocess.run([node, str(script), exe, str(tmp_path / "specs.json")], capture_output=True, text=True,
+                          timeout=240, encoding="utf-8", check=False)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    got_lanes, got_overlay = json.loads(proc.stdout)
+    assert got_lanes["errors"] == [] and got_overlay["errors"] == []
+    assert got_lanes["total"] == pytest.approx(total, abs=1e-9)
+    for q, want, got in zip(pose_q + mover_q, pose_want + mover_want, got_lanes["poses"] + got_lanes["movers"],
+                            strict=True):
+        assert abs(got[0] - want[0]) <= 1e-3 and abs(got[1] - want[1]) <= 1e-3, (q, want, got)
+        assert abs(_short_turn(want[2], got[2])) <= 1e-4, (q, want, got)
+    assert got_overlay["card"] == card_want

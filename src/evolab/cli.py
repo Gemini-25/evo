@@ -1,4 +1,5 @@
-"""명령줄 진입점: `evolab`, `evolab train`, `evolab bench`, `evolab play`, `evolab selftest`, `evolab report`.
+"""명령줄 진입점: `evolab`, `evolab train`, `evolab bench`, `evolab play`, `evolab selftest`, `evolab report`,
+`evolab export`, `evolab video-probe`.
 
 이 모듈은 맨 위에서 Qt를 불러오지 않는다. spawn 방식의 자식 프로세스가 주 모듈을 다시
 불러올 때 워커마다 Qt가 올라오지 않게 하기 위해서다.
@@ -214,6 +215,20 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_REPORT_OUT)
     report.add_argument("--run", type=Path, default=None, help=S.CLI_HELP_REPORT_RUN)
     report.add_argument("--open", action="store_true", help=S.CLI_HELP_REPORT_OPEN)
+
+    # 내보내기(v3.1, 설계 4.19·D58): 창 없이 이 프로세스에서 다시 시뮬레이션해 MP4·GIF·폰 재생 파일을 만든다.
+    export = sub.add_parser("export", help=S.CLI_HELP_EXPORT)
+    export.add_argument("run", type=Path, help=S.CLI_HELP_RUN_DIR)
+    export.add_argument("--format", required=True, choices=["mp4", "gif", "html"], dest="fmt",
+                        help=S.CLI_HELP_EXPORT_FORMAT)
+    export.add_argument("--generation", type=_int_arg(1), default=None, help=S.CLI_HELP_EXPORT_GEN)
+    export.add_argument("--what", choices=["champion", "versus"], default="champion", help=S.CLI_HELP_EXPORT_WHAT)
+    export.add_argument("--size", choices=["small", "medium"], default="medium", help=S.CLI_HELP_EXPORT_SIZE)
+    export.add_argument("--camera", choices=["fixed", "follow"], default="fixed", help=S.CLI_HELP_EXPORT_CAMERA)
+    export.add_argument("--encoder", choices=["auto", "mf", "builtin"], default="auto",
+                        help=S.CLI_HELP_EXPORT_ENCODER)
+    export.add_argument("--out", type=Path, required=True, help=S.CLI_HELP_EXPORT_OUT)
+    sub.add_parser("video-probe", help=S.CLI_HELP_VIDEO_PROBE)
     return parser
 
 
@@ -272,6 +287,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return report_command(args.out, args.run, args.open)
 
+    if args.command == "export":
+        return _export(args)
+
+    if args.command == "video-probe":
+        return _video_probe()
+
     if args.command in ("train", "bench", "judge", "bundle", "reproduce", "csv"):
         from evolab.engine import commands
 
@@ -326,6 +347,66 @@ def _play(env_path: Path, seed: int | None, replay_path: Path | None, verify_pat
         window.play_record(replay_path)
     window.show()
     return app.exec()
+
+
+def _human_size(n: int) -> str:
+    if n < 1024 * 1024:
+        return f"{max(1, round(n / 1024))}KB"
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
+def _export(args: argparse.Namespace) -> int:
+    """`evolab export`(설계 4.19): 0 성공, 1 실패(실행을 못 읽음, 쓸 수 없는 인코더, 쓰기 실패), 2 인수 오류(확장자가 형식과 다름)."""
+    from evolab.app.export import job as export_job
+
+    out = Path(args.out)
+    if export_job.format_for_path(out) != args.fmt:
+        _print_err(S.RVM_CLI_BAD_ARGS.format(detail=S.EXP_BAD_SUFFIX.format(name=out.name)))
+        return 2
+    from evolab.app.export import worker
+    from evolab.app.export.mp4 import encoder_status
+    from evolab.runs.store import RunStoreError
+    from evolab.spec.compiled import EnvFileError
+    from evolab.world.physics2d.episode import EpisodeBuildError
+
+    try:
+        job = export_job.job_from_run(Path(args.run), args.fmt, generation=args.generation, what=args.what,
+                                      size=args.size, camera=args.camera, encoder=args.encoder)
+    except (RunStoreError, OSError, EnvFileError, EpisodeBuildError, ValueError, KeyError) as exc:
+        _print_err(S.EXP_FAILED.format(reason=worker.error_message(exc)))
+        return 1
+    worker.ensure_qt_app()  # 창 없이 그린다(윈도우 밖에서 QT_QPA_PLATFORM이 없으면 offscreen)
+    try:
+        done = worker.run_job(job, out, lambda msg: _print_note(msg))
+    except Exception as exc:  # noqa: BLE001 - 까닭 한 줄과 종료 코드 1(원문은 잡히지 않은 예외 기록 대신 여기서 짧게)
+        _print_err(S.EXP_FAILED.format(reason=worker.error_message(exc)))
+        return 1
+    kind = str(done.get("encoder", ""))
+    if kind == "mf":
+        encoder = S.EXP_ENCODER_MF.format(name=encoder_status().detail)
+    else:
+        encoder = {"builtin": S.EXP_ENCODER_BUILTIN, "gif": S.EXP_ENCODER_GIF, "html": S.EXP_ENCODER_HTML}.get(kind, kind)
+    if sys.stdout is not None:
+        print(S.CLI_EXPORT_DONE.format(path=done["path"], size=_human_size(int(done["bytes"])),
+                                       frames=int(done["frames"]), encoder=encoder))
+    return 0
+
+
+def _print_note(msg: dict[str, Any]) -> bool:
+    """내보내기 진행 메시지 중 알림(MF 대체)만 한 줄로. 진행은 찍지 않는다(CI 기록이 짧게)."""
+    if msg.get("type") == "note":
+        _print_err(str(msg.get("text", "")))
+    return True
+
+
+def _video_probe() -> int:
+    """`evolab video-probe`: 쓸 MP4 인코더 한 줄. 인코더가 없어도 종료 코드 0(설계 4.19)."""
+    from evolab.app.export.mp4 import encoder_status
+
+    status = encoder_status()
+    if sys.stdout is not None:
+        print(S.CLI_VIDEO_PROBE_LINE.format(encoder=status.kind, mf=status.detail))
+    return 0
 
 
 def _print_err(message: str) -> None:

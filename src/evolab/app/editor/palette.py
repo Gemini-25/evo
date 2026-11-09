@@ -331,6 +331,7 @@ class Palette(QWidget):
         self.snap_step.setSingleStep(0.1)
         self.snap_step.setValue(0.5)
         self.snap_step.setSuffix(S.EDC_SNAP_UNIT)
+        self.snap_step.setToolTip(S.EDC_SNAP_STEP_TIP)
         self.snap_check.setToolTip(S.EDC_SNAP_TIP)
         self.snap_check.toggled.connect(self._emit_snap)
         self.snap_step.valueChanged.connect(self._emit_snap)

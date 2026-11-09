@@ -421,15 +421,16 @@ footer{padding:4px 14px 12px;font-size:11px;color:var(--dim)}
     }
     function fillCard() {
       while (card.firstChild) { card.removeChild(card.firstChild); }
-      var list = ents.slice();
-      if (lanes && list.some(function (x) { return x.e.rank != null; })) {
+      // a race carries ranks in both layouts (lanes and "overlaid on one screen"): sort and prefix them whenever present
+      var list = ents.slice(), ranked = list.some(function (x) { return x.e.rank != null; });
+      if (ranked) {
         list.sort(function (a, b) { return (a.e.rank || 99) - (b.e.rank || 99) || a.idx - b.idx; });
       }
       list.forEach(function (x) {
         var who = doc.createElement("div"), sw = doc.createElement("span");
         who.className = "who"; sw.className = "sw"; sw.style.background = x.e.color;
         who.appendChild(sw);
-        var head = (lanes && x.e.rank != null ? fmt(T.rank, { n: x.e.rank }) + " \u00b7 " : "") + (x.e.label || "");
+        var head = (x.e.rank != null ? fmt(T.rank, { n: x.e.rank }) + " \u00b7 " : "") + (x.e.label || "");
         who.appendChild(doc.createTextNode(head));
         var line = doc.createElement("div"), sc = doc.createElement("b"), what = doc.createElement("span");
         sc.textContent = fmt(T.score, { score: x.e.score == null ? "-" : Number(x.e.score).toFixed(1) });
@@ -498,7 +499,10 @@ footer{padding:4px 14px 12px;font-size:11px;color:var(--dim)}
       get drawn() { return drawn; },
       seek: function (v) { t = Math.max(0, Math.min(total, Number(v))); lastNow = null; draw(); },
       play: function (p) { setPlaying(p); },
-      camera: function (m) { mode = m === "follow" ? "follow" : "fit"; labels(); draw(); }
+      camera: function (m) { mode = m === "follow" ? "follow" : "fit"; labels(); draw(); },
+      // read-only probes for the tests: pose [x, y, angle] of body b of entry e, and of mover k of world w, at time tt
+      pose: function (e, b, tt) { return poseOf(ents[e], b, Number(tt), [0, 0, 0]).slice(); },
+      mover: function (w, k, tt) { return moverPose(worlds[w], worlds[w].movers[k], Number(tt), [0, 0, 0]).slice(); }
     };
     setPlaying(true);
   }

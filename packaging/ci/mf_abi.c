@@ -6,7 +6,7 @@
  *
  * tests/test_mf_abi.py compares it with mf_win.VTABLE, mf_win.GUIDS and mf_win.CONSTANTS (design v3 D53, W6).
  * Windows CI (MSVC + Windows SDK):
- *   cl /nologo /W3 packaging\ci\mf_abi.c /Fe:build\mf_abi.exe mfuuid.lib ole32.lib
+ *   cl /nologo /W3 /Zc:preprocessor packaging\ci\mf_abi.c /Fe:build\mf_abi.exe mfuuid.lib ole32.lib
  *   build\mf_abi.exe > build\mf_abi.json
  * It also builds with mingw-w64 (x86_64-w64-mingw32-gcc packaging/ci/mf_abi.c -o mf_abi.exe -lmfuuid -lole32).
  * Nothing here calls Media Foundation, so the runner does not need the Media Foundation feature.
@@ -27,7 +27,7 @@
 #include <mfreadwrite.h>
 #include <mftransform.h>
 /* codecapi.h declares its GUIDs through DEFINE_GUIDEX, which only ks.h defines; a plain extern declaration is enough
-   here because the GOP size GUID is rebuilt from its STATIC_ value list below. */
+   here because the GOP size GUID is rebuilt from its STATIC_ value list below (gop_size_guid). */
 #ifndef DEFINE_GUIDEX
 #define DEFINE_GUIDEX(name) extern const GUID name
 #endif
@@ -37,9 +37,24 @@
 
 #define SLOT(iface, method) ((int)(offsetof(iface##Vtbl, method) / sizeof(void *)))
 
-#define GUID_FROM_LIST(l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) {l, w1, w2, {b1, b2, b3, b4, b5, b6, b7, b8}}
-#define GUID_FROM(list) GUID_FROM_LIST(list)
-static const GUID k_gop_size = GUID_FROM(STATIC_CODECAPI_AVEncMPVGOPSize);
+/* The GOP size GUID is rebuilt in code from its STATIC_ value list (11 comma separated numbers). The list is NOT
+   forwarded through a function-like macro: MSVC's traditional preprocessor (the default without /Zc:preprocessor)
+   does not split a forwarded argument into several parameters, so such a macro gives a broken initializer there.
+   Brace elision ({ STATIC_... } straight into a GUID) is avoided too: gcc -Wall -Werror rejects it (missing braces). */
+static const unsigned long k_gop_vals[11] = { STATIC_CODECAPI_AVEncMPVGOPSize };
+
+static GUID gop_size_guid(void)
+{
+    GUID g;
+    int i;
+    g.Data1 = k_gop_vals[0];
+    g.Data2 = (unsigned short)k_gop_vals[1];
+    g.Data3 = (unsigned short)k_gop_vals[2];
+    for (i = 0; i < 8; i++) {
+        g.Data4[i] = (unsigned char)k_gop_vals[3 + i];
+    }
+    return g;
+}
 
 static int first_item;
 
@@ -140,7 +155,10 @@ int main(void)
     guid("MF_SINK_WRITER_DISABLE_THROTTLING", &MF_SINK_WRITER_DISABLE_THROTTLING);
     guid("MF_TRANSCODE_CONTAINERTYPE", &MF_TRANSCODE_CONTAINERTYPE);
     guid("MFTranscodeContainerType_MPEG4", &MFTranscodeContainerType_MPEG4);
-    guid("CODECAPI_AVEncMPVGOPSize", &k_gop_size);
+    {
+        GUID gop = gop_size_guid();
+        guid("CODECAPI_AVEncMPVGOPSize", &gop);
+    }
     guid("MFT_CATEGORY_VIDEO_ENCODER", &MFT_CATEGORY_VIDEO_ENCODER);
     guid("MFT_FRIENDLY_NAME_Attribute", &MFT_FRIENDLY_NAME_Attribute);
     close_object();

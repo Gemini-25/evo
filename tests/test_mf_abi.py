@@ -140,6 +140,58 @@ def test_vtable_and_constants_match_the_mingw_headers_at_compile_time(tmp_path: 
     assert run.returncode == 0, run.stderr[-3000:]
 
 
+def test_abi_program_has_no_argument_forwarding_macros() -> None:
+    """W6는 MSVC로 컴파일한다. MSVC의 기본(전통) 전처리기는 넘겨받은 인자(STATIC_ GUID 값 목록처럼 쉼표가 든 것)를 다른
+    함수 모양 매크로의 여러 인자로 나누지 않아, 목록을 매크로로 넘겨 GUID를 만들면 MSVC에서만 깨진 초기화가 된다(gcc·clang은
+    나눔: v3.1 검토 결함). 함수 모양 매크로는 SLOT과 DEFINE_GUIDEX만, GOP GUID는 평평한 배열에서 코드로 만든다."""
+    text = ABI_C.read_text(encoding="ascii")
+    macros = re.findall(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)\(", text, re.MULTILINE)
+    assert sorted(macros) == ["DEFINE_GUIDEX", "SLOT"]
+    assert "static const unsigned long k_gop_vals[11] = { STATIC_CODECAPI_AVEncMPVGOPSize };" in text
+    assert re.search(r"cl /nologo /W3 /Zc:preprocessor ", text)
+
+
+CC = shutil.which("cc") or shutil.which("gcc")
+
+
+@pytest.mark.skipif(not CC, reason="no host C compiler (test-only tool)")
+def test_gop_size_guid_is_assembled_from_its_value_list(tmp_path: Path) -> None:
+    """mf_abi.c의 k_gop_vals·gop_size_guid를 그대로 떼어 호스트 컴파일러로 돌리면(STATIC_ 목록 = mf_win.GUIDS 값) 같은 GUID 글.
+    wine이 없어도 GUID를 만드는 코드 자체를 확인한다."""
+    text = ABI_C.read_text(encoding="ascii")
+    start = text.index("static const unsigned long k_gop_vals[11]")
+    end = text.index("\n}\n", text.index("static GUID gop_size_guid(void)")) + 3
+    want = M.GUIDS["CODECAPI_AVEncMPVGOPSize"]
+    h = want.replace("-", "")
+    values = [f"0x{h[0:8]}", f"0x{h[8:12]}", f"0x{h[12:16]}"] + [f"0x{h[16 + 2 * i:18 + 2 * i]}" for i in range(8)]
+    source = tmp_path / "gop.c"
+    source.write_text("\n".join([
+        "#include <stdio.h>",
+        "typedef struct { unsigned long Data1; unsigned short Data2; unsigned short Data3; unsigned char Data4[8]; } GUID;",
+        f"#define STATIC_CODECAPI_AVEncMPVGOPSize {', '.join(values)}",
+        text[start:end],
+        "int main(void) { GUID g = gop_size_guid();",
+        ' printf("%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", g.Data1, (unsigned)g.Data2, (unsigned)g.Data3,',
+        "        g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);",
+        " return 0; }",
+    ]) + "\n", encoding="ascii")
+    exe = tmp_path / "gop"
+    subprocess.run([CC, "-Wall", "-Werror", str(source), "-o", str(exe)], check=True, capture_output=True, timeout=120)
+    assert subprocess.run([str(exe)], capture_output=True, text=True, timeout=60, check=True).stdout == want
+
+
+@pytest.mark.skipif(not MINGW, reason="mingw-w64 not installed (test-only tool)")
+def test_abi_program_builds_with_mingw_warnings_as_errors(tmp_path: Path) -> None:
+    """mf_abi.c 전체를 mingw-w64로 -Wall -Werror 빌드(실행은 wine이 있는 느린 시험만). 중괄호 생략 같은 경고도 막는다."""
+    exe = tmp_path / "mf_abi.exe"
+    run = subprocess.run([MINGW, "-Wall", "-Werror", str(ABI_C), "-o", str(exe), "-lmfuuid", "-lole32"],
+                         capture_output=True, text=True, timeout=120, check=False)
+    if run.returncode and "No such file or directory" in run.stderr:
+        pytest.skip("this mingw-w64 has no Media Foundation headers")
+    assert run.returncode == 0, run.stderr[-3000:]
+    assert exe.stat().st_size > 0
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(not (MINGW and WINE), reason="mingw-w64 and wine64 not installed (test-only tools)")
 def test_tables_match_the_mingw_headers(tmp_path: Path) -> None:
@@ -522,6 +574,77 @@ def test_fake_com_failure_while_writing_raises_and_cleans_up(tmp_path: Path) -> 
     assert fake.live() == []
     assert fake.counts["MFShutdown"] == 1 and fake.counts["CoUninitialize"] == 1
     assert fake.errors == []
+
+
+def test_ctypes_faults_become_mf_errors_named_after_the_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ctypes가 외부 호출에서 낸 잘못(윈도우 SEH 접근 위반 → OSError, 마샬링 → ctypes.ArgumentError)은 그 호출 이름을 단
+    MfError: write_mp4가 받아 내장 쓰기로 다시 만든다(시험 probe가 이미 (MfError, OSError)로 보듯). v3.1 검토 결함: 쓰는 중의
+    OSError는 대체 없이 실패로 끝났다."""
+    fake = FakeMF()
+    target = tmp_path / "v.mp4"
+    writer = M.MfWriter(target, 32, 16, 30, bitrate=1_000_000, tmp=tmp_path / "v.tmp.mp4", api=fake.api)
+    writer.add(frames(32, 16, 1)[0])
+    # DLL 함수(팩토리)의 접근 위반
+    real_sample = fake.api.MFCreateSample
+
+    def access_violation(*_args: Any) -> int:
+        raise OSError("exception: access violation reading 0x0000000000000010")
+
+    fake.api.MFCreateSample = access_violation
+    with pytest.raises(M.MfError, match=r"^MFCreateSample: OSError: exception: access violation") as info:
+        writer.add(frames(32, 16, 1)[0])
+    assert isinstance(info.value.__cause__, OSError)
+    fake.api.MFCreateSample = real_sample
+    # 버퍼 복사(memmove)의 접근 위반
+    real_memmove = ctypes.memmove
+
+    def bad_memmove(dst: Any, src: Any, count: int) -> Any:
+        raise OSError("exception: access violation writing 0x0")
+
+    monkeypatch.setattr(ctypes, "memmove", bad_memmove)
+    with pytest.raises(M.MfError, match=r"^IMFMediaBuffer memmove: OSError"):
+        writer.add(frames(32, 16, 1)[0])
+    monkeypatch.setattr(ctypes, "memmove", real_memmove)
+    # COM 메서드 인자 마샬링(ctypes.ArgumentError)
+    com = M._Com()
+    sample = FakeCom(fake, "sample", buffers=[], time=None, duration=None)
+    with pytest.raises(M.MfError, match=r"^IMFSample::SetSampleTime: ArgumentError"):
+        com.call(sample.address, "IMFSample", "SetSampleTime", "not a time")
+    com.release(sample.address)
+    writer.add(frames(32, 16, 1)[0])  # 실패한 프레임 뒤에도 작성기는 그대로 쓸 수 있다
+    writer.abort()
+    assert not target.exists() and not (tmp_path / "v.tmp.mp4").exists()
+    assert fake.live() == [] and fake.errors == []
+
+
+def test_write_mp4_rebuilds_with_the_builtin_writer_after_an_access_violation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """MF 작성기(가짜 COM)가 셋째 프레임에서 접근 위반 → MfError → write_mp4가 내장 쓰기로 처음부터 + EXP_MF_FALLBACK 한 줄."""
+    from evolab.app import strings as S
+    from evolab.app.export import mp4
+
+    fake = FakeMF()
+    calls = {"n": 0}
+    real_sample = fake.api.MFCreateSample
+
+    def sample_then_fault(out: Any) -> int:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError("exception: access violation reading 0x0")
+        return int(real_sample(out))
+
+    fake.api.MFCreateSample = sample_then_fault
+    monkeypatch.setattr(mp4, "_STATUS", mp4.EncoderStatus("mf", "Fake H264 MFT"))
+    monkeypatch.setattr(mp4, "_open_mf", lambda path, w, h, fps: M.MfWriter(
+        path, w, h, fps, bitrate=mp4.mf_bitrate(w, h), tmp=mp4.temp_path(path), api=fake.api))
+    notes: list[str] = []
+    target = tmp_path / "v.mp4"
+    out = mp4.write_mp4(lambda: iter(frames(32, 16, 6)), target, 32, 16, 30, note=notes.append)
+    assert out is not None and out["encoder"] == "builtin" and out["frames"] == 6
+    assert notes == [S.EXP_MF_FALLBACK.format(reason="MFCreateSample: OSError: exception: access violation reading 0x0")]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["v.mp4"]
+    assert mp4.read_info(target)["frames"] == 6
+    assert fake.live() == []
 
 
 def test_fake_com_start_failure_and_changed_mode(tmp_path: Path) -> None:

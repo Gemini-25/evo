@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QProgressDialog,
     QPushButton,
     QSizePolicy,
@@ -769,10 +768,16 @@ class RaceView(QWidget):
         return Path(chosen) if chosen else None
 
     def show_error(self, message: str) -> None:
-        QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, message)
+        """오류 상자(다음 할 일 + 오류 보고 묶음 단추, errors.show_error). 테스트는 이 메서드를 바꿔 끼운다."""
+        from evolab.app import errors
+
+        errors.show_error(self, S.VIDEO_SAVE_TITLE, message)
 
     def save_gif(self, path: Path | None = None) -> Path | None:
-        """지금 경주를 GIF 하나로 저장한다(나란히: 칸 격자 320×200, 20fps / 겹쳐서: 기존 겹친 영상). 취소하면 None."""
+        """지금 경주를 내보낸다. 취소하면 None.
+
+        path가 없으면 내보내기 대화 상자(MP4·GIF·폰 재생 파일, 나란히면 칸 격자·겹쳐서면 한 세계, v3.1 설계 D48). path를 주면
+        v3.0처럼 이 프로세스에서 GIF 하나(나란히: 칸 격자 320×200, 20fps / 겹쳐서: 기존 겹친 영상)."""
         from PySide6.QtWidgets import QApplication
 
         from evolab.app.export.video import export_gif, export_race_gif
@@ -780,9 +785,22 @@ class RaceView(QWidget):
         if not self.ready:
             return None
         if path is None:
-            path = self.ask_save_path(self.default_gif_path())
-            if path is None:
-                return None
+            from evolab.app.export.dialog import choose_and_export
+
+            was_playing = self.playing
+            self.pause()
+            default = self.default_gif_path()
+            try:
+                out = choose_and_export(self, kind="race", items=list(self.lanes),
+                                        title=S.VIDEO_RACE_TITLE.format(n=self.course), default_name=default.stem,
+                                        meta={}, folder=default.parent, overlay=self.mode == "overlay")
+            finally:
+                if was_playing and not self.finished:
+                    self.start()
+            if out is not None:
+                self.message.setText(S.EXP_DONE.format(path=out))
+                self.message.show()
+            return out
         path = Path(path)
         if path.suffix.lower() != ".gif":
             path = path.with_suffix(".gif")
@@ -806,7 +824,10 @@ class RaceView(QWidget):
             else:
                 out = export_race_gif(items, path, lane_grid(len(items))[1], title=title, progress=progress)
         except (OSError, ValueError) as exc:
-            self.show_error(str(exc))
+            from evolab.app import errors
+
+            why = errors.reason(exc)  # 날것 예외 글 대신 한국어 까닭(v3.1, v3.0 고침 13)
+            self.show_error(S.EXP_FAILED.format(reason=why))
             return None
         except MemoryError:  # 프레임은 쌓지 않지만 메모리가 아주 모자란 PC: 프로그램을 끝내지 않고 알린다
             self.show_error(S.VIDEO_NO_MEMORY)

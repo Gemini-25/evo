@@ -2498,7 +2498,7 @@ EXP_DONE: Final = "저장했습니다: {path}"
 EXP_OPEN_FOLDER: Final = "폴더 열기"
 EXP_FAILED: Final = "만들지 못했습니다: {reason}"
 EXP_MF_FALLBACK: Final = "윈도우 영상 인코더가 실패해 내장 영상 쓰기로 다시 만들었습니다 ({reason})."
-EXP_PROCESS_DIED: Final = "내보내기 프로그램이 갑자기 끝났습니다({meaning}). GIF로 저장해 보세요."
+EXP_PROCESS_DIED: Final = "내보내기 프로그램이 갑자기 끝났습니다({meaning})."
 EXP_FILTER_MP4: Final = "MP4 영상 (*.mp4)"
 EXP_FILTER_HTML: Final = "폰 재생 파일 (*.html)"
 EXP_BAD_SUFFIX: Final = "파일 이름은 .mp4, .gif, .html 중 하나로 끝나야 합니다: {name}"
@@ -2541,3 +2541,19 @@ CLI_HELP_VIDEO_PROBE: Final = "이 PC에서 쓸 MP4 인코더를 알려 줍니�
 CLI_VIDEO_PROBE_LINE: Final = "MP4 인코더: {encoder} · 윈도우 영상 인코더: {mf}"
 SELFTEST_CHECK_EXPORT: Final = "내보내기 (내장 MP4·폰 재생 파일·윈도우 영상 인코더 확인)"
 SELFTEST_EXPORT_DETAIL: Final = "내장 MP4 {mp4} · 폰 재생 파일 {html} · 윈도우 영상 인코더: {mf}"
+
+# ---------------------------------------------------------------------------
+# v3.1 F 묶음(내보내기 연결: app/export/dialog.py·runner.py·worker.py, cli.py, selftest.py, editor/palette.py)
+# ---------------------------------------------------------------------------
+EXP_INFO_PROBING: Final = "이 PC에서 쓸 영상 인코더를 확인하는 중…"          # 대화 상자 안내 줄(인코더 시험 자식이 끝나기 전)
+EXP_INPROCESS_NOTE: Final = "내보내기 프로그램을 따로 띄우지 못해 이 창에서 만듭니다(내장 영상 쓰기)."  # 되돌릴 지점 10(errors.jsonl)
+EXP_ENCODER_GIF: Final = "GIF"                                            # CLI_EXPORT_DONE의 {encoder}(GIF)
+EXP_ENCODER_HTML: Final = "폰 재생 파일"                                  # CLI_EXPORT_DONE의 {encoder}(폰 재생 파일)
+SELFTEST_EXPORT_PART: Final = "{frames}프레임 · {kb:.0f}KB"               # SELFTEST_EXPORT_DETAIL의 {mp4}·{html}
+EDC_SNAP_STEP_TIP: Final = "격자 한 칸의 크기입니다. 점을 찍거나 옮기면 이 간격에 맞춰집니다."  # 에디터 격자 간격 칸 풍선
+
+# ---------------------------------------------------------------------------
+# v3.1 검토 수정(내보내기: app/export/runner.py). EXP_PROCESS_DIED는 위 제자리에서 「GIF로 저장해 보세요.」를 뺐다: GIF·폰 파일
+# 자식이 끝났을 때나 인코더 시험 까닭(EXP_INFO_BUILTIN_TIP의 {reason})에서는 맞지 않는 말이라 MP4 작업이 끝났을 때만 붙인다.
+# ---------------------------------------------------------------------------
+EXP_PROCESS_DIED_GIF_HINT: Final = "GIF로 저장해 보세요."  # MP4 내보내기 자식이 갑자기 끝났을 때 EXP_PROCESS_DIED 뒤에 붙임

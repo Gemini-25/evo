@@ -49,6 +49,8 @@ a = Analysis(
     datas=[
         (str(ROOT / "environments"), "environments"),
         (str(ROOT / "src" / "evolab" / "assets"), "assets"),
+        # 폰 재생 파일 틀(v3.1 설계 D56): phone.TEMPLATE_PATH = 모듈 옆 assets/, 배포본에서는 _MEIPASS/evolab/app/export/assets/
+        (str(ROOT / "src" / "evolab" / "app" / "export" / "assets"), "evolab/app/export/assets"),
         (str(LICENSES), "licenses"),
     ],
     hiddenimports=[],
