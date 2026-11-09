@@ -12,6 +12,11 @@
 넣지 않는 것: 체크포인트(.pkl: 크고, 열면 코드가 실행될 수 있는 피클), 챔피언·세대 대표(.npz), 직접 조종 기록(.evoplay),
 내보낸 영상, 다른 실행, 화면 그림, 환경 변수. 모든 글 파일에서 홈 폴더 경로·사용자 이름·컴퓨터 이름을 가린다. 합계 5MB 상한
 (넘으면 오래된 로그부터 뺀다). 대화 상자의 미리 보기(`collect`)와 쓰기(`write_report`)가 같은 목록 함수를 쓴다.
+
+줄 끝은 바이트 그대로다(윈도우에서도): 원본은 모두 바이너리로 읽고, 줄은 `\\n`으로 세어 자르며, zip에는 바이트를 넣는다.
+글 모드(`open(..., "w")`, `Path.write_text`·`read_text`)는 쓰지 않는다: 윈도우의 글 모드 쓰기는 `\\n`을 `\\r\\n`으로 바꿔
+`stats.csv`의 `\\r\\n`이 `\\r\\r\\n`이 되고, 읽기는 어디서나 `\\r\\n`을 `\\n`으로 바꾼다. 우리가 만드는 report.txt는 `\\r\\n`
+(메모 줄도), files.txt·manifest.json은 `\\n`이다.
 """
 
 from __future__ import annotations
@@ -189,8 +194,19 @@ def _tail_bytes(path: Path, limit: int) -> bytes:
     return data[cut + 1:] if 0 <= cut < len(data) - 1 else data
 
 
+def _split_lines(data: bytes) -> list[bytes]:
+    """`\\n`마다 나눈 줄(줄 끝 바이트 그대로: `\\r\\n`은 `\\r\\n`, 줄 안의 홀로 선 `\\r`은 줄 안에). 마지막 조각은 `\\n`이 없어도
+    한 줄이다. `bytes.splitlines`는 홀로 선 `\\r`도 줄 끝으로 봐서, 진행 표시(`\\r`)나 윈도우 글 모드로 한 번 더 바뀐 `\\r\\r\\n`이
+    든 파일의 줄을 둘로 세고 꼬리가 `\\r\\n` 조각으로 시작할 수 있다."""
+    parts = data.split(b"\n")
+    lines = [part + b"\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 def _tail_lines(path: Path, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple[list[bytes], bool]:
-    """마지막 n줄(줄 끝 그대로)과, 파일 처음까지 읽었는지. 뒤에서부터 덩어리로 읽어 큰 파일도 빠르다."""
+    """마지막 n줄(`\\n`으로 센 줄, 바이트 그대로)과, 파일 처음까지 읽었는지. 뒤에서부터 덩어리로 읽어 큰 파일도 빠르다."""
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         size = f.tell()
@@ -201,7 +217,7 @@ def _tail_lines(path: Path, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple[l
             pos -= step
             f.seek(pos)
             data = f.read(step) + data
-    lines = data.splitlines(keepends=True)
+    lines = _split_lines(data)
     start = pos == 0
     if not start and lines:
         lines = lines[1:]  # 잘린 첫 줄
@@ -212,6 +228,7 @@ def _tail_lines(path: Path, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple[l
 
 
 def _text(data: bytes) -> bytes:
+    """가린 바이트. UTF-8로 풀고 다시 묶을 뿐 줄 끝은 건드리지 않는다(BOM도 그대로)."""
     return anonymize(data.decode("utf-8", "replace")).encode("utf-8")
 
 
@@ -297,9 +314,9 @@ def _report_text(opts: BundleOptions, now: datetime) -> bytes:
     }
     lines = [S.REP_TXT_TITLE, "=" * 40]
     for key, label in S.REP_TXT_FIELDS.items():
-        if key == "note":
-            note = opts.note.strip()
-            lines.append(f"{label}:" + (f"\n{note}" if note else " —"))
+        if key == "note":  # 대화 상자 메모는 \n 줄바꿈: report.txt의 다른 줄처럼 \r\n으로
+            note = "\r\n".join(opts.note.strip().splitlines())
+            lines.append(f"{label}:" + (f"\r\n{note}" if note else " —"))
         else:
             lines.append(f"{label}: {values.get(key, '') or chr(0x2014)}")
     return anonymize("\r\n".join(lines) + "\r\n").encode("utf-8")
@@ -564,7 +581,7 @@ def self_check(work_dir: Path) -> str:
     folder = paths.log_dir()
     folder.mkdir(parents=True, exist_ok=True)
     probe = folder / f".write-check-{os.getpid()}.tmp"
-    probe.write_text("ok", encoding="ascii")
+    probe.write_bytes(b"ok")
     probe.unlink()
     out = Path(work_dir) / "report-check.zip"
     written = write_report(out, BundleOptions(reason="cli"))

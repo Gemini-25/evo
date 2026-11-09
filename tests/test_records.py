@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -241,6 +242,59 @@ def test_delete_when_folder_is_locked(tmp_path: Path, monkeypatch: pytest.Monkey
     leftover.mkdir()
     (leftover / "a.npz").write_bytes(b"x")
     delete_run(store.root, runs)
+    assert list(runs.iterdir()) == []
+
+
+def test_delete_cleans_leftovers_made_this_clock_tick(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """윈도우 CI(e5b65f7)에서 바로 위 테스트가 남은 폴더를 못 치운 까닭을 어느 OS에서나 그대로 만든다.
+
+    윈도우에서는 파일 시각과 time.time()(파이썬 3.12: GetSystemTimeAsFileTime)이 같은 시스템 시계 눈금에서 나온다.
+    방금 만든 폴더는 지금과 똑같은 100ns 값을 갖기 쉽고, 두 값을 초(float)로 바꾸는 식이 달라(time.time은 ns / 1e9,
+    st_mtime은 초 + 나노초 * 1e-9) 같은 순간의 약 12%에서 now - st_mtime이 -2.4e-7이 된다. 옛 코드는 나이 조건
+    `now - st_mtime >= 0.0`으로 그 폴더를 건너뛰었다. 리눅스에서는 파일 시각이 거친 시계라 늘 time.time()보다 조금
+    앞선 값이어서 생기지 않았다. 네트워크 드라이브의 시계가 빠르거나 FAT가 2초 단위로 올려 적은 '미래' 시각도 같다.
+    """
+    runs = tmp_path / "runs"
+    store = RunStore.create(runs, "지울 실행", {"env_name": "e"})
+    same, future = runs / ".deleting-1-0-같은 순간", runs / ".deleting-1-1-미래 시각"
+    for d in (same, future):
+        d.mkdir()
+        (d / "a.npz").write_bytes(b"x")
+    # 같은 순간의 두 float가 어긋나는 100ns 값을 찾는다(약 8번에 한 번)
+    base_ns = int(store.root.stat().st_mtime) * 1_000_000_000
+    for k in range(10_000):
+        tick_ns = base_ns + k * 100
+        os.utime(same, ns=(tick_ns, tick_ns))
+        if tick_ns / 1e9 - same.stat().st_mtime < 0:
+            break
+    else:
+        pytest.fail("float가 어긋나는 순간을 찾지 못했다")
+    os.utime(future, ns=(tick_ns + 2_000_000_000,) * 2)
+    with monkeypatch.context() as m:
+        m.setattr(catalog.time, "time", lambda: tick_ns / 1e9)  # time.time()이 돌려주는 값과 같은 식
+        delete_run(store.root, runs)
+    assert list(runs.iterdir()) == []
+
+
+def test_delete_cleans_leftover_with_read_only_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """남은 폴더 안의 읽기 전용 파일도 치운다(삭제 본 경로 _rmtree와 같게). 리눅스에서는 윈도우처럼 지우기를 막는다."""
+    runs = tmp_path / "runs"
+    store = RunStore.create(runs, "지울 실행", {"env_name": "e"})
+    leftover = runs / ".deleting-1-0-읽기 전용"
+    leftover.mkdir()
+    (leftover / "a.npz").write_bytes(b"x")
+    os.chmod(leftover / "a.npz", stat.S_IREAD)
+    real_unlink = os.unlink
+
+    def windows_unlink(path: Any, *, dir_fd: Any = None) -> None:
+        # 윈도우: 읽기 전용 표시가 있는 파일은 os.unlink가 PermissionError(파이썬 3.12의 shutil.rmtree는 풀지 않는다)
+        if not os.stat(path, dir_fd=dir_fd, follow_symlinks=False).st_mode & stat.S_IWRITE:
+            raise PermissionError(13, "Access is denied", str(path))
+        real_unlink(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(catalog.os, "unlink", windows_unlink)
+        delete_run(store.root, runs)
     assert list(runs.iterdir()) == []
 
 

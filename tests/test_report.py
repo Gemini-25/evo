@@ -6,6 +6,7 @@ EVOLAB_STATE_DIR·EVOLAB_DATA_DIR를 임시 폴더로, 바탕 화면도 임시 �
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -210,6 +212,9 @@ def test_bundle_contents_match_collect_and_hide_identity(iso: Any, fake_user: No
 
 
 def test_long_run_tails(iso: Any, tmp_path: Path) -> None:
+    """stats.csv·events.jsonl은 RunStore처럼 바이트로 쓴다. 예전에는 `write_text`로 써서 윈도우 CI에서만 실패했다(v3.0 e5b65f7):
+    윈도우의 글 모드 쓰기가 `\\n`을 `\\r\\n`으로 바꿔 디스크의 stats.csv 줄 끝이 `\\r\\r\\n`이 되었고, 묶음은 그 바이트를
+    그대로 옮겼다(머리가 '\\ufeffgeneration,score\\r'로 쪼개짐)."""
     run = tmp_path / "run"
     (run / "envs").mkdir(parents=True)
     (run / "checkpoints").mkdir()
@@ -217,12 +222,17 @@ def test_long_run_tails(iso: Any, tmp_path: Path) -> None:
         (run / "envs" / f"v{v:03d}.evoenv").write_text(json.dumps({"v": v}), encoding="utf-8")
     (run / "run.json").write_text("{}", encoding="utf-8")
     header = "\ufeffgeneration,score\r\n"
-    (run / "stats.csv").write_text(header + "".join(f"{g},{g * 2}\r\n" for g in range(1, 5001)), encoding="utf-8")
-    (run / "events.jsonl").write_text("".join(json.dumps({"g": g}) + "\n" for g in range(1000)), encoding="utf-8")
+    rows = [f"{g},{g * 2}\r\n".encode() for g in range(1, 5001)]
+    (run / "stats.csv").write_bytes(header.encode("utf-8") + b"".join(rows))
+    event_lines = [json.dumps({"g": g}).encode() + b"\n" for g in range(1000)]
+    (run / "events.jsonl").write_bytes(b"".join(event_lines))
     for g in range(5050):  # 파일 목록 상한(5000줄)을 넘게
         (run / "checkpoints" / f"gen_{g:06d}.pkl").write_bytes(b"")
     out = tmp_path / "x.zip"
     bundle.write_report(out, BundleOptions(run_dir=run))
+    with zipfile.ZipFile(out) as z:  # 꼬리는 원본 바이트 그대로(줄 끝 포함)
+        assert z.read("run/stats_tail.csv") == header.encode("utf-8") + b"".join(rows[-bundle.STATS_LINES:])
+        assert z.read("run/events_tail.jsonl") == b"".join(event_lines[-bundle.EVENTS_LINES:])
     texts = _zip_texts(out)
     stats = texts["run/stats_tail.csv"].splitlines(keepends=True)
     assert stats[0] == header and len(stats) == 51 and stats[1] == "4951,9902\r\n" and stats[-1] == "5000,10000\r\n"
@@ -231,6 +241,93 @@ def test_long_run_tails(iso: Any, tmp_path: Path) -> None:
     assert "run/envs/v010.evoenv" in texts and "run/envs/v002.evoenv" not in texts
     files = texts["run/files.txt"].splitlines()
     assert len(files) == bundle.FILES_MAX_LINES + 1 and files[-1].startswith("... (+")
+
+
+@contextlib.contextmanager
+def _windows_text_mode() -> Iterator[None]:
+    """윈도우의 글 모드 줄 끝 바꿈을 리눅스에서도 흉내 낸다(윈도우에서는 원래 이렇다): newline을 주지 않고 글 모드로 쓰면
+    `\\n`이 os.linesep(`\\r\\n`)이 된다. 글 모드 읽기(`\\r\\n`·`\\r` → `\\n`)는 리눅스도 같다. 내장 `open`과 pathlib가 쓰는
+    `io.open`을 바꾼다(바이너리 모드와 zipfile은 그대로)."""
+    import builtins
+    import io
+
+    real_open = io.open
+
+    def win_open(file: Any, mode: str = "r", buffering: int = -1, encoding: str | None = None,
+                 errors: str | None = None, newline: str | None = None, closefd: bool = True,
+                 opener: Any = None) -> Any:
+        if "b" not in mode and newline is None and set(mode) & set("wax+"):
+            newline = "\r\n"
+        return real_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(builtins, "open", win_open)
+        m.setattr(io, "open", win_open)
+        m.setattr(os, "linesep", "\r\n")
+        yield
+
+
+def test_bundle_keeps_line_endings_byte_for_byte(iso: Any, fake_user: None, tmp_path: Path) -> None:
+    """test_long_run_tails의 윈도우 CI 실패(v3.0 e5b65f7) 뒤에 둔 회귀 시험: 윈도우 글 모드를 흉내 낸 채로 묶음을 만든다. 묶음이
+    어디서든 글 모드로 읽거나 쓰면(줄 끝을 바꾸면) 리눅스에서도 실패한다. zip 안의 바이트가 원본 바이트와 같아야 한다(꼬리는
+    `\\n`으로 센 줄, 가린 곳만 다름). 줄 안의 홀로 선 `\\r`(진행 표시, 글 모드로 한 번 더 바뀐 `\\r\\r\\n`)은 줄을 나누지
+    않는다. 우리가 만드는 report.txt는 메모 줄까지 모두 `\\r\\n`, files.txt·manifest.json은 `\\n`이다."""
+    assert bundle._split_lines(b"a\r\r\nb\rc\nd") == [b"a\r\r\n", b"b\rc\n", b"d"]
+    assert bundle._split_lines(b"") == [] and bundle._split_lines(b"\n\n") == [b"\n", b"\n"]
+    iso.logs.mkdir(parents=True, exist_ok=True)
+    run = tmp_path / "run"
+    (run / "envs").mkdir(parents=True)
+    bom_header = b"\xef\xbb\xbfgeneration,score\r\n"
+    rows = [f"{g},{g * 2}\r\n".encode() for g in range(1, 121)]
+    for i in (-50, -3):  # 꼬리 첫 줄과 끝 가까운 줄: 글 모드로 한 번 더 바뀐 줄 끝
+        rows[i] = rows[i].replace(b"\r\n", b"\r\r\n")
+    events = [json.dumps({"g": g}).encode() + (b"\r\n" if g % 7 == 0 else b"\n") for g in range(300)]
+    errors = [json.dumps({"kind": "shown", "message": f"오류 {i}"}, ensure_ascii=i % 2 == 0).encode() + b"\n"
+              for i in range(260)]
+    stderr = (f"학습 시작\r\n진행 10%\r진행 50%\r진행 100%\r\nTraceback in {WIN_HOME}\\evo\\x.py\r\n"
+              "마지막 줄(줄 끝 없음)").encode()
+    sources = {
+        "faults": (iso.logs / diagnostics.FAULTS_FILE,
+                   b"Fatal Python error: Segmentation fault\n\nCurrent thread 0x1:\n  File \"x.py\", line 3 in f\n"),
+        "selftest": (iso.logs / "selftest.log", "점검 1: 통과\r\n점검 2: 통과\r\n".encode()),
+        "settings": (iso.state / "settings.ini", b"[lab]\r\nspeed=4\r\n"),
+        "paths": (iso.state / paths.PATHS_FILE, b"[paths]\ndata_dir = D:/evo data\n"),
+        "run": (run / "run.json", b'{\r\n  "seed": 1\r\n}\r\n'),
+        "envs": (run / "envs" / "v001.evoenv", b'{\r\n  "version": 3\r\n}'),
+    }
+    for path, data in sources.values():
+        path.write_bytes(data)
+    (iso.logs / diagnostics.ERRORS_FILE).write_bytes(b"".join(errors))
+    (iso.logs / "stderr.log").write_bytes(stderr)
+    (run / "stats.csv").write_bytes(bom_header + b"".join(rows))
+    (run / "events.jsonl").write_bytes(b"".join(events))
+    env_text = '{\n  "name": "언덕"\r\n}\n'
+    out = tmp_path / "bytes.zip"
+    with _windows_text_mode():
+        probe = tmp_path / "probe.txt"
+        probe.write_text("a\r\nb\n", encoding="utf-8")
+        assert probe.read_bytes() == b"a\r\r\nb\r\n"  # 흉내가 켜졌다: 글 모드로 쓰면 이렇게 바뀐다
+        written = bundle.write_report(out, BundleOptions(note="첫 줄\n둘째 줄\r\n셋째 줄", run_dir=run,
+                                                         env_text=env_text))
+    with zipfile.ZipFile(out) as z:
+        got = {n: z.read(n) for n in z.namelist()}
+
+    assert got["logs/errors.jsonl"] == b"".join(errors[-bundle.ERRORS_LINES:])
+    assert got["logs/stderr.log"] == stderr.replace(WIN_HOME.encode(), b"~")
+    assert got["logs/faults.log"] == sources["faults"][1] and got["logs/selftest.log"] == sources["selftest"][1]
+    assert got["settings/settings.ini"] == sources["settings"][1] and got["settings/paths.ini"] == sources["paths"][1]
+    assert got["run/run.json"] == sources["run"][1] and got["run/envs/v001.evoenv"] == sources["envs"][1]
+    assert got["run/stats_tail.csv"] == bom_header + b"".join(rows[-bundle.STATS_LINES:])
+    assert got["run/events_tail.jsonl"] == b"".join(events[-bundle.EVENTS_LINES:])
+    assert got["env/current.evoenv"] == env_text.encode()
+    report = got["report.txt"]
+    assert report.count(b"\n") == report.count(b"\r\n") and b"\r\r" not in report
+    assert f"{S.REP_TXT_FIELDS['note']}:\r\n첫 줄\r\n둘째 줄\r\n셋째 줄\r\n".encode() in report
+    for name in ("run/files.txt", bundle.MANIFEST_NAME):
+        assert b"\r" not in got[name], name
+    manifest = json.loads(got[bundle.MANIFEST_NAME])
+    assert [(x["name"], x["bytes"]) for x in manifest["items"]] == written
+    assert written == [(n, len(data)) for n, data in got.items() if n != bundle.MANIFEST_NAME]
 
 
 def test_total_size_cap_drops_oldest_logs_first(iso: Any, tmp_path: Path) -> None:

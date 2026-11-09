@@ -339,16 +339,24 @@ def _rmtree(path: Path) -> bool:
 
 
 def _clean_leftovers(base: Path, prefix: str, older_than: float = 0.0) -> None:
-    """끊긴 삭제·분기가 남긴 숨긴 폴더(prefix로 시작)를 치운다(older_than초보다 오래된 것만, 할 수 없으면 그만)."""
+    """끊긴 삭제·분기가 남긴 숨긴 폴더(prefix로 시작)를 치운다(older_than초보다 오래된 것만, 할 수 없으면 그만).
+
+    older_than이 0이면 나이를 보지 않는다. 윈도우에서는 파일 시각과 time.time()이 같은 시계 눈금에서 나와 방금 만든
+    폴더의 시각이 지금과 같은 값이 되기 쉬운데, 두 값을 초(float)로 바꾸는 식이 달라 now - st_mtime이 아주 작은
+    음수(-2.4e-7)가 되어 그 폴더를 건너뛰었다. 시계가 빠른 네트워크 드라이브의 '미래' 시각도 마찬가지다.
+    """
     now = time.time()
     try:
         with os.scandir(base) as it:
             names = [e.name for e in it if e.name.startswith(prefix) and e.is_dir(follow_symlinks=False)
-                     and now - e.stat(follow_symlinks=False).st_mtime >= older_than]
+                     and (older_than <= 0 or now - e.stat(follow_symlinks=False).st_mtime >= older_than)]
     except OSError:
         return
     for name in names:
-        shutil.rmtree(base / name, ignore_errors=True)
+        try:
+            _rmtree_once(base / name)  # 삭제 본 경로처럼 읽기 전용 표시도 풀며 지운다
+        except OSError:
+            pass  # 잠긴 파일이 있으면 두고 다음 삭제·분기 때 다시 치운다(기다리지 않는다)
 
 
 def delete_run(run: Path, runs_dir: Path) -> None:

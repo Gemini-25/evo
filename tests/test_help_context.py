@@ -83,6 +83,21 @@ def _hover(widget: QWidget, at: QPoint | None = None) -> None:
     QApplication.processEvents()
 
 
+def _hover_over(widget: QWidget) -> None:
+    """마우스를 위젯 가운데에 두고, 그 자리에서 마우스 아래 위젯(widgetAt)이 정말 그 위젯(또는 그 안 위젯)인지 확인한다."""
+    _hover(widget)
+    under = QApplication.widgetAt(QCursor.pos())
+    assert under is not None and (under is widget or widget.isAncestorOf(under)), (QCursor.pos(), under)
+
+
+def _move_aside(win: QWidget, main: QWidget) -> None:
+    """도움말 창을 주 창 오른쪽 밖으로 옮긴다. offscreen 플랫폼은 창 관리자가 없어 모든 창을 같은 자리((2, 2))에 두므로, F1로 연
+    도움말 창(900×640)이 주 창 왼쪽 위를 덮는다. 덮인 자리의 마우스는 도움말 창 위에 있다(widgetAt도 도움말 창 위젯)."""
+    win.move(main.frameGeometry().right() + 20, main.y())
+    QApplication.processEvents()
+    assert not win.frameGeometry().intersects(main.frameGeometry())
+
+
 def _press_f1(target: QWidget, shift: bool = False) -> None:
     mod = Qt.KeyboardModifier.ShiftModifier if shift else Qt.KeyboardModifier.NoModifier
     QTest.keyClick(target, Qt.Key.Key_F1, mod)
@@ -200,19 +215,30 @@ def test_f1_opens_help_for_the_widget_under_the_mouse(main_window: Any, shortcut
     tile = w.lab.dashboard.tile("trend")
     w.tabs.setCurrentWidget(w.lab)
     assert tile.isVisible()
-    _hover(tile)
+    _hover_over(tile)
     _press_f1(w.lab.btn_start)  # 초점은 다른 곳이어도 마우스 아래가 이긴다
     assert shortcuts.opened[-1] == ("dashboard", S.DASH_TILE_TITLES["trend"])
     win = HW.help_window()
     assert win is not None and win.isVisible()
     assert win.page == "dashboard" and win.current_heading_block() == S.DASH_TILE_TITLES["trend"]
-    # 에디터 아래 탭
+    # 에디터 아래 탭. 방금 연 도움말 창이 주 창 왼쪽 위를 덮고 있다(offscreen은 모든 창을 (2, 2)에 둔다): 탭 가운데가 그 아래에
+    # 들어가는지는 글꼴에 달렸다(리눅스 9pt는 도움말 창 아래 끝보다 5px 아래, 윈도우 글꼴은 그 안이라 마우스가 도움말 창 위였다).
+    # 사용자가 보는(덮이지 않은) 탭 위에서 누르도록 도움말 창을 옆으로 옮긴다
+    _move_aside(win, w)
     w.tabs.setCurrentWidget(w.editor)
-    w.editor.tabs.setCurrentWidget(w.editor.tabs.scoring_tab)
-    _hover(w.editor.tabs.scoring_tab)
+    scoring = w.editor.tabs.scoring_tab
+    w.editor.tabs.setCurrentWidget(scoring)
+    _hover_over(scoring)
     _press_f1(w)
     assert shortcuts.opened[-1] == ("editor", S.EDP_TAB_SCORING)
-    assert win.page == "editor" and win.heading == S.EDP_TAB_SCORING
+    assert HW.help_window() is win and win.page == "editor" and win.heading == S.EDP_TAB_SCORING
+    # 도움말 창이 탭을 덮으면 마우스는 도움말 창 위다: 그 아래 가려진 탭의 도움말을 열지 않는다
+    win.move(QCursor.pos() - QPoint(win.width() // 2, win.height() // 2))
+    QApplication.processEvents()
+    under = QApplication.widgetAt(QCursor.pos())
+    assert under is not None and QWidget.window(under) is win
+    target = shortcuts.target_widget(w)
+    assert target is not None and target is not scoring and not scoring.isAncestorOf(target)
 
 
 def test_f1_falls_back_to_focus_and_beats_shortcuts(main_window: Any, shortcuts: context.HelpShortcuts) -> None:
