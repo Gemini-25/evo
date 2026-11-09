@@ -183,7 +183,7 @@ def test_cli_rejects_bad_numbers_in_korean(capsys: pytest.CaptureFixture[str], a
 
 
 _T = S.RV2_ARGPARSE_TEXT
-_COMMANDS = "'train', 'bench', 'judge', 'play', 'bundle', 'reproduce', 'csv', 'selftest'"
+_COMMANDS = "'train', 'bench', 'judge', 'play', 'bundle', 'reproduce', 'csv', 'selftest', 'report'"  # v3.0: report 명령(설계 3.2)
 
 
 @pytest.mark.parametrize(("argv", "detail"), [

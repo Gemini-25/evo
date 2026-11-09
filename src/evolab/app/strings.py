@@ -806,13 +806,6 @@ EDC_UNDO_ROTATE: Final = "돌리기"
 MENU_HELP: Final = "도움말"
 MENU_ABOUT: Final = "정보…"
 MENU_OPEN_DATA: Final = "데이터 폴더 열기"
-ABOUT_TEXT: Final = (
-    "{name} {version}\n\n"
-    "직접 만든 2D 실험 환경에서 진화 전략(CMA-ES, 유전 알고리즘, 담금질)이 해법을 찾아가는 과정을 보는 프로그램입니다.\n"
-    "사용자 데이터: 문서\\진화실험실 (environments, runs, records)\n\n"
-    "오픈 소스 라이선스\n"
-    "--------------------\n{notices}"
-)
 ABOUT_NO_NOTICES: Final = "(개발 환경에서 실행 중이라 라이선스 고지 파일이 없습니다. exe 배포본의 licenses 폴더에 있습니다.)"
 ABOUT_OPEN_LICENSES: Final = "라이선스 폴더 열기"
 SELFTEST_CHECK_BUNDLE: Final = "내장 예제와 배포 파일"
@@ -1795,9 +1788,8 @@ ED_STRUCT_EVOLVE_BY_PARAM_TIP: Final = "있음이 진화하는 몸 수치 '{id}'
 # v3.0 처음 만나기 (0단계 묶음: v3 설계 6절의 v3.0 줄, 명세 부록 A65~). 「# v3.1」 줄(설치 프로그램, 내보내기, 폰 재생 파일,
 # 명령줄 내보내기, VIDEO_SAVE·VIDEO_SAVE_TITLE·RACE_SAVE_GIF의 새 값)은 v3.1 0단계에서 더한다.
 # - LAB_START는 위 제자리에서 「▶ 학습 시작」으로 바꿨다(설계 D17).
-# - 설계의 새 ABOUT_TEXT(데이터·설정 폴더 자리 {data_dir}·{state_dir})는 ABOUT_TEXT_V3로 둔다. 지금 main.py(I 묶음 파일)가
-#   ABOUT_TEXT를 {name}·{version}·{notices}로만 채우므로, 같은 이름의 값을 바꾸면 정보 창이 KeyError로 깨진다. I 묶음이
-#   main.py의 about_text를 ABOUT_TEXT_V3로 옮긴 뒤 옛 ABOUT_TEXT를 지운다.
+# - 설계의 새 ABOUT_TEXT(데이터·설정 폴더 자리 {data_dir}·{state_dir})는 ABOUT_TEXT_V3다. 통합(I 묶음)에서 main.py의 정보 창을
+#   이것으로 옮기고 옛 ABOUT_TEXT(데이터 폴더를 「문서\진화실험실」 글자로 박은 것)를 지웠다.
 # - 도움말 쪽은 v2·v2.1 뒤 화면에 맞췄다: 대시보드 타일 12개(「몸 구조」), 에디터 아래 탭 10개(「구조」), 내장 예제 6개(바퀴 고르는
 #   언덕차), 낱말 21개(「몸 구조」). 「설치와 제거」 쪽과 「기록과 내보내기」 쪽 「영상」 절은 설계의 v3.0판(zip, GIF)이다.
 # ---------------------------------------------------------------------------
@@ -2321,7 +2313,6 @@ HINT_EDITOR_EMPTY: Final = ("왼쪽 「{shapes}」에서 도구를 골라 캔버
 
 # ---- 오류 문구 (app/errors.py) ----
 ERR_NEXT_LABEL: Final = "다음에 할 일"
-ERR_DETAILS: Final = "자세히"
 ERR_REPORT_BUTTON: Final = "오류 보고 묶음 만들기…"
 ERR_PERMISSION: Final = "파일을 쓸 수 없습니다. 다른 프로그램(엑셀, 탐색기 미리 보기, 백신 등)이 잡고 있거나 쓰기 권한이 없습니다."
 ERR_PERMISSION_NEXT: Final = "그 프로그램을 닫고 다시 해 보세요. 계속되면 「{menu}」에서 데이터 폴더를 다른 곳으로 바꾸세요."
@@ -2415,3 +2406,29 @@ SELFTEST_CHECK_QT_KO: Final = "Qt 한국어 번역"
 SELFTEST_ERR_QT_KO: Final = "Qt 기본 단추가 한국어가 아닙니다: {text}"
 SELFTEST_CHECK_LOGS: Final = "기록 폴더 쓰기와 오류 보고 묶음"
 CLI_HELP_SELFTEST_TOUR: Final = "처음 실행 안내 점검을 어디까지 할지: gen1(1세대 재생까지, 기본), full(목표 세대까지 4배속)"
+
+# ---- v3.0 B 묶음(도움말 창·F1, app/help/context.py) ----
+HELP_HEADING_VIDEO: Final = "영상"                                  # 「기록과 내보내기」 쪽 절 제목: 내보내기 대화 상자(v3.1)의 F1이 여는 곳(설계 D21)
+
+# ---- v3.0 D 묶음(진단·오류 보고 묶음: diagnostics.py, app/report/) ----
+DIAG_CRASH_MORE: Final = "또 다른 오류가 났습니다(기록에 남김): {line}"          # 상자를 이미 3번 보인 뒤의 다른 오류(상태 줄)
+DIAG_STARTUP_NO_BUNDLE: Final = ("프로그램 창을 띄우지 못했습니다: {reason}\n\n"
+                                 "오류 보고 묶음도 만들지 못했습니다: {error}")  # 시작 실패 때 묶음까지 실패
+
+# ---- v3.0 C 묶음(화면 손질: app/errors.py) ----
+ERR_SETTINGS_NEXT: Final = "오른쪽 설정 칸의 값을 고친 뒤 다시 해 보세요."  # 학습 설정 검사·「설정 적용」이 거절됐을 때(실험실)
+ERR_ENV_STRUCTURE_NEXT: Final = ("다른 프로그램으로 고친 파일이면 위에 적힌 곳을 고친 뒤 다시 여세요. "
+                                 "새로 만들려면 「{builtin}」을 누르세요.")  # 에디터가 구조가 망가진 환경 파일을 열지 못했을 때
+
+# ---- v3.0 I 묶음(통합: selftest.py 처음 실행 안내·묶음 점검) ----
+SELFTEST_CHECK_TOUR_FULL: Final = "처음 실행 안내 ({goal}세대까지 4배속 자동 진행)"     # `selftest --tour full`(설계 W3)
+SELFTEST_TOUR_WHAT_GEN1: Final = "1세대 재생"                                       # SELFTEST_ERR_TOUR_SLOW의 {what}
+SELFTEST_TOUR_WHAT_GOAL: Final = "{goal}세대"                                       # SELFTEST_ERR_TOUR_SLOW의 {what}(--tour full)
+SELFTEST_ERR_TOUR_FAILED: Final = "처음 실행 안내가 끝까지 가지 못했습니다: {detail}"
+SELFTEST_ERR_CRASH_NOT_LOGGED: Final = "일부러 멈춘 자식 프로세스의 치명적 오류가 faults.log에 남지 않았습니다: {detail}"  # EVOLAB_SELFTEST_CRASH=1(W2)
+
+# ---- v3.0 검토 수정(안내 실패 글·④ 배속·실험실 빈 상태, app/help/tour.py·hints.py) ----
+ONB_STEP_WATCH_FAST: Final = ("지금 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
+                              "잠시 뒤 다음 단계로 넘어갑니다.")           # ④: 배속이 이미 4배 이상일 때(설계 D10)
+ONB_FAILED_NO_DETAIL: Final = "학습 프로세스를 띄우지 못했습니다"          # 실패 카드의 {reason}: 까닭 글이 오지 않았을 때
+HINT_LAB_IDLE_ANY: Final = "「{start}」을 누르면 개체 {pop}개가 「{env}」에서 동시에 연습을 시작합니다."  # 실험실 빈 상태(모든 환경)

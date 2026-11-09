@@ -64,7 +64,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
-from evolab.app.lab.history import GUI_PRIORITY
+from evolab.app.lab.history import GUI_PRIORITY, favor_gui_thread
 
 if TYPE_CHECKING:
     from evolab.app.lab.history import RunHistory
@@ -106,6 +106,9 @@ LOADING_REFRESH_S = 0.3
 """배경으로 기록을 읽는 동안 「보는 재미」 타일 하나를 펌프가 다시 그리는 최소 간격(초). 읽은 묶음(64세대)마다 다섯
 타일을 다 다시 그리면 그림이 배경 읽기와 GIL을 다투며 이벤트 루프를 50~100ms씩 막는다. 다 읽으면(loaded) 바로 마지막
 자료로 그린다. flush()와 화면에 떠 있지 않은 대시보드는 이 간격을 따르지 않는다."""
+PAINT_QUIET_S = 0.0
+"""창을 다시 그린 뒤(UpdateRequest 처리, _PaintGuard) 배경 작업이 더 쉬는 시간(초). 관전 캔버스가 초당 60번 그리므로 0:
+그리는 동안만 쉬고 그림 사이에는 돈다(펌프 한 단계 뒤의 GUI_QUIET_S와 다르다)."""
 
 _NAN = math.nan
 
@@ -1352,6 +1355,31 @@ GEOMETRY_CACHE = 8
 """세계 그림(set_world_geometry)을 세계 열쇠로 기억해 두는 수."""
 
 
+class _PaintGuard(QObject):
+    """창 다시 그리기 동안 화면 프로세스의 배경 작업을 쉬게 한다(v3.0 지연 고침, v1.2 gui_first 규칙의 확장).
+
+    Qt는 창 안 위젯의 update()를 모아 창(맨 위 위젯)에 UpdateRequest를 보내고, 그 처리 한 번에 더러운 위젯을 모두 그린다
+    (타일 그래프, 관전 캔버스, 글자). 펌프 한 단계만 GUI_PRIORITY.busy로 감쌌을 때는 이 보통 그림 동안 궤적 밀도 세계
+    만들기(pymunk 호출마다 GIL을 놓았다 곧바로 다시 잡음) 같은 배경 작업이 GIL을 다투어 타일 그림이 두세 배 길어졌다
+    (750세대 바퀴 실행을 아래쪽 타일을 본 채 열 때 최대 틈 120~320ms). 이 거르개는 창의 UpdateRequest를 직접 처리하면서
+    그동안 GUI_PRIORITY를 바쁨으로 둔다. 그림 결과는 같다(같은 처리 함수를 같은 차례에 부른다)."""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._inside = False
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() != QEvent.Type.UpdateRequest or self._inside:
+            return False
+        self._inside = True
+        try:
+            with GUI_PRIORITY.busy(quiet=PAINT_QUIET_S):
+                watched.event(event)
+        finally:
+            self._inside = False
+        return True
+
+
 class Dashboard(QWidget):
     """통계 대시보드. set_rows로 실행 하나를 열고, 학습 중에는 add_row로 세대마다 한 줄씩 더한다.
 
@@ -1469,6 +1497,10 @@ class Dashboard(QWidget):
         self.scroll.verticalScrollBar().valueChanged.connect(self._schedule_pump)
         self.scroll.horizontalScrollBar().valueChanged.connect(self._schedule_pump)
         self._grid_host.installEventFilter(self)
+
+        self._paint_guard = _PaintGuard(self)
+        self._guarded_window: QWidget | None = None
+        """_PaintGuard를 건 창(대시보드가 처음 보일 때의 window(), 바뀌면 옮긴다)."""
 
         self._pump_timer = QTimer(self)
         self._pump_timer.setSingleShot(True)
@@ -2182,8 +2214,24 @@ class Dashboard(QWidget):
 
     def showEvent(self, event: Any) -> None:  # noqa: N802
         super().showEvent(event)
+        self._guard_window()
         if self._has_dirty():
             self._schedule_pump()
+
+    def _guard_window(self) -> None:
+        """대시보드가 든 창에 _PaintGuard를 건다(창마다 한 번, 다른 창으로 옮겨졌으면 옮겨 건다). 화면 프로세스의 GIL 넘김
+        간격도 줄인다(history.favor_gui_thread)."""
+        win = self.window()
+        if win is self._guarded_window:
+            return
+        favor_gui_thread()
+        if self._guarded_window is not None:
+            try:
+                self._guarded_window.removeEventFilter(self._paint_guard)
+            except RuntimeError:  # 앞 창이 이미 지워졌다
+                pass
+        win.installEventFilter(self._paint_guard)
+        self._guarded_window = win
 
     def _fill_tiles_menu(self) -> None:
         menu = self.tiles_menu

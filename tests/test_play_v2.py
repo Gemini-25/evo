@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QMessageBox
 from pytestqt.qtbot import QtBot
 
 from evolab import paths
+from evolab.app import errors
 from evolab.app import strings as S
 from evolab.app.play import window as play_window
 from evolab.app.play.record import PlayRecord, best_record_score, new_record, verify_record
@@ -323,7 +324,10 @@ def test_body_build_failure_message(qtbot: QtBot, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(play_window, "Episode", broken)
     old = w.episode
     assert not w.start(9)
-    assert shown == [w.build_failed_text(9, body_error)] and w.episode is old and w.seed == 5
+    # v3.0(설계 D26·3.2): 같은 글을 show_error 상자(다음 할 일 + 오류 보고 묶음 단추)로 보인다
+    boxes = [b.friendly for b in errors.open_error_boxes() if b.parent() is w]
+    assert shown == [] and [f.message for f in boxes] == [w.build_failed_text(9, body_error)]
+    assert boxes[0].next_step == S.ERR_BUILD_NEXT and w.episode is old and w.seed == 5
 
 
 # ---------------------------------------------------------------------------

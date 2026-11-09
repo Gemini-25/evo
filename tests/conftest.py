@@ -8,3 +8,28 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from evolab.startup import limit_blas_threads  # noqa: E402
 
 limit_blas_threads()
+
+import sys  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _drop_app_wide_help_filters():
+    """주 창(MainWindow)은 만들어질 때 앱 전체 이벤트 필터 둘(F1·Shift+F1, 따로 뜨는 창의 풍선 도움말)을 단다(v3.0
+    app/help/setup.py). 테스트가 끝나면 떼어 다음 테스트가 앞 테스트의 주 창에 기대지 않게 한다(테스트 순서와 무관하게).
+    그 모듈을 불러온 적이 없으면 아무것도 하지 않는다(Qt를 쓰지 않는 테스트는 Qt를 불러오지 않는다)."""
+    yield
+    context = sys.modules.get("evolab.app.help.context")
+    tooltips = sys.modules.get("evolab.app.help.tooltips")
+    if context is None and tooltips is None:
+        return
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        return
+    if context is not None:
+        context.uninstall_shortcuts(app)
+    if tooltips is not None:
+        tooltips.uninstall(app)

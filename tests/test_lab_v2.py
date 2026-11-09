@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QMessageBox
 from pytestqt.qtbot import QtBot
 
 from evolab import paths
+from evolab.app import errors
 from evolab.app import strings as S
 from evolab.app.lab import canvas as canvas_mod
 from evolab.app.play import window as play_window
@@ -517,7 +518,11 @@ def test_replay_of_an_unbuildable_body_says_so(qtbot: QtBot, lab: Any, monkeypat
     err = EpisodeBuildError(S.RT_DEGENERATE_SHAPE.format(body="runner"))
     lab._replay_done((lab._replay_tag, ("timeline", ["x"])), err)
     lab._replay_done((lab._replay_tag, ("timeline", ["x"])), ValueError("other"))
-    assert boxes == [S.PLAY_BODY_BUILD_FAILED + "\n" + str(err), "other"]
+    # v3.0(설계 D26·3.2): show_error 상자로 보인다. 모르는 예외(ValueError("other"))의 원문은 본문이 아니라 「자세히」로 간다
+    shown = [b.friendly for b in errors.open_error_boxes() if b.parent() is lab]
+    assert boxes == [] and [f.message for f in shown] == [S.PLAY_BODY_BUILD_FAILED + "\n" + str(err),
+                                                          S.ERR_UNEXPECTED.format(kind="ValueError")]
+    assert shown[0].next_step == S.ERR_BUILD_NEXT and "ValueError: other" in shown[1].detail
 
 
 def test_race_build_failure_message(qtbot: QtBot) -> None:

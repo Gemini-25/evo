@@ -17,6 +17,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from evolab import diagnostics
 from evolab.app import strings as S
 from evolab.engine.session import SessionRequest, session_main
 
@@ -64,6 +65,8 @@ class TrainingClient(QObject):
         self._outbox: queue.Queue[Any] = queue.Queue()
         self._reader: threading.Thread | None = None
         self._closed_sent = True
+        self.last_error_detail = ""
+        """마지막 error 메시지의 traceback(detail). failed 신호를 받는 곳이 OS 오류를 나누는 데 쓴다(v3 검토 수정)."""
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
         self._timer.timeout.connect(self._poll)
@@ -177,6 +180,9 @@ class TrainingClient(QObject):
         elif kind == "rewind":
             self.rewound.emit(msg)
         elif kind == "error":
+            # 학습 프로세스의 오류는 traceback(detail)째 오류 기록에 남긴다(v3 설계 D29: 전에는 detail을 버렸다).
+            diagnostics.record("training", str(msg.get("message", "")), str(msg.get("detail") or ""), where="training")
+            self.last_error_detail = str(msg.get("detail") or "")
             if msg.get("notice") and not msg.get("fatal"):
                 self.notice.emit(str(msg.get("message", "")))
             else:
@@ -189,7 +195,13 @@ class TrainingClient(QObject):
         was_open = not self._closed_sent
         self._finish()
         if was_open and code not in (0, None):
-            self.failed.emit(S.SESSION_LOST.format(code=code), True)
+            text = S.SESSION_LOST.format(code=code)
+            meaning = diagnostics.exit_code_text(code)  # 「종료 코드 3221225477」에 뜻을 붙인다(v3 설계 D29)
+            if meaning:
+                text = S.SESSION_LOST_MEANING.format(base=text, meaning=meaning)
+            diagnostics.record("lost", text, where="gui")
+            self.last_error_detail = ""
+            self.failed.emit(text, True)
 
     def _finish(self) -> None:
         self._timer.stop()

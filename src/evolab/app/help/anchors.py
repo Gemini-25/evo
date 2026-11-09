@@ -181,14 +181,14 @@ def _top_levels() -> list[QWidget]:
 def _screen_root(root: QWidget, screen: str) -> QWidget | None:
     """연결표 경로의 출발점: 탭 화면·"main"이면 주 창, 따로 뜨는 창이면 그 창."""
     if screen in WINDOW_SCREENS.values():
-        for w in (root, root.window()):
+        for w in (root, QWidget.window(root)):  # 속성 window를 가린 위젯도 있다
             if _window_screen(w) == screen:
                 return w
         for w in _top_levels():  # 닫혔지만 아직 지워지지 않은 창은 고르지 않는다
             if _window_screen(w) == screen and w.isVisible():
                 return w
         return None
-    for w in (root, root.window()):
+    for w in (root, QWidget.window(root)):
         if _is_main_window(w):
             return w
     for w in _top_levels():
@@ -209,10 +209,24 @@ def _follow(obj: object, path: str) -> object | None:
     return obj
 
 
+HINT_OBJECT_PREFIX: Final = "evolabHint"
+"""빈 상태 안내(app/help/hints.py)의 프레임·단추 줄 objectName 머리. 같은 글의 안내 단추(예: 에디터 「내장 예제에서 시작」)보다
+화면의 진짜 단추를 고른다."""
+
+
+def _in_hint(button: QWidget) -> bool:
+    w = button.parentWidget()
+    while w is not None:
+        if w.objectName().startswith(HINT_OBJECT_PREFIX):
+            return True
+        w = w.parentWidget()
+    return False
+
+
 def _find_button(container: object, text: str | None) -> QWidget | None:
     if not isinstance(container, QWidget) or not text:
         return None
-    found = [b for b in container.findChildren(QAbstractButton) if b.text() == text]
+    found = [b for b in container.findChildren(QAbstractButton) if b.text() == text and not _in_hint(b)]
     visible = [b for b in found if b.isVisible()]
     return (visible or found or [None])[0]
 

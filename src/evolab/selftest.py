@@ -3,22 +3,30 @@
 exe로 묶은 뒤에만 드러나는 문제(중첩 spawn, 창이 없는 exe의 표준 출력, 한글 경로, Qt 플러그인)를
 마일스톤마다 일찍 잡기 위한 점검이다. 학습 엔진의 실제 워커 풀은 M2에서 만들고, 여기서는 같은
 프로세스 구조(화면 → 학습 프로세스 → 워커 여러 개, 모두 spawn)만 작게 재현한다.
+
+v3.0 점검 넷(설계 4.11, D16, D25): 도움말 쪽, 기록 폴더 쓰기와 오류 보고 묶음(EVOLAB_SELFTEST_CRASH=1이면 exe 자식의 일부러
+세그폴트가 faults.log에 남는지도), Qt 한국어 번역, 처음 실행 안내 자동 진행(창 → 1세대 재생 초, `--tour full`이면 → 10세대).
+새 점검은 데이터·상태 폴더를 임시 폴더로 바꿔(EVOLAB_DATA_DIR·EVOLAB_STATE_DIR, 설계 D5) 사용자의 문서 폴더·settings.ini를
+건드리지 않고, 끝나면 지운다.
 """
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
 import os
 import pickle
 import platform
 import queue
+import shutil
 import sys
+import tempfile
 import time
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -27,6 +35,12 @@ from evolab.app import strings as S
 
 PROCESS_TIMEOUT_S = 180.0
 SELFTEST_SEEDS: tuple[int, ...] = tuple(range(1, 13))
+TOUR_MODES: tuple[str, ...] = ("gen1", "full")
+TOUR_LIMIT_S: dict[str, float] = {"gen1": 60.0, "full": 150.0}
+"""처음 실행 안내 기준(설계 9.3·D16): 창 → 1세대 재생 60초, 창 → 10세대 150초."""
+TOUR_WAIT_S: dict[str, float] = {"gen1": 240.0, "full": 480.0}
+"""안내가 끝나기를 기다리는 한도(기준보다 길게: 느린 PC에서 기준을 넘은 초를 적으려고)."""
+CRASH_TIMEOUT_S = 120.0
 
 
 class SelfTestError(Exception):
@@ -387,9 +401,13 @@ def _two_wheel_body(spec: Any) -> np.ndarray:
     return np.array([on.get(p.id, p.value) for p in sy.evolved_params(spec.file)], dtype=np.float64)
 
 
-def _check_gui() -> str:
+def _headless_offscreen() -> None:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+def _check_gui() -> str:
+    _headless_offscreen()
     from evolab.app.main import MainWindow, create_application
 
     app = create_application()
@@ -403,6 +421,204 @@ def _check_gui() -> str:
     if title != S.APP_TITLE:
         raise SelfTestError(S.SELFTEST_ERR_TITLE.format(title=title))
     return f"platform={app.platformName()}, tabs={tabs}"
+
+
+# ---------------------------------------------------------------------------
+# v3.0 점검: 도움말 쪽, 기록 폴더와 오류 보고 묶음, Qt 한국어, 처음 실행 안내
+# ---------------------------------------------------------------------------
+
+
+KEPT_LOGS: Final = ("errors.jsonl", "faults.log")
+"""temporary_user_dirs(keep_logs=…)가 지우기 전에 진짜 기록 폴더로 옮겨 두는 임시 기록 파일."""
+
+
+def _keep_logs(base: Path, tag: str) -> None:
+    """임시 상태 폴더의 오류 기록을 진짜 기록 폴더에 selftest-<tag>-<이름>으로 남긴다(없으면 지난번 것을 지운다).
+    창·안내 점검 도중 Qt 슬롯의 예외는 오류 기록에만 남으므로, 임시 폴더를 지우면 까닭을 잃는다(CI는 기록 폴더를 올린다)."""
+    from evolab import paths as p
+
+    for name in KEPT_LOGS:
+        src = base / "state" / "logs" / name
+        dest = p.log_dir() / f"selftest-{tag}-{name}"
+        try:
+            if src.is_file() and src.stat().st_size:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+            elif dest.exists():
+                dest.unlink()
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def temporary_user_dirs(keep_logs: str | None = None) -> Iterator[Path]:
+    """데이터·상태 폴더를 빈 임시 폴더로 바꾼다(EVOLAB_DATA_DIR·EVOLAB_STATE_DIR, 설계 D5). spawn 자식은 물려받는다.
+    끝나면 환경 변수를 되돌리고 임시 폴더를 지운다(윈도우에서 아직 쥔 파일이 있으면 남은 것은 그대로 둔다).
+    keep_logs(이름표)를 주면 지우기 전에 임시 오류 기록을 진짜 기록 폴더에 남긴다(_keep_logs)."""
+    from evolab import paths as p
+
+    base = Path(tempfile.mkdtemp(prefix="evolab-selftest-"))
+    keys = (p.DATA_DIR_ENV, p.STATE_DIR_ENV)
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ[p.DATA_DIR_ENV] = str(base / "data")
+    os.environ[p.STATE_DIR_ENV] = str(base / "state")
+    try:
+        yield base
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if keep_logs is not None:
+            _keep_logs(base, keep_logs)
+        for _ in range(10):  # 윈도우: 막 끝난 자식 프로세스의 파일 핸들이 늦게 풀리면 한 번에 지워지지 않는다
+            shutil.rmtree(base, ignore_errors=True)
+            if not base.exists():
+                break
+            time.sleep(0.3)
+
+
+def _check_help() -> str:
+    """도움말 쪽(strings.py HELP_PAGES)을 모두 열어 자리가 다 풀리고 낱말 풀이 쪽에 낱말이 모두 있는지(Qt 없이)."""
+    from evolab.app.help import content
+
+    for page in content.PAGES:
+        if not content.load_page(page).strip():
+            raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=page))
+        unknown = content.unknown_placeholders(page)
+        if unknown:
+            raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=f"{page}: {', '.join(unknown)}"))
+    words = content.load_page(content.GLOSSARY)
+    missing = [term for term in S.HELP_GLOSSARY_TERMS if f"**{term}**" not in words]
+    if missing:
+        raise SelfTestError(S.SELFTEST_ERR_MISSING.format(what=f"{content.GLOSSARY}: {', '.join(missing)}"))
+    return S.SELFTEST_HELP_DETAIL.format(pages=len(content.PAGES))
+
+
+def _check_logs() -> str:
+    """빈 임시 상태 폴더의 로그 폴더에 써 보고 오류 보고 묶음을 만들어 확인한다(Qt 없이, report/bundle.self_check).
+
+    EVOLAB_SELFTEST_CRASH=1이면(윈도우 CI W2만) 같은 exe로 spawn한 자식을 일부러 세그폴트시켜 종료 코드와 faults.log의
+    치명적 오류 스택을 확인한다(설계 4.9). 사용자 PC에서는 돌지 않는다.
+    """
+    from evolab import diagnostics
+    from evolab.app.report import bundle
+
+    with temporary_user_dirs() as base:
+        work = base / "work"
+        work.mkdir()
+        try:
+            detail = bundle.self_check(work)
+        except RuntimeError as exc:
+            raise SelfTestError(S.SELFTEST_ERR_MISMATCH.format(detail=exc)) from None
+        if os.environ.get(diagnostics.SELFTEST_CRASH_ENV, "").strip() == "1":
+            ok, crash = diagnostics.crash_check(timeout=CRASH_TIMEOUT_S)
+            if not ok:
+                raise SelfTestError(S.SELFTEST_ERR_CRASH_NOT_LOGGED.format(detail=crash))
+            detail += f"; crash child: {crash}"
+    return detail
+
+
+def _has_hangul(text: str) -> bool:
+    return any(0xAC00 <= ord(ch) <= 0xD7A3 for ch in text)
+
+
+def qt_button_texts() -> list[str]:
+    """표준 단추 저장·닫기·취소·예·아니요의 글(번역기를 넣은 앱에서)."""
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    b = QDialogButtonBox.StandardButton
+    order = (b.Save, b.Close, b.Cancel, b.Yes, b.No)
+    box = QDialogButtonBox(b.Save | b.Close | b.Cancel | b.Yes | b.No)
+    try:
+        return [box.button(x).text() for x in order]
+    finally:
+        box.deleteLater()
+
+
+def _check_qt_ko() -> str:
+    """Qt 기본 문구가 한국어인지(qtbase_ko 번역기, 설계 D25): 표준 단추 다섯 개의 글에 한글이 있어야 한다."""
+    _headless_offscreen()
+    from PySide6.QtCore import QTranslator
+
+    from evolab.app.main import QT_TRANSLATOR_NAME, create_application
+
+    app = create_application()
+    texts = qt_button_texts()
+    if not all(_has_hangul(t) for t in texts):
+        raise SelfTestError(S.SELFTEST_ERR_QT_KO.format(text=", ".join(texts)))
+    tr = app.findChild(QTranslator, QT_TRANSLATOR_NAME)
+    name = Path(tr.filePath()).name if tr is not None else "?"
+    return f"{' · '.join(texts)} ({name})"
+
+
+def run_tour_check(until: str = "gen1") -> dict[str, Any]:
+    """빈 데이터·상태 폴더에서 주 창을 띄우고 처음 실행 안내를 자동 모드로(단추를 스스로 누름) 돌린다(설계 D16).
+
+    돌려주는 값: result(안내 결과), seconds(until에 따라 창 → 1세대 재생 또는 창 → 목표 세대), gen1, goal_s, clicks,
+    first·goal(1세대·목표 세대 평균 점수), workers, log(단계 기록). 학습은 끝내고 창은 닫는다.
+    """
+    _headless_offscreen()
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    from evolab.app.help import tour
+    from evolab.app.main import MainWindow, create_application
+
+    with temporary_user_dirs(keep_logs="tour"):
+        app = create_application()
+        window = MainWindow()
+        try:
+            window.resize(1280, 800)
+            window.show()
+            app.processEvents()
+            overlay = tour.start_tour(window, window.lab.settings, auto=True, until=until)  # type: ignore[arg-type]
+            if overlay is None:
+                raise SelfTestError(S.SELFTEST_ERR_TOUR_FAILED.format(detail="start_tour=None"))
+            if overlay.result is None:
+                loop = QEventLoop()
+                overlay.finished.connect(loop.quit)
+                QTimer.singleShot(int(TOUR_WAIT_S[until] * 1000), loop.quit)
+                loop.exec()
+            t = overlay.times
+            out: dict[str, Any] = {
+                "result": overlay.result, "clicks": t.clicks, "first": t.first_mean, "goal": t.goal_mean,
+                "workers": window.lab.workers.value(),
+                "gen1": None if t.gen1_playing is None else t.gen1_playing - t.shown,
+                "goal_s": None if t.goal_reached is None else t.goal_reached - t.shown,
+                "log": [k for _t, k in getattr(overlay, "log", [])],
+            }
+            out["seconds"] = out["gen1"] if until == "gen1" else out["goal_s"]
+            return out
+        finally:
+            window.lab.end_session()
+            window.close()
+            window.deleteLater()
+            app.processEvents()
+
+
+def _check_tour(until: str = "gen1") -> str:
+    """처음 실행 안내(1세대까지 자동 진행, `--tour full`이면 10세대까지 4배속): 결과·초·누른 수를 적고 기준을 넘으면 실패."""
+    from evolab.app.help import tour
+
+    r = run_tour_check(until)
+    limit = TOUR_LIMIT_S[until]
+    if r["result"] != "done" or r["seconds"] is None:
+        if r["result"] is None:
+            raise SelfTestError(S.SELFTEST_ERR_TIMEOUT.format(seconds=int(TOUR_WAIT_S[until])))
+        raise SelfTestError(S.SELFTEST_ERR_TOUR_FAILED.format(detail=f"result={r['result']}, steps={'/'.join(r['log'])}"))
+    lines = [S.SELFTEST_TOUR_DETAIL.format(seconds=r["gen1"], clicks=r["clicks"])]
+    what = S.SELFTEST_TOUR_WHAT_GEN1
+    if until == "full":
+        first = r["first"] if r["first"] is not None else float("nan")
+        now = r["goal"] if r["goal"] is not None else float("nan")
+        lines.append(S.SELFTEST_TOUR_FULL_DETAIL.format(goal=tour.TOUR_GOAL, seconds=r["seconds"], first=first, now=now))
+        what = S.SELFTEST_TOUR_WHAT_GOAL.format(goal=tour.TOUR_GOAL)
+    lines.append(f"workers={r['workers']}")
+    if r["seconds"] > limit:
+        raise SelfTestError("\n".join([S.SELFTEST_ERR_TOUR_SLOW.format(what=what, seconds=r["seconds"],
+                                                                         limit=int(limit)), *lines]))
+    return "\n".join(lines)
 
 
 def _checksum(arr: np.ndarray) -> str:
@@ -459,18 +675,36 @@ def _run_check(name: str, fn: Callable[[], str]) -> CheckResult:
     return CheckResult(name, ok, time.perf_counter() - t0, detail)
 
 
-def run_selftest(log_path: Path | None = None, workers: int | None = None, check_gui: bool = True) -> int:
-    n = workers if workers is not None else default_workers()
+def selftest_checks(workers: int, check_gui: bool = True, tour: str = "gen1") -> list[tuple[str, Callable[[], str]]]:
+    """점검 목록(이름, 함수). 창이 필요 없는 것 먼저, 그다음 창 점검(--no-gui면 뺀다)."""
+    if tour not in TOUR_MODES:
+        raise ValueError(tour)
     checks: list[tuple[str, Callable[[], str]]] = [
         (S.SELFTEST_CHECK_IMPORTS, _check_imports),
         (S.SELFTEST_CHECK_PHYSICS, _check_physics),
         (S.SELFTEST_CHECK_LEARNER, _check_learner),
-        (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(n)),
+        (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(workers)),
         (S.SELFTEST_CHECK_ENV, _check_builtin_env),
         (S.SELFTEST_CHECK_BUNDLE, _check_bundle_files),
+        (S.SELFTEST_CHECK_HELP, _check_help),
+        (S.SELFTEST_CHECK_LOGS, _check_logs),
     ]
     if check_gui:
-        checks.append((S.SELFTEST_CHECK_GUI, _check_gui))
+        from evolab.app.help.tour import TOUR_GOAL
+
+        tour_name = S.SELFTEST_CHECK_TOUR if tour == "gen1" else S.SELFTEST_CHECK_TOUR_FULL.format(goal=TOUR_GOAL)
+        checks += [
+            (S.SELFTEST_CHECK_GUI, _check_gui),
+            (S.SELFTEST_CHECK_QT_KO, _check_qt_ko),
+            (tour_name, lambda: _check_tour(tour)),
+        ]
+    return checks
+
+
+def run_selftest(log_path: Path | None = None, workers: int | None = None, check_gui: bool = True,
+                 tour: str = "gen1") -> int:
+    n = workers if workers is not None else default_workers()
+    checks = selftest_checks(n, check_gui, tour)
 
     report = _Report(log_path if log_path is not None else paths.log_dir() / "selftest.log")
     failed: list[str] = [name for name, _ in checks]

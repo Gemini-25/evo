@@ -183,20 +183,34 @@ class StructureCounter:
                 start += n
                 out.append((list(tally), np.array(list(tally.values()), dtype=np.int64)))
             return out
+        upos, ucode, counts = self._flat_counts(body, sizes)
+        edges = np.searchsorted(upos, np.arange(len(blocks) + 1))
+        return [(ucode[edges[i]:edges[i + 1]].tolist(), counts[edges[i]:edges[i + 1]])
+                for i in range(len(blocks))]
+
+    def count_flat(self, blocks: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """count와 같은 셈을 평평한 배열로: (세대 번호, 코드, 개체 수), 세대·코드 오름차순(세대마다 목록을 만들지 않아
+        긴 기록을 처음 셀 때 빠르다). uses_bits가 참일 때만."""
+        if not blocks:
+            empty = np.zeros(0, dtype=np.int64)
+            return empty, empty, empty
+        sizes = np.array([len(b) for b in blocks], dtype=np.int64)
+        body = np.vstack([np.asarray(b, dtype=np.float64).reshape(len(b), self.n_body) for b in blocks])
+        return self._flat_counts(body, sizes)
+
+    def _flat_counts(self, body: np.ndarray, sizes: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         code = self.codes(body)
-        pos = np.repeat(np.arange(len(blocks), dtype=np.int64), sizes)
+        pos = np.repeat(np.arange(len(sizes), dtype=np.int64), sizes)
         order = np.lexsort((code, pos))
         sp, sc = pos[order], code[order]
         total = len(sc)
         if total == 0:
-            return [([], np.zeros(0, dtype=np.int64)) for _ in blocks]
+            empty = np.zeros(0, dtype=np.int64)
+            return empty, empty, empty
         cut = np.flatnonzero((sp[1:] != sp[:-1]) | (sc[1:] != sc[:-1])) + 1
         starts = np.concatenate(([0], cut))
         counts = np.diff(np.concatenate((starts, [total])))
-        upos, ucode = sp[starts], sc[starts]
-        edges = np.searchsorted(upos, np.arange(len(blocks) + 1))
-        return [(ucode[edges[i]:edges[i + 1]].tolist(), counts[edges[i]:edges[i + 1]])
-                for i in range(len(blocks))]
+        return sp[starts], sc[starts], counts
 
     def keys(self, body: np.ndarray, order: Sequence[str]) -> list[StructureKey]:
         """행마다 구조 열쇠: order(없어질 수 있는 물체 순서) 가운데 있는 것(테스트·검사용)."""
@@ -748,6 +762,9 @@ class StructureTile(_WatchTile):
         for v, items in todo.items():
             c = self.counter(v)
             assert c is not None
+            if c.uses_bits:
+                self._store_counts(v, c, items)
+                continue
             counted = c.count([rows for _, _, rows in items])
             for (g, entry, rows), (codes, n) in zip(items, counted, strict=True):
                 total = int(len(rows))
@@ -757,6 +774,31 @@ class StructureTile(_WatchTile):
                     merged[kid] = merged.get(kid, 0) + int(k)
                 counts[g] = _GenCount(g, entry, v, total, np.fromiter(merged, dtype=np.intp, count=len(merged)),
                                       np.array(list(merged.values()), dtype=np.float64) / total)
+
+    def _store_counts(self, v: int, c: StructureCounter, items: list[tuple[int, hs.GenEntry, np.ndarray]]) -> None:
+        """비트 코드로 센 세대들을 한 번에 _GenCount로(v3.0 지연 고침: 750세대를 처음 셀 때 세대마다 파이썬으로 코드를
+        합치던 것이 8~9ms). 코드 → 구조 열쇠는 처음 나온 차례(세대·코드 순서)로 정해 열쇠 번호가 세대마다 하던 것과
+        같고, 다른 코드가 같은 구조면(이어짐 규칙) 세대마다 개체 수를 합친다. 비율 = 개체 수 ÷ 그 세대 개체 수."""
+        upos, ucode, ucount = c.count_flat([rows for _, _, rows in items])
+        if len(ucode):
+            uniq, first, inv = np.unique(ucode, return_index=True, return_inverse=True)
+            kid_of = np.empty(len(uniq), dtype=np.int64)
+            for i in np.argsort(first, kind="stable").tolist():
+                kid_of[i] = self._kid(v, c, int(uniq[i]))
+            kid = kid_of[inv.reshape(-1)]
+            width = int(kid.max()) + 1
+            merged, at = np.unique(upos * width + kid, return_inverse=True)
+            sums = np.bincount(at.reshape(-1), weights=ucount.astype(np.float64))
+            gpos, gkid = merged // width, merged % width
+        else:
+            gpos = gkid = np.zeros(0, dtype=np.int64)
+            sums = np.zeros(0)
+        edges = np.searchsorted(gpos, np.arange(len(items) + 1)).tolist()
+        counts = self._counts
+        for i, (g, entry, rows) in enumerate(items):
+            total = int(len(rows))
+            a, b = edges[i], edges[i + 1]
+            counts[g] = _GenCount(g, entry, v, total, gkid[a:b].astype(np.intp), sums[a:b] / total)
 
     def _aggregate(self, gens: list[int]) -> tuple[list[int], list[StructureKey], np.ndarray, np.ndarray]:
         """센 세대 → (세대, 구조 열쇠 목록, (열쇠, 세대) 비율, (세대,) 집단 기록 여부)."""

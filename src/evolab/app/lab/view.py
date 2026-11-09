@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app.errors import os_cause, show_error, training_error
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.lab.client import TrainingClient
 from evolab.app.lab.dashboard import Dashboard
@@ -127,11 +128,24 @@ def settings_store() -> QSettings:
 
 def gui_first(stop: Callable[[], bool]) -> bool:
     """화면 프로세스의 배경 작업(다시 시뮬레이션, 장면·세계 만들기)이 일 하나를 시작하기 전에 부른다: 화면 스레드가 무거운
-    일을 하는 중이면(GUI_PRIORITY: 펌프 한 단계, 실행 열기) 끝날 때까지 기다린다. pymunk는 C 함수마다 GIL을 놓았다 곧바로
-    다시 잡아, 같이 돌면 화면 스레드가 GIL을 얻지 못하고 굶는다(궤적 밀도 세계 만들기와 겹친 타일 그림이 8ms → 25ms).
-    stop()(멈추라는 요청)을 돌려준다."""
+    일을 하는 중이면(GUI_PRIORITY: 펌프 한 단계, 실행 열기, v3.0부터 창 다시 그리기(dashboard._PaintGuard)) 끝날 때까지
+    기다린다. pymunk는 C 함수마다 GIL을 놓았다 곧바로 다시 잡아, 같이 돌면 화면 스레드가 GIL을 얻지 못하고 굶는다(궤적
+    밀도 세계 만들기와 겹친 타일 그림이 8ms → 25ms). stop()(멈추라는 요청)을 돌려준다."""
     GUI_PRIORITY.wait(stop)
     return stop()
+
+
+def release_episodes(stop: Callable[[], bool]) -> None:
+    """배경 작업이 다 쓴 Episode를 그 배경 스레드에서 바로 거둔다(v3.0 ML 고침). 다시 시뮬레이션·세계 그림이 끝난 뒤 부른다.
+
+    Episode(pymunk 공간·모양)는 순환 참조라 참조 수로 풀리지 않고 다음 순환 GC가 푼다. 다시 시뮬레이션은 수천 스텝을 도는
+    동안 Episode가 늙은 세대로 넘어가 전체 수집이어야 풀린다. 그 수집이 화면 스레드에서 타일 그림 한가운데 일어나면 그림에
+    수십~수백 ms가 더해졌다(바퀴 고르는 언덕차 8배 관전, 2세대가 올 때: 공간 하나 푸는 데 8~10ms, 재생 뒤 전체 수집
+    22~196ms가 유전자 지도 첫 그림과 겹쳐 최대 틈 113~241ms). 화면이 바쁘지 않을 때(gui_first) 만든 스레드에서 거두면 그
+    일이 그림과 겹치지 않고, 그동안에도 화면 스레드는 pymunk가 GIL을 놓는 틈마다 돈다. 오래 사는 객체는 얼려 두었으므로
+    (freeze_long_lived) 전체 수집이 훑는 것은 그 뒤에 만든 것뿐이다. 화면에만 쓰는 일이라 학습 결과와 무관하다."""
+    gui_first(stop)
+    gc.collect()
 
 
 class _ReplayThread(QThread):
@@ -149,6 +163,7 @@ class _ReplayThread(QThread):
             for spec, layout, genome, trial, trace in self.jobs:
                 gui_first(self.isInterruptionRequested)
                 out.append(replay(spec, layout, genome, trial, trace=trace))
+                release_episodes(self.isInterruptionRequested)
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
             self.finished_job.emit(self.tag, exc)
             return
@@ -193,6 +208,8 @@ def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, tri
             world = geometry
         agents.append(agent_geoms(geometry, ep.moving_bodies))
         del ep, geometry  # 다음 개체를 만들기 전에 놓는다(위 설명)
+        if cancel is not None:
+            cancel()  # 거두는 동안(바퀴 고르는 언덕차는 8~10ms) GIL을 쥐므로 화면이 바쁘면 끝날 때까지 기다린 뒤에(v3.0 ML)
         gc.collect(1)
     if world is None:  # 모든 개체를 조립할 수 없다(학습기는 처음 몸이 조립되는 것을 시작할 때 확인한다)
         world = Episode(spec, layout.body_values(layout.initial()[None, :])[0], trial).geometry()
@@ -249,6 +266,7 @@ class _WorldThread(QThread):
         except Exception as exc:  # 결과를 화면 스레드로 넘긴다(못 만들면 밀도 타일은 계속 준비 중 글)
             self.finished_job.emit(self.tag, exc)
             return
+        release_episodes(self.isInterruptionRequested)
         self.finished_job.emit(self.tag, out)
 
 
@@ -386,6 +404,8 @@ def _bar(v: float, width: int = 10) -> str:
 class LabView(QWidget):
     run_started = Signal(Path)
     edit_env_requested = Signal(str, str)
+    env_changed = Signal()
+    """새 실행을 준비할 환경을 바꿨다(use_env_text). 빈 상태 안내가 글을 바로 고친다(v3 검토 수정)."""
     """(환경 내용, 이름) — 에디터에서 고치기. 멈춘 실험이면 고친 뒤 send_env_text로 이어서 학습한다."""
 
     def __init__(self, parent: QWidget | None = None, settings: QSettings | None = None) -> None:
@@ -617,7 +637,6 @@ class LabView(QWidget):
         el.addWidget(btn_open)
         el.addWidget(self.btn_reload)
         el.addWidget(self.btn_edit)
-        lay.addWidget(env)
 
         st = QGroupBox(S.LAB_SETTINGS_GROUP)
         form = QFormLayout(st)
@@ -671,7 +690,6 @@ class LabView(QWidget):
         form.addRow(S.LAB_TRIALS, self.trials)
         form.addRow(S.LAB_WORKERS, self.workers)
         self.method.currentIndexChanged.connect(lambda _i: self._method_changed())
-        lay.addWidget(st)
 
         stop = QGroupBox(S.LAB_STOP_GROUP)
         sf = QFormLayout(stop)
@@ -696,7 +714,6 @@ class LabView(QWidget):
         sf.addRow(S.LAB_MAX_MINUTES, self.max_minutes)
         sf.addRow(S.LAB_TARGET, self.target)
         sf.addRow(S.LAB_STAGNATION, self.stagnation)
-        lay.addWidget(stop)
 
         # 학습 안정성(v1.1): 정체하면 새로 시작은 멈춘 학습에도 '적용'하고, 예선은 새 실행에서만 정한다
         stab = QGroupBox(S.LAB_STABILITY_GROUP)
@@ -735,7 +752,6 @@ class LabView(QWidget):
         self.btn_apply.setToolTip(S.LAB_APPLY_TIP)
         self.btn_apply.clicked.connect(self.apply_settings)
         bf.addRow(self.btn_apply)
-        lay.addWidget(stab)
         # 세대당 학습 시험이 바뀌는 칸(방법, 개체 수, 이웃 수, 시험 수)과 새 칸이 바뀌면 칸 상태·어림 글을 다시 정한다
         for changed in (self.method.currentIndexChanged, self.popsize.valueChanged, self.sa_neighbors.valueChanged,
                         self.trials.valueChanged, self.stagnation.valueChanged, self.restart_on.toggled,
@@ -763,7 +779,6 @@ class LabView(QWidget):
         self.status = QLabel(S.LAB_STATUS_IDLE)
         self.status.setWordWrap(True)
         g.addWidget(self.status, 3, 0, 1, 2)
-        lay.addWidget(ctl)
 
         view = QGroupBox(S.LAB_VIEW_GROUP)
         vf = QFormLayout(view)
@@ -786,7 +801,10 @@ class LabView(QWidget):
         self.fast_interval = _spin(1, 100000, 10)
         self.fast_interval.valueChanged.connect(lambda _v: self._save_settings())
         vf.addRow(S.LAB_FAST_INTERVAL, self.fast_interval)
-        lay.addWidget(view)
+        # v3.0(설계 D17): 진행·보기 묶음을 패널 맨 위로(만드는 순서는 그대로). 묶음은 여기서 화면 차례대로 처음 단다:
+        # 위젯은 부모에 달리는 차례로 Tab 차례(초점 사슬)에 들어가므로, 화면 차례와 Tab 차례가 같아진다.
+        for group in (ctl, view, env, st, stop, stab):
+            lay.addWidget(group)
         lay.addStretch(1)
         return w
 
@@ -850,7 +868,7 @@ class LabView(QWidget):
         try:
             text = path.read_text(encoding="utf-8-sig")
         except OSError as exc:
-            QMessageBox.warning(self, S.LAB_OPEN_ENV_FAILED, str(exc))
+            show_error(self, S.LAB_OPEN_ENV_FAILED, exc)
             return False
         return self.use_env_text(text, str(path), None, path)
 
@@ -865,7 +883,7 @@ class LabView(QWidget):
             Episode(spec, None if not layout.n_body else layout.body_values(layout.initial()[None, :])[0],
                     seeds.display_trial())
         except (EnvFileError, EpisodeBuildError, ValueError) as exc:
-            QMessageBox.warning(self, S.LAB_OPEN_ENV_FAILED, str(exc))
+            show_error(self, S.LAB_OPEN_ENV_FAILED, exc)
             return False
         self._reset_run_view()
         self.run_dir = None
@@ -883,6 +901,7 @@ class LabView(QWidget):
             self.trials.setSpecialValueText(f"{S.LAB_TRIALS_ENV} ({spec.file.evaluation.trials})")
         self._show_still_scene()
         self._update_buttons()
+        self.env_changed.emit()
         return True
 
     def _show_still_scene_soon(self) -> None:
@@ -1033,7 +1052,7 @@ class LabView(QWidget):
         try:
             config.validate()
         except ValueError as exc:
-            QMessageBox.warning(self, S.LAB_CHANGE_FAILED, str(exc))
+            show_error(self, S.LAB_CHANGE_FAILED, exc, next_step=S.ERR_SETTINGS_NEXT)
             return False
         problem = qualify_budget_problem(config)  # 예선만으로 최대 시험 횟수를 다 쓰면 시작하지 않는다
         if problem is not None:
@@ -1112,7 +1131,7 @@ class LabView(QWidget):
         try:
             text = self.env_path.read_text(encoding="utf-8-sig")
         except OSError as exc:
-            QMessageBox.warning(self, S.LAB_OPEN_ENV_FAILED, str(exc))
+            show_error(self, S.LAB_OPEN_ENV_FAILED, exc)
             return
         self.client.send({"type": "env", "text": text})
 
@@ -1324,7 +1343,8 @@ class LabView(QWidget):
 
     def _on_applied(self, msg: dict[str, Any]) -> None:
         if not msg.get("ok"):
-            QMessageBox.warning(self, S.LAB_CHANGE_FAILED, str(msg.get("message", "")))
+            # 학습 프로세스가 거절한 까닭(설정 검사 글, 그쪽 예외 글일 수도 있음): 다음 할 일과 묶음 단추를 함께(설계 D26)
+            show_error(self, S.LAB_CHANGE_FAILED, str(msg.get("message", "")), next_step=S.ERR_SETTINGS_NEXT)
             return
         gen = int(msg.get("generation", self.generation))
         kind = {"config": "config_change", "env": "env_change"}.get(str(msg.get("what")))
@@ -1357,7 +1377,13 @@ class LabView(QWidget):
         self._update_status()
 
     def _on_failed(self, message: str, fatal: bool) -> None:
-        QMessageBox.warning(self, S.LAB_ERROR_TITLE, message)
+        # 학습 프로세스의 오류 글(traceback은 client가 오류 기록에 남김). OS 오류 원문이 섞였으면 그 OS 오류로 까닭과
+        # 「다음에 할 일」을 고른다(원문은 「자세히」에).
+        found = training_error(message, getattr(self.client, "last_error_detail", ""))
+        if found is not None:
+            show_error(self, S.LAB_ERROR_TITLE, found[0], message=found[1])
+        else:
+            show_error(self, S.LAB_ERROR_TITLE, message)
         if fatal:
             self.state = "closed"
             self._update_buttons()
@@ -1476,7 +1502,12 @@ class LabView(QWidget):
         self.btn_pause.setEnabled(running)
         busy = not active and self.busy_elsewhere(self.run_dir)
         self.btn_continue.setEnabled(paused or (not active and self.run_dir is not None and not busy))
-        self.btn_continue.setToolTip(S.RVL_CONTINUE_BUSY_TIP if busy else "")
+        tip = self.btn_continue.toolTip()
+        if busy and tip != S.RVL_CONTINUE_BUSY_TIP:
+            self._continue_tip = tip  # 도움말 풍선(v3.0 HELP_TIPS) 등 다른 곳이 단 글은 바쁨이 풀리면 되돌린다
+            self.btn_continue.setToolTip(S.RVL_CONTINUE_BUSY_TIP)
+        elif not busy and tip == S.RVL_CONTINUE_BUSY_TIP:
+            self.btn_continue.setToolTip(getattr(self, "_continue_tip", ""))
         self.btn_step.setEnabled(paused)
         self.btn_end.setEnabled(active)
         self.btn_apply.setEnabled(paused)
@@ -1676,10 +1707,9 @@ class LabView(QWidget):
         if seq != self._replay_tag:
             return  # 더 새로운 요청이 있다
         if isinstance(result, Exception):
-            text = str(result)
-            if isinstance(result, EpisodeBuildError):  # 그 몸 수치로 조립할 수 없는 개체(설계 4.9)
-                text = S.PLAY_BODY_BUILD_FAILED + "\n" + text
-            QMessageBox.warning(self, S.LAB_ERROR_TITLE, text)
+            # 그 몸 수치로 조립할 수 없는 개체(v2 설계 4.9)는 그렇다고 앞에 붙인다. 모르는 예외 글은 「자세히」로(v3 설계 D26)
+            built = S.PLAY_BODY_BUILD_FAILED + "\n" + str(result) if isinstance(result, EpisodeBuildError) else None
+            show_error(self, S.LAB_ERROR_TITLE, result, message=built)
             return
         self._adopt_play_brain(seq, result[-1], inspect=kind == "inspect")
         if kind == "inspect":
@@ -1735,7 +1765,7 @@ class LabView(QWidget):
         try:
             out = export_gif(items, path, title=label, progress=progress)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, str(exc))
+            show_error(self, S.VIDEO_SAVE_TITLE, exc)
             return None
         except MemoryError:
             QMessageBox.warning(self, S.VIDEO_SAVE_TITLE, S.VIDEO_NO_MEMORY)
@@ -2276,7 +2306,9 @@ class LabView(QWidget):
                    "config": config, "layout": info.get("layout"), "stats": stats,
                    "events": store.read_events(), "champion": champion}
         except (RunStoreError, OSError, KeyError, IndexError, ValueError, EnvFileError) as exc:
-            QMessageBox.warning(self, S.LAB_ERROR_TITLE, str(exc))
+            # 실행 폴더 파일이 망가진 경우(KeyError 등)도 「다른 실행을 열거나 지우고 다시」가 다음 할 일. OS 오류는 explain이 고른다
+            broken = None if os_cause(exc) else S.ERR_RUN_STORE_NEXT.format(records=S.TAB_RECORDS)
+            show_error(self, S.LAB_ERROR_TITLE, exc, next_step=broken)
             return False
         self._reset_run_view()
         # 연 실행의 칸이 없는 설정(validate_every 등)은 '새로 시작'에 가져가지 않는다. 그대로 쓰려면 복제한다.

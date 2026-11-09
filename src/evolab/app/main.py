@@ -1,11 +1,16 @@
-"""주 창: 에디터, 실험실, 비교, 기록 네 화면을 탭으로 둔다."""
+"""주 창: 에디터, 실험실, 비교, 기록 네 화면을 탭으로 둔다.
+
+v3.0(설계 7.1): 주 창이 만들어질 때 도움말 메뉴·모서리 단추·F1·풍선 도움말·빈 상태를 `app/help/setup.install`로 붙이고,
+`create_application`이 Qt 기본 문구를 한국어로(qtbase_ko), `run_gui`가 진단(오류 기록, 갑자기 닫힘 표시, 뮤텍스), 창을 못 띄운 시작
+실패의 오류 보고 묶음, 처음 실행 안내 제안을 맡는다.
+"""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLibraryInfo, QLocale, Qt, QTranslator
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget, QWidget
 
 from evolab import __version__, paths
@@ -73,8 +78,14 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(S.MENU_DATA_DIR).triggered.connect(self.choose_data_dir)
         settings_menu.addAction(S.MENU_DATA_DIR_RESET).triggered.connect(lambda: self.set_data_dir(None))
         help_menu = self.menuBar().addMenu(S.MENU_HELP)
-        help_menu.addAction(S.MENU_ABOUT).triggered.connect(self.show_about)
         help_menu.addAction(S.MENU_OPEN_DATA).triggered.connect(self._open_data_dir)
+        help_menu.addAction(S.MENU_ABOUT).triggered.connect(self.show_about)
+
+        # v3.0: 도움말 메뉴 위쪽 항목, 탭 줄 모서리 「? 도움말」, F1·Shift+F1, 풍선 도움말, 빈 상태(설계 7.1, 5.1).
+        # 처음 실행 안내는 여기서 띄우지 않는다(run_gui만: 설계 D12).
+        from evolab.app.help import setup as help_setup
+
+        help_setup.install(self)
 
     def _choose_and_play(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, S.MENU_PLAY_OPEN, str(paths.builtin_env_dir()), S.ENV_FILE_FILTER)
@@ -92,7 +103,9 @@ class MainWindow(QMainWindow):
             spec = load_env(path)
             window = PlayWindow(spec)
         except (EnvFileError, EpisodeBuildError) as exc:
-            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, str(exc))
+            from evolab.app.errors import show_error
+
+            show_error(self, S.PLAY_OPEN_FAILED, exc)
             return None
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._play_windows.append(window)
@@ -106,7 +119,8 @@ class MainWindow(QMainWindow):
             body = notices.read_text(encoding="utf-8")
         except OSError:
             body = S.ABOUT_NO_NOTICES
-        return S.ABOUT_TEXT.format(name=S.APP_NAME, version=__version__, notices=body)
+        return S.ABOUT_TEXT_V3.format(name=S.APP_NAME, version=__version__, data_dir=paths.data_dir(),
+                                      state_dir=paths.user_state_dir(), notices=body)
 
     def show_about(self) -> None:
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
@@ -196,7 +210,9 @@ class MainWindow(QMainWindow):
         try:
             window = PlayWindow(spec)  # type: ignore[arg-type]
         except EpisodeBuildError as exc:
-            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, str(exc))
+            from evolab.app.errors import show_error
+
+            show_error(self, S.PLAY_OPEN_FAILED, exc)
             return None
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._play_windows.append(window)
@@ -226,7 +242,10 @@ class MainWindow(QMainWindow):
         try:
             info = clone_settings(run)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, S.APP_NAME, str(exc))
+            from evolab.app.errors import os_cause, show_error
+
+            show_error(self, S.APP_NAME, exc,
+                       next_step=None if os_cause(exc) else S.ERR_RUN_STORE_NEXT.format(records=S.TAB_RECORDS))
             return
         if self.lab.use_env_text(info["env_text"], info.get("env_name", ""), info.get("config") or {}):
             self.tabs.setCurrentWidget(self.lab)
@@ -238,6 +257,9 @@ class MainWindow(QMainWindow):
         self.lab.shutdown()
         self.compare.shutdown()
         super().closeEvent(event)  # type: ignore[arg-type]
+        from evolab import diagnostics
+
+        diagnostics.mark_clean_exit()  # 정상 종료: running-<pid>.flag를 지운다(설계 D30)
 
 
 def _same_folder(a: Path, b: Path) -> bool:
@@ -254,9 +276,52 @@ def _open_folder(folder: Path) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
 
+QT_TRANSLATOR_NAME = "evolab_qtbase_ko"
+"""Qt 기본 문구 번역기의 객체 이름(앱에 한 번만 넣으려고)."""
+
+
+def qt_translation_dirs() -> list[Path]:
+    """qtbase_ko.qm을 찾을 폴더: Qt가 아는 번역 폴더, 그다음 PySide6 꾸러미 안(묶인 exe에서 Qt 경로가 다를 때)."""
+    dirs = [Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))]
+    try:
+        import PySide6
+
+        base = Path(PySide6.__file__).resolve().parent
+        dirs += [base / "Qt" / "translations", base / "translations"]
+    except (ImportError, OSError, TypeError):
+        pass
+    out: list[Path] = []
+    for d in dirs:
+        if str(d) and d not in out:
+            out.append(d)
+    return out
+
+
+def install_qt_translation(app: QApplication) -> bool:
+    """Qt 기본 문구(표준 단추 저장·닫기·취소·예·아니요, 파일 대화 상자, 「자세한 정보 표시...」)를 한국어로(설계 D25, 4.7).
+
+    앱에 한 번만 넣는다. 번역 파일이 없으면 오류 기록에 한 줄 남기고 영어 그대로 계속한다. 넣었으면(또는 이미 있으면) 참.
+    """
+    if app.findChild(QTranslator, QT_TRANSLATOR_NAME) is not None:
+        return True
+    tr = QTranslator(app)
+    tr.setObjectName(QT_TRANSLATOR_NAME)
+    locale = QLocale(QLocale.Language.Korean, QLocale.Country.SouthKorea)
+    for folder in qt_translation_dirs():
+        if tr.load(locale, "qtbase", "_", str(folder)):
+            app.installTranslator(tr)
+            return True
+    tr.deleteLater()
+    from evolab import diagnostics
+
+    diagnostics.record("qt", "qtbase_ko not loaded", "; ".join(str(d) for d in qt_translation_dirs()))
+    return False
+
+
 def create_application(argv: list[str] | None = None) -> QApplication:
     app = QApplication.instance()
     if isinstance(app, QApplication):
+        install_qt_translation(app)  # 테스트(pytest-qt)처럼 앱을 먼저 만든 경우에도 한국어 기본 문구
         return app
     app = QApplication(argv if argv is not None else sys.argv[:1])
     app.setApplicationName("evolab")
@@ -266,15 +331,44 @@ def create_application(argv: list[str] | None = None) -> QApplication:
         from PySide6.QtGui import QIcon
 
         app.setWindowIcon(QIcon(str(paths.icon_path())))
+    install_qt_translation(app)
     return app
 
 
+def on_crash(action: str, line: str) -> None:
+    """잡히지 않은 예외 알림(`diagnostics.install_gui`에 넘김): 오류 보고 모듈(report.dialog·bundle)은 처음 알릴 때 불러온다
+    (설계 D62: 시작할 때 불러오지 않음, M3 창 뜨는 시간)."""
+    from evolab.app.report import dialog as report_dialog
+
+    report_dialog.on_crash(action, line)
+
+
 def run_gui() -> int:
+    """화면 프로그램(`evolab`, `evolab.exe`). 설계 4.9 순서: 진단 훅 → 앱(한국어 Qt) → Qt 메시지·실행 중 표시 → 뮤텍스 → 창.
+
+    창을 만들거나 띄우다 실패하면 바탕 화면에 오류 보고 묶음을 만들고 Qt 없는 상자로 알린 뒤 종료 코드 1(설계 D32).
+    창이 뜨면 이벤트 루프에서 지난번 갑자기 닫힘 질문(있으면)과 처음 실행 안내 제안(setup.after_show)을 한다.
+    """
+    from evolab import diagnostics, winapp
+
+    diagnostics.install("gui")
     app = create_application()
+    previous = diagnostics.install_gui(on_crash)
+    winapp.create_app_mutex()  # 설치·제거 프로그램이 실행 중인지 안다(v3.1, 화면 프로세스만)
     try:
         paths.install_examples()  # 첫 실행: 내장 예제를 문서\진화실험실\environments로(있으면 그대로)
     except OSError:
         pass
-    window = MainWindow()
-    window.show()
-    return app.exec()
+    try:
+        window = MainWindow()
+        window.show()
+    except Exception as exc:
+        from evolab.app.report.bundle import report_startup_failure
+
+        return report_startup_failure(exc)
+    from evolab.app.help import setup as help_setup
+
+    help_setup.schedule_after_show(window, previous)
+    code = app.exec()
+    diagnostics.mark_clean_exit()
+    return code

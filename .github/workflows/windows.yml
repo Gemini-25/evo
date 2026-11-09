@@ -1,5 +1,11 @@
 # 윈도우에서 테스트하고 exe를 묶어 자체 점검까지 돌린다.
 # 결과 exe 폴더는 실행 결과 페이지의 Artifacts에서 내려받는다.
+#
+# v3.0(설계 D34, 4.11): 두 job을 병렬로 돌린다. package는 tests에 기대지 않는다(needs 없음): 테스트 하나가 실패해도
+# exe 묶기와 배포본 점검(W2·W3)은 끝까지 돈다.
+#   tests   빠른 테스트 전체(W1: 윈도우 글꼴의 실험실 패널, qtbase_ko 번역, 윈도우 spawn의 faulthandler, 뮤텍스)
+#   package 자체 점검(uv run) → 처음 실행 안내 10세대(W3) → exe 묶기 → 한글 경로 → 두 exe 자체 점검(새 점검 넷 포함, 안내
+#           1세대 초가 기록에 남음) → 학습·판정·재현 → 오류 보고 묶음(evolab-cli.exe report) → exe 자식 세그폴트 기록(W2)
 name: windows
 
 on:
@@ -14,15 +20,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-and-build:
+  tests:
     runs-on: windows-latest
-    # v2.0 빠른 테스트가 리눅스 한가한 4코어에서 1,008~1,030초(17분 남짓)라 테스트 단계 25분 + 설치·자체 점검·exe 묶기·
-    # exe 점검으로 60분.
+    # v2.0 빠른 테스트가 윈도우에서 1,880개 1,140초(19분)였다. v3.0은 2,300개 남짓이라 리눅스 비율로 어림하면 23분 안팎:
+    # 테스트 단계 40분, job 60분.
     timeout-minutes: 60
     env:
       UV_PYTHON_DOWNLOADS: never
       # uv.lock과 pyproject가 어긋나면 sync와 run 모두 실패하게 한다(잠금을 조용히 고치지 않게).
       UV_LOCKED: "1"
+      QT_QPA_PLATFORM: offscreen
+      # EVOLAB_DATA_DIR는 job 전체에 두지 않는다: paths.ini보다 앞서서 데이터 폴더 설정 테스트가 깨진다(테스트가 스스로 정한다).
     steps:
       # 전체 기록을 받는다: T67(tests/test_structure_learners.py)이 같은 머신에서 v2.0 커밋(4d3e3e6)의 코드를 꺼내
       # 지금 코드와 비교한다(기본 얕은 복제에는 그 커밋이 없어 비교가 빠진다).
@@ -42,13 +50,40 @@ jobs:
         run: uv sync
 
       - name: Tests
-        timeout-minutes: 25
-        env:
-          QT_QPA_PLATFORM: offscreen
+        timeout-minutes: 40
         run: uv run pytest -q
 
+  package:
+    runs-on: windows-latest
+    # tests에 기대지 않는다(needs 없음). 자체 점검 둘(uv run, 안내 10세대 약 1분 반) + exe 묶기(약 1분 반) + exe 점검.
+    timeout-minutes: 60
+    env:
+      UV_PYTHON_DOWNLOADS: never
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      # 새 점검 넷(도움말 쪽, 기록 폴더와 오류 보고 묶음, Qt 한국어, 처음 실행 안내 1세대: 기준 60초)은 데이터·상태 폴더를
+      # 임시 폴더로 바꿔 돈다(설계 D5). 안내 줄 「창 → 1세대 재생 n초, 누름 2번」이 설계 M1 값이다.
       - name: Self-test (uv run, real window platform)
+        timeout-minutes: 15
         run: uv run evolab selftest --log selftest-dev.log
+
+      # W3: 처음 실행 안내를 4배속으로 10세대까지(창 → 10세대 기준 150초). 초와 1세대·10세대 평균 점수가 기록에 남는다.
+      - name: Full tour timing (uv run, 4x to generation 10)
+        timeout-minutes: 15
+        run: uv run evolab selftest --tour full --log tour-full.log
 
       - name: Build exe
         run: uv run pyinstaller packaging/evolab.spec --noconfirm
@@ -61,6 +96,7 @@ jobs:
           Copy-Item -Recurse dist\evolab $dest
 
       - name: Self-test console exe (evolab-cli.exe)
+        timeout-minutes: 15
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
@@ -93,15 +129,121 @@ jobs:
           $log = Join-Path $dest "점검 기록.log"
           $p = Start-Process -FilePath $exe -ArgumentList @("selftest", "--log", "`"$log`"") -PassThru
           $null = $p.Handle
-          if (-not $p.WaitForExit(300000)) { $p.Kill($true); Write-Error "selftest timed out"; exit 1 }
+          if (-not $p.WaitForExit(600000)) { $p.Kill($true); Write-Error "selftest timed out"; exit 1 }
           if (Test-Path $log) { Get-Content -Encoding utf8 $log } else { Write-Error "no selftest log" }
           "exit code: $($p.ExitCode)"
           $size = (Get-ChildItem -Recurse dist\evolab | Measure-Object -Sum Length).Sum / 1MB
           "dist size: {0:N0} MB" -f $size
           if ($p.ExitCode -ne 0) { exit 1 }
 
+      # W2: 오류 보고 묶음을 Qt 없는 명령으로(한글 경로, 앞 단계의 실행 폴더를 넣음). zip에 report.txt가 있고, 체크포인트·유전자
+      # (.pkl·.npz)·입력 기록(.evoplay)이 없고, 글 파일 어디에도 러너의 사용자 이름이 없어야 한다(설계 D31·D33).
+      # 러너의 exe·실행 폴더는 D:\a\_temp 아래라 원래는 사용자 이름이 거의 없다: 가림을 제대로 보려고 이름을 심는다.
+      #   - 실행 폴더를 홈 아래 「<사용자>_자료\run」으로 복사해 --run으로 넣는다(밑줄이 붙은 이름, 홈 경로).
+      #   - 오류 기록(errors.jsonl)에 홈 경로를 JSON 이스케이프(역슬래시 두 개)와 repr + JSON(네 개) 모양으로, stderr.log에
+      #     그대로(하나) 덧붙인다.
+      # 앞 단계가 실패해도 exe가 있으면 돈다(기록을 모으는 단계이기도 하다).
+      - name: Error report bundle with the console exe (Korean path)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $cli = Join-Path $dest "evolab\evolab-cli.exe"
+          if (-not (Test-Path -LiteralPath $cli)) { Write-Warning "no console exe (an earlier step failed)"; exit 0 }
+          $zip = Join-Path $dest "오류 보고.zip"
+          $user = $env:USERNAME
+          $runs = Join-Path $dest "실행 기록"
+          $src = $null
+          if (Test-Path -LiteralPath $runs) { $src = Get-ChildItem -LiteralPath $runs -Directory | Select-Object -First 1 }
+          $argv = @("report", "--out", $zip)
+          if ($src) {
+            $planted = Join-Path $env:USERPROFILE "$($user)_자료\run"
+            New-Item -ItemType Directory -Force (Split-Path $planted) | Out-Null
+            Copy-Item -Recurse -Force -LiteralPath $src.FullName -Destination $planted
+            $argv += @("--run", $planted)
+          }
+          $logs = Join-Path $env:LOCALAPPDATA "evolab\logs"
+          New-Item -ItemType Directory -Force $logs | Out-Null
+          $path = Join-Path $env:USERPROFILE "$($user)_자료\x.evoenv"
+          $repr = "'" + $path.Replace("\", "\\") + "'"
+          $rec = [ordered]@{ t = (Get-Date -Format s); kind = "shown"; where = "cli"; pid = 0; version = "ci";
+                             message = "ci plant: $path / FileNotFoundError: [Errno 2] No such file or directory: $repr";
+                             detail = "user $user at $path" }
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          [IO.File]::AppendAllText((Join-Path $logs "errors.jsonl"), ($rec | ConvertTo-Json -Compress) + "`n", $utf8)
+          [IO.File]::AppendAllText((Join-Path $logs "stderr.log"), "ci plant: $path by $user`n", $utf8)
+          & $cli @argv
+          if ($LASTEXITCODE -ne 0) { Write-Error "report exit code $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path -LiteralPath $zip)) { Write-Error "no bundle"; exit 1 }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $z = [IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $names = @($z.Entries | ForEach-Object { $_.FullName })
+            $names | ForEach-Object { "  $_" }
+            if (-not ($names -contains "report.txt")) { Write-Error "no report.txt"; exit 1 }
+            if (-not ($names -contains "manifest.json")) { Write-Error "no manifest.json"; exit 1 }
+            if ($src -and -not ($names | Where-Object { $_ -like "run/*" })) { Write-Error "run folder not in bundle"; exit 1 }
+            if ($names | Where-Object { $_ -match '\.(pkl|npz|evoplay)$' }) { Write-Error "checkpoint or genes in bundle"; exit 1 }
+            $pattern = [regex]::Escape($user)
+            $planted_seen = $false
+            foreach ($entry in $z.Entries) {
+              $reader = [IO.StreamReader]::new($entry.Open(), [Text.Encoding]::UTF8)
+              try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              if ($entry.FullName -eq "report.txt") { $text }
+              if ($text -match "ci plant") { $planted_seen = $true }
+              if ($user -and $text -match $pattern) { Write-Error "user name in $($entry.FullName)"; exit 1 }
+            }
+            if (-not $planted_seen) { Write-Error "planted log lines not in bundle"; exit 1 }
+          } finally {
+            $z.Dispose()
+          }
+          "bundle: {0:N0} bytes, {1} files" -f (Get-Item -LiteralPath $zip).Length, $names.Count
+
+      # W2: 같은 exe로 spawn한 자식이 일부러 세그폴트하면 진입점의 faulthandler가 faults.log에 치명적 오류와 함수 이름을 남겨야
+      # 한다(설계 D28). 자체 점검 「기록 폴더 쓰기와 오류 보고 묶음」이 EVOLAB_SELFTEST_CRASH=1일 때만 이 시험을 한다.
+      - name: Native crash is logged by the exe (spawned child segfault)
+        shell: pwsh
+        env:
+          EVOLAB_SELFTEST_CRASH: "1"
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $log = Join-Path $dest "crash 점검.log"
+          & (Join-Path $dest "evolab\evolab-cli.exe") selftest --no-gui --log $log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Select-String -LiteralPath $log -Encoding utf8 -SimpleMatch -Quiet "marker=yes function=yes")) {
+            Write-Error "crash check line missing"; exit 1
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: evolab-windows
           path: dist/evolab
+          retention-days: 30
+
+      # 상태 폴더의 기록(errors.jsonl: 명령줄의 잡히지 않은 예외와 traceback, faults.log, 창 exe의 stderr.log, 자체 점검이
+      # 임시 폴더에서 옮겨 둔 selftest-*-errors.jsonl)을 올릴 곳으로 복사하고 오류 기록 끝을 로그에 보인다.
+      - name: Collect state-folder logs
+        if: always()
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트\state-logs"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          $logs = Join-Path $env:LOCALAPPDATA "evolab\logs"
+          if (Test-Path -LiteralPath $logs) { Copy-Item -Force -ErrorAction SilentlyContinue (Join-Path $logs "*") $d }
+          Get-ChildItem -LiteralPath $d | ForEach-Object { "  $($_.Name) ($($_.Length) bytes)" }
+          $errors = Join-Path $d "errors.jsonl"
+          if (Test-Path -LiteralPath $errors) { Get-Content -Encoding utf8 -Tail 20 -LiteralPath $errors }
+
+      # 점검 기록(설계 M1의 안내 초, W2·W3)과 오류 보고 묶음, 상태 폴더 기록. 앞 단계가 실패해도 남은 기록을 올린다.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evolab-selftest-logs
+          path: |
+            selftest-dev.log
+            tour-full.log
+            ${{ runner.temp }}/진화 실험실 테스트/*.log
+            ${{ runner.temp }}/진화 실험실 테스트/오류 보고.zip
+            ${{ runner.temp }}/진화 실험실 테스트/state-logs/
+          if-no-files-found: warn
           retention-days: 30

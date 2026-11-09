@@ -22,6 +22,7 @@ from __future__ import annotations
 import bisect
 import math
 import os
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -709,10 +710,12 @@ class RunHistory:
             es = [self._entries[g] for g in self.gens if self._entries[g].body_mean is not None]
             if not es:
                 return None
+            # 같은 길이 1차원 배열 목록 → (n, NB): np.array가 vstack(원소마다 atleast_2d)보다 3배쯤 빠르고 값은 같다
+            # (750세대 네 배열에 3.6ms → 1ms 남짓, 기록을 읽는 동안 묶음마다 다시 만든다)
             return BodySeries(
                 gens=np.array([e.generation for e in es], dtype=np.float64),
-                mean=np.vstack([e.body_mean for e in es]), lo=np.vstack([e.body_min for e in es]),
-                hi=np.vstack([e.body_max for e in es]), rep=np.vstack([e.body_rep for e in es]),
+                mean=_rows([e.body_mean for e in es]), lo=_rows([e.body_min for e in es]),
+                hi=_rows([e.body_max for e in es]), rep=_rows([e.body_rep for e in es]),
                 observed=np.array([e.obs is not None for e in es], dtype=bool),
             )
 
@@ -791,6 +794,14 @@ class RunHistory:
         return self._cached(("dens", window, recent), make, tag=gen)
 
 
+def _rows(arrays: Sequence[np.ndarray | None]) -> np.ndarray:
+    """세대마다의 (NB,) float64 배열 목록 → (n, NB) float64(np.vstack과 같은 값)."""
+    out = np.array(arrays, dtype=np.float64)  # 길이가 다르면 vstack처럼 ValueError
+    if out.ndim != 2:  # 2차원이 아니면 vstack에 맡긴다(같은 결과·오류)
+        return np.vstack(arrays)  # type: ignore[arg-type]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 배경 읽기
 class GuiPriority:
@@ -836,6 +847,19 @@ class GuiPriority:
 
 GUI_PRIORITY = GuiPriority()
 """화면 스레드 하나에 하나(실험실 대시보드가 busy로 감싸고 HistoryLoader가 기다린다)."""
+
+GUI_SWITCH_INTERVAL_S: Final = 0.001
+"""화면 프로세스의 GIL 넘김 간격(sys.setswitchinterval, 파이썬 기본 0.005초). 배경 스레드가 한 번에 오래 도는 일(실험실
+다시 시뮬레이션 하나는 바퀴 차 30초에 140ms 안팎, 도중에 쉴 곳이 없다)을 하는 동안 화면 스레드는 GIL을 놓을 때마다
+(Qt 호출) 다시 얻으려고 이 간격까지 기다린다. 5ms면 그림 한 번이 세 배 넘게 늘었다(학습 중 「몸 수치 추이」 갱신+그림
+최대 80ms → 1ms에서 39ms, v3.0 측정). 학습은 다른 프로세스라 영향이 없다."""
+
+
+def favor_gui_thread() -> None:
+    """화면 프로세스에서 한 번: GIL 넘김 간격을 GUI_SWITCH_INTERVAL_S로 줄인다(이미 더 짧으면 그대로). 계산 결과는 같고
+    스레드가 번갈아 도는 간격만 바뀐다."""
+    if sys.getswitchinterval() > GUI_SWITCH_INTERVAL_S:
+        sys.setswitchinterval(GUI_SWITCH_INTERVAL_S)
 
 
 def _row_generation(row: Mapping[str, Any]) -> int | None:

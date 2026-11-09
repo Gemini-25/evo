@@ -41,6 +41,7 @@ from evolab.app.editor.palette import Palette
 from evolab.app.editor.properties import PropertyPanel
 from evolab.app.editor.structure import ReplicateDialog
 from evolab.app.editor.tabs import BottomTabs
+from evolab.app.errors import show_error, structure_next_step
 from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import parse_env
 
@@ -258,7 +259,7 @@ class EditorView(QWidget):
         try:
             self.doc.open(path)
         except EnvFileError as exc:
-            QMessageBox.warning(self, S.ED_OPEN_FAILED, str(exc))
+            show_error(self, S.ED_OPEN_FAILED, exc, next_step=structure_next_step(exc))
             return False
         self.from_lab = False
         self.canvas.fit()
@@ -277,7 +278,7 @@ class EditorView(QWidget):
         try:
             self.doc.load_text(text, None)
         except EnvFileError as exc:
-            QMessageBox.warning(self, S.ED_OPEN_FAILED, str(exc))
+            show_error(self, S.ED_OPEN_FAILED, exc, next_step=structure_next_step(exc))
             return False
         self.from_lab = from_lab
         self.canvas.fit()
@@ -293,7 +294,7 @@ class EditorView(QWidget):
         try:
             self.doc.save()
         except (OSError, EnvFileError) as exc:
-            QMessageBox.warning(self, S.ED_SAVE_FAILED, str(exc))
+            show_error(self, S.ED_SAVE_FAILED, exc)
             return False
         return True
 
@@ -315,7 +316,7 @@ class EditorView(QWidget):
         try:
             self.doc.save(path)
         except (OSError, EnvFileError) as exc:
-            QMessageBox.warning(self, S.ED_SAVE_FAILED, str(exc))
+            show_error(self, S.ED_SAVE_FAILED, exc)
             return False
         return True
 

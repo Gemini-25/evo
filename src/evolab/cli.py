@@ -1,4 +1,4 @@
-"""명령줄 진입점: `evolab`, `evolab train`, `evolab bench`, `evolab play`, `evolab selftest`.
+"""명령줄 진입점: `evolab`, `evolab train`, `evolab bench`, `evolab play`, `evolab selftest`, `evolab report`.
 
 이 모듈은 맨 위에서 Qt를 불러오지 않는다. spawn 방식의 자식 프로세스가 주 모듈을 다시
 불러올 때 워커마다 Qt가 올라오지 않게 하기 위해서다.
@@ -206,6 +206,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # 워커 0개면 점검용 워커 풀이 비어 응답을 끝까지(180초) 기다리다 프로세스 구조 실패로 잘못 알린다.
     selftest.add_argument("--workers", type=_int_arg(1), default=None, help=S.CLI_HELP_WORKERS)
     selftest.add_argument("--no-gui", action="store_true", help=S.CLI_HELP_NO_GUI)
+    # 처음 실행 안내 점검(v3.0): gen1 = 1세대 재생까지(기본), full = 목표 세대(10)까지 4배속(윈도우 CI W3에서 한 번)
+    selftest.add_argument("--tour", choices=["gen1", "full"], default="gen1", help=S.CLI_HELP_SELFTEST_TOUR)
+
+    # 오류 보고 묶음(v3.0): Qt를 불러오지 않는다. 창 모드 exe에서도 출력 없이 끝난다(--open이면 폴더를 연다).
+    report = sub.add_parser("report", help=S.CLI_HELP_REPORT)
+    report.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_REPORT_OUT)
+    report.add_argument("--run", type=Path, default=None, help=S.CLI_HELP_REPORT_RUN)
+    report.add_argument("--open", action="store_true", help=S.CLI_HELP_REPORT_OPEN)
     return parser
 
 
@@ -237,6 +245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     limit_blas_threads()  # numpy를 불러오기 전에
     _configure_streams()
     args = _build_parser().parse_args(argv)
+    if argv is None and args.command not in (None, "play", "selftest"):
+        # 프로세스 진입(exe·`python -m evolab`·`evolab` 명령)에서만 잡히지 않은 예외 훅을 건다(v3 설계 4.9: 기록 + 한 줄 +
+        # 종료 코드 1). 인수를 주고 부르는 테스트에는 걸지 않는다. 화면(명령 없음)은 run_gui가, 창을 띄우는 play와 selftest는
+        # 걸지 않는다: Qt 슬롯의 예외는 프로세스를 끝내지 않으므로 「멈췄습니다」 한 줄이 틀리고, selftest의 기록은 임시 폴더라
+        # 끝나면 지워진다(그 대신 파이썬 기본 훅이 traceback 전체를 stderr에 쓴다).
+        from evolab import diagnostics
+
+        diagnostics.install("cli")
 
     if args.command is None:
         from evolab.app.main import run_gui
@@ -246,10 +262,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "selftest":
         from evolab.selftest import run_selftest
 
-        return run_selftest(log_path=args.log, workers=args.workers, check_gui=not args.no_gui)
+        return run_selftest(log_path=args.log, workers=args.workers, check_gui=not args.no_gui, tour=args.tour)
 
     if args.command == "play":
         return _play(args.env, args.seed, args.replay, args.verify)
+
+    if args.command == "report":
+        from evolab.app.report.bundle import report_command
+
+        return report_command(args.out, args.run, args.open)
 
     if args.command in ("train", "bench", "judge", "bundle", "reproduce", "csv"):
         from evolab.engine import commands

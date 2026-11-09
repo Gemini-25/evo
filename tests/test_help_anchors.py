@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from typing import Any
@@ -25,9 +24,6 @@ EXTRA_KEYS = {"lab.canvas", "lab.dashboard", "main.help_corner", "lab.timeline",
               "lab.race", "lab.reload", "lab.edit", "lab.apply"}
 """설계 7.3: HELP_TIPS 키 말고 연결표에 꼭 있어야 하는 키(그 밖에 lab.tile.<타일 id> 전부)."""
 
-LATER_GROUPS = {"main.help_corner": "evolab.app.help.setup"}
-"""다른 묶음이 만드는 위젯: 그 모듈이 생기기 전에는 풀리지 않아도 된다(I 묶음이 주 창 탭 줄 모서리에 단다)."""
-
 
 @pytest.fixture()
 def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -46,11 +42,6 @@ def main_window(qtbot: Any, isolated: Path) -> Any:
     qtbot.addWidget(window)
     window.show()
     return window
-
-
-def _pending(key: str) -> bool:
-    module = LATER_GROUPS.get(key)
-    return module is not None and importlib.util.find_spec(module) is None
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +75,7 @@ def test_every_main_window_anchor_resolves(main_window: Any) -> None:
             continue
         widget = resolve(main_window, key)
         if widget is None:
-            if not _pending(key):
-                unresolved.append(key)
+            unresolved.append(key)
             continue
         if screen_of(widget) != anchor.screen:
             wrong_screen.append(f"{key}: {screen_of(widget)}")
@@ -112,9 +102,8 @@ def test_resolve_finds_the_intended_widgets(main_window: Any) -> None:
     assert resolve(w, "no.such.key") is None
 
 
-def test_help_corner_resolves_once_setup_exists(main_window: Any) -> None:
-    if _pending("main.help_corner"):
-        pytest.skip("주 창 탭 줄 모서리 단추는 I 묶음(app/help/setup.py)이 단다")
+def test_help_corner_resolves(main_window: Any) -> None:
+    """주 창 탭 줄 모서리 「? 도움말」(app/help/setup.py가 MainWindow를 만들 때 단다)."""
     corner = resolve(main_window, "main.help_corner")
     assert corner is not None and screen_of(corner) == "main"
 

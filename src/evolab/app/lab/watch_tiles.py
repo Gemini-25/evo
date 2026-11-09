@@ -14,8 +14,22 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.functions as fn
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QLinearGradient, QPainter, QPaintEvent
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QImage,
+    QLinearGradient,
+    QPaintEngine,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QPicture,
+    QTransform,
+)
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from evolab.app import strings as S
@@ -108,6 +122,87 @@ def density_image(counts: np.ndarray) -> QImage:
     return img.copy()
 
 
+def hline_pixels(t: QTransform, p1: QPointF, p2: QPointF, pen: QPen) -> tuple[int, int, int] | None:
+    """코스메틱 펜(폭 1 이하, 계단 현상 그대로) 가로선 하나를 Qt 래스터 엔진(QCosmeticStroker)이 칠하는 픽셀:
+    (장치 행, 첫 열, 끝 열(제외)). 칠하는 픽셀이 없으면 None.
+
+    QCosmeticStroker는 장치 좌표를 26.6 고정소수(64배 후 int로 자름)로 바꾸고, 끝이 납작(FlatCap)이 아니면 양 끝을
+    반 픽셀(32) 늘린 뒤 열 [(x1 + 32) >> 6, (x2 + 32) >> 6), 행 y1 >> 6을 칠한다(오른쪽에서 왼쪽으로 그은 선은 두
+    끝을 바꿔서). 시험(test_lab_latency_v30)이 무작위 선·변환·자르기 영역에서 drawLine과 픽셀까지 같은지 본다."""
+    a, b = t.map(p1), t.map(p2)
+    x1, x2, y = int(a.x() * 64.0), int(b.x() * 64.0), int(a.y() * 64.0)
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if x1 == x2:  # 26.6에서 길이 0: Qt도 칠하지 않는다
+        return None
+    if pen.capStyle() != Qt.PenCapStyle.FlatCap:
+        x1 -= 32
+        x2 += 32
+    xs, xe = (x1 + 32) >> 6, (x2 + 32) >> 6
+    return (y >> 6, xs, xe) if xs < xe else None
+
+
+def _plain_hline(pen: QPen, p1: QPointF, p2: QPointF) -> bool:
+    """fillRect로 같은 픽셀을 칠할 수 있는 선(코스메틱 실선 폭 1 이하, 가로, 길이가 0이 아님)인가."""
+    return (pen.isCosmetic() and pen.widthF() <= 1.0 and pen.style() == Qt.PenStyle.SolidLine
+            and pen.brush().style() == Qt.BrushStyle.SolidPattern and p1.y() == p2.y() and p1.x() != p2.x())
+
+
+def use_fast_grid(axis: pg.AxisItem) -> None:
+    """이 축의 격자선(반투명 가로선)을 같은 픽셀의 1픽셀 높이 사각형 채우기로 그리게 한다(v3.0 지연 고침).
+
+    pyqtgraph 축은 격자선을 반투명 펜의 drawLine으로 그리는데, Qt 래스터 엔진은 불투명하지 않은 코스메틱 선을 픽셀마다
+    섞어 칠해 불투명한 선의 15배쯤 느리다: 「몸 수치 추이」(0~100%, 높이 185픽셀이면 격자선 55개)에서 축 그림 한 번이
+    5~8ms로 타일 그림의 절반이었다. 같은 픽셀을 같은 색 섞기로 칠하는 fillRect는 40배쯤 빠르다. 그림 차례도 같다(축 선과
+    눈금 글을 담은 축 그림 다음에 격자선: 원래도 축 선 → 격자선 → 눈금 글이고 글은 격자선과 겹치지 않는다). 래스터가
+    아닌 그리기(SVG 내보내기 등), 회전·기울임 변환, 조건에 맞지 않는 눈금이 섞이면 원래 그리기(drawLine)를 쓴다."""
+    axis._fast_grid = None  # type: ignore[attr-defined]  # (그림, 격자선 목록): axis.picture가 None이 되면 다시 만든다
+    axis.paint = lambda p, *args: _paint_fast_grid(axis, p, *args)
+
+
+def _paint_fast_grid(axis: pg.AxisItem, p: QPainter, *args: Any) -> None:
+    cached = axis._fast_grid  # type: ignore[attr-defined]
+    if axis.picture is None or cached is None or cached[0] is not axis.picture:
+        picture = QPicture()
+        painter = QPainter(picture)
+        grid: list[tuple[QPen, QPointF, QPointF]] = []
+        try:
+            if axis.style["tickFont"]:
+                painter.setFont(axis.style["tickFont"])
+            specs = axis.generateDrawSpecs(painter)
+            if specs is not None:
+                axis_spec, ticks, texts = specs
+                if ticks and all(_plain_hline(pen, a, b) for pen, a, b in ticks):
+                    grid, ticks = list(ticks), []
+                axis.drawPicture(painter, axis_spec, ticks, texts)
+        finally:
+            painter.end()
+        axis.picture = picture
+        axis._fast_grid = cached = (picture, grid)  # type: ignore[attr-defined]
+    picture, grid = cached
+    picture.play(p)
+    if not grid:
+        return
+    t = p.deviceTransform()
+    engine = p.paintEngine()
+    if (t.type().value > QTransform.TransformationType.TxScale.value or engine is None
+            or engine.type() != QPaintEngine.Type.Raster or not t.isInvertible()):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for pen, a, b in grid:  # 원래 그리기
+            p.setPen(pen)
+            p.drawLine(a, b)
+        p.restore()
+        return
+    inv = t.inverted()[0]
+    for pen, a, b in grid:
+        hit = hline_pixels(t, a, b, pen)
+        if hit is not None:
+            row, xs, xe = hit
+            # 장치 픽셀 사각형을 논리 좌표로 되돌려 채운다(래스터 엔진이 다시 장치로 옮겨 반올림하면 같은 정수 사각형)
+            p.fillRect(inv.mapRect(QRectF(xs, row, xe - xs, 1)), pen.color())
+
+
 def _focus_line(theme: Theme) -> pg.InfiniteLine:
     line = pg.InfiniteLine(angle=90, movable=False, pen=_pen(theme.ink2, 1, Qt.PenStyle.DotLine))
     line.setZValue(45)
@@ -116,17 +211,220 @@ def _focus_line(theme: Theme) -> pg.InfiniteLine:
     return line
 
 
-def _band(color: str, alpha: int) -> pg.PlotCurveItem:
-    """최소~최대 띠: 위 경계를 따라가다 아래 경계를 거꾸로 돌아오는 닫힌 곡선(점수 추이 띠와 같은 방법)."""
-    band = pg.PlotCurveItem(pen=pg.mkPen(None), brush=_qcolor(color, alpha), fillLevel="enclosed")
-    band.setZValue(-10)
-    return band
-
-
-def _set_band(band: pg.PlotCurveItem, x: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> None:
+def _band_xy(x: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """최소~최대 띠: 위 경계를 따라가다 아래 경계를 거꾸로 돌아오는 닫힌 곡선의 점(점수 추이 띠와 같은 방법).
+    세 값이 모두 유한한 세대만 쓴다."""
     ok = np.isfinite(x) & np.isfinite(lo) & np.isfinite(hi)
     bx, blo, bhi = x[ok], lo[ok], hi[ok]
-    band.setData(np.concatenate((bx, bx[::-1])), np.concatenate((bhi, blo[::-1])))
+    return np.concatenate((bx, bx[::-1])), np.concatenate((bhi, blo[::-1]))
+
+
+class _SeriesData:
+    """_SeriesLayer 계열 하나의 자료 보기(PlotCurveItem.getData처럼 마지막으로 준 (x, y)를 돌려준다, 시험용)."""
+
+    def __init__(self, layer: _SeriesLayer, index: int) -> None:
+        self._layer = layer
+        self._index = index
+
+    def getData(self) -> tuple[np.ndarray, np.ndarray]:  # noqa: N802 - PlotCurveItem과 같은 이름
+        return self._layer.series_data(self._index)
+
+    def isVisible(self) -> bool:  # noqa: N802
+        return self._layer.isVisible() and self._layer.is_shown(self._index)
+
+
+class _SeriesLayer(pg.GraphicsObject):
+    """계열 여러 개를 한 그래프 항목으로: kind "line"은 계열마다 선(PlotCurveItem(pen, connect="finite")와 같은 그림),
+    "fill"은 닫힌 곡선 채우기(PlotCurveItem(펜 없음, brush, fillLevel="enclosed")와 같은 그림). 위 계열이 나중에 그려진다.
+
+    「몸 수치 추이」는 몸 수치가 15개면 곡선 항목이 31개라, 그릴 때마다 항목마다 파이썬 그리기·경로 만들기·자료 범위
+    계산을 되풀이해 750세대 그림 한 번이 20ms 안팎이었다(v3.0 지연 고침). 이 항목은 자료가 바뀐 뒤 처음 그릴 때 계열마다
+    pyqtgraph와 같은 함수로 선분·경로를 한 번 만들고, 그리기는 QPainter 호출만 한다. 그리는 QPainter 호출(렌더 힌트, 펜,
+    drawLines/drawPath/fillPath와 그 인수)은 PlotCurveItem.paint와 같아 그림이 픽셀까지 같다. 자동 범위용 dataBounds와
+    pixelPadding도 보이는 계열을 합친 값이라 ViewBox가 보는 범위가 같다.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        if kind not in ("line", "fill"):
+            raise ValueError(kind)
+        self.kind = kind
+        self._aa = bool(pg.getConfigOption("antialias"))
+        self._xy: list[tuple[np.ndarray, np.ndarray]] = []
+        self._style: list[QPen | QBrush] = []
+        self._shown: list[bool] = []
+        self._ops: list[tuple[QPen | QBrush, Any]] | None = None
+        self._bounds: dict[Any, tuple[float | None, float | None]] = {}
+        self._rect: QRectF | None = None
+        self._geometry_changed = False
+        self._paint_changed = False
+
+    # -- 자료 ---------------------------------------------------------------
+    # set_*는 값만 바꾸고 commit()이 한 번에 알린다(계열마다 알리면 ViewBox 범위 다시 맞추기·장면 색인 고침이 계열 수만큼)
+    def _style_of(self, style: QPen | QBrush | QColor) -> QPen | QBrush:
+        if self.kind == "fill":
+            return style if isinstance(style, QBrush) else QBrush(style)
+        return style if isinstance(style, QPen) else QPen(style)
+
+    def set_count(self, n: int, style: QPen | QBrush | QColor) -> None:
+        """계열 수를 n으로(새 계열은 빈 자료, 보임, style)."""
+        style = self._style_of(style)
+        empty = np.zeros(0)
+        self._xy = self._xy[:n] + [(empty, empty)] * max(0, n - len(self._xy))
+        self._style = self._style[:n] + [style] * max(0, n - len(self._style))
+        self._shown = self._shown[:n] + [True] * max(0, n - len(self._shown))
+        self._geometry_changed = True
+
+    def set_series(self, j: int, x: np.ndarray, y: np.ndarray) -> None:
+        self._xy[j] = (np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64))
+        self._geometry_changed = True
+
+    def set_style(self, j: int, style: QPen | QBrush | QColor) -> None:
+        """선이면 QPen(pg.mkPen), 채우기면 QBrush 또는 QColor."""
+        style = self._style_of(style)
+        if style != self._style[j]:
+            self._style[j] = style
+            self._paint_changed = True
+
+    def set_shown(self, j: int, shown: bool) -> None:
+        if bool(shown) != self._shown[j]:
+            self._shown[j] = bool(shown)
+            self._geometry_changed = True
+
+    def commit(self) -> None:
+        """바뀐 것을 알린다: 자료·보임이 바뀌었으면 범위(prepareGeometryChange·ViewBox 자동 범위)와 다시 그리기,
+        펜·붓만 바뀌었으면 다시 그리기."""
+        if self._geometry_changed:
+            self._bounds.clear()
+            self._rect = None
+            self.prepareGeometryChange()
+            self.informViewBoundsChanged()
+        if self._geometry_changed or self._paint_changed:
+            self._ops = None
+            self.update()
+        self._geometry_changed = self._paint_changed = False
+
+    def series_data(self, j: int) -> tuple[np.ndarray, np.ndarray]:
+        return self._xy[j]
+
+    def is_shown(self, j: int) -> bool:
+        return self._shown[j]
+
+    @property
+    def count(self) -> int:
+        return len(self._xy)
+
+    def views(self) -> list[_SeriesData]:
+        return [_SeriesData(self, j) for j in range(len(self._xy))]
+
+    # -- 그리기 -------------------------------------------------------------
+    def _drawn(self) -> list[tuple[QPen | QBrush, Any]]:
+        """보이고 점이 있는 계열마다 (펜 또는 붓, 그릴 것). PlotCurveItem이 그릴 때 만드는 것과 같은 것을 같은 함수로."""
+        if self._ops is not None:
+            return self._ops
+        from pyqtgraph.graphicsItems.PlotCurveItem import arrayToLineSegments
+
+        ops: list[tuple[QPen | QBrush, Any]] = []
+        for (x, y), style, shown in zip(self._xy, self._style, self._shown, strict=True):
+            if not shown or len(x) == 0:
+                continue
+            if isinstance(style, QBrush):
+                if style.style() == Qt.BrushStyle.NoBrush:
+                    continue
+                ops.append((style, fn.arrayToQPath(x, y, connect="finite", finiteCheck=True)))
+                continue
+            if style.style() == Qt.PenStyle.NoPen:
+                continue
+            if self._segments(style):
+                ops.append((style, arrayToLineSegments(x, y, connect="finite", finiteCheck=True)))
+            else:
+                ops.append((style, fn.arrayToQPath(x, y, connect="finite", finiteCheck=True)))
+        self._ops = ops
+        return ops
+
+    def _segments(self, pen: QPen) -> bool:
+        """PlotCurveItem._shouldUseDrawLineSegments(segmentedLineMode "auto")와 같은 판단."""
+        return (pen.widthF() > 1.0 and pen.style() == Qt.PenStyle.SolidLine and pen.isSolid()
+                and pen.color().alphaF() == 1.0 and not self._aa)
+
+    def paint(self, p: QPainter, *args: Any) -> None:
+        ops = self._drawn()
+        if not ops:
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, self._aa)
+        for style, what in ops:
+            if isinstance(style, QBrush):
+                p.fillPath(what, style)
+            else:
+                p.setPen(style)
+                if isinstance(what, QPainterPath):
+                    p.drawPath(what)
+                else:
+                    p.drawLines(*what.drawargs())
+
+    # -- 범위 ---------------------------------------------------------------
+    def dataBounds(self, ax: int, frac: float = 1.0, orthoRange: Any = None) -> tuple[float | None, float | None]:  # noqa: N802, N803
+        """보이는 계열마다 PlotCurveItem.dataBounds(frac=1)를 낸 값을 합친 범위(계열 자료 범위의 합)."""
+        key = (ax, frac, None if orthoRange is None else tuple(orthoRange))
+        hit = self._bounds.get(key)
+        if hit is not None:
+            return hit
+        lo: float | None = None
+        hi: float | None = None
+        for (x, y), shown in zip(self._xy, self._shown, strict=True):
+            if not shown or len(x) == 0:
+                continue
+            d, d2 = (x, y) if ax == 0 else (y, x)
+            if orthoRange is not None:
+                d = d[(d2 >= orthoRange[0]) & (d2 <= orthoRange[1])]
+            d = d[np.isfinite(d)]
+            if not len(d):
+                continue
+            if frac >= 1.0:
+                a, b = float(d.min()), float(d.max())
+            else:
+                a, b = (float(v) for v in np.percentile(d, [50 * (1 - frac), 50 * (1 + frac)]))
+            lo = a if lo is None else min(lo, a)
+            hi = b if hi is None else max(hi, b)
+        out = (lo, hi)
+        self._bounds[key] = out
+        return out
+
+    def pixelPadding(self) -> float:  # noqa: N802
+        """보이는 선 계열 펜 중 가장 굵은 것(PlotCurveItem: 코스메틱 펜 폭 × 0.7072, 채우기는 0)."""
+        if self.kind == "fill":
+            return 0.0
+        pads = [s.widthF() * 0.7072 for s, shown, (x, _) in zip(self._style, self._shown, self._xy, strict=True)
+                if shown and len(x) and isinstance(s, QPen) and s.isCosmetic() and s.style() != Qt.PenStyle.NoPen]
+        return max(pads, default=0.0)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        """PlotCurveItem.boundingRect와 같은 방법(자료 범위 + 펜 폭만큼의 픽셀)."""
+        if self._rect is None:
+            xmn, xmx = self.dataBounds(0)
+            ymn, ymx = self.dataBounds(1)
+            if xmn is None or xmx is None or ymn is None or ymx is None:
+                return QRectF()
+            px = py = 0.0
+            pad = self.pixelPadding()
+            if pad > 0:
+                vx, vy = self.pixelVectors()
+                try:
+                    px = 0.0 if vx is None else vx.length()
+                except OverflowError:
+                    px = 0.0
+                try:
+                    py = 0.0 if vy is None else vy.length()
+                except OverflowError:
+                    py = 0.0
+                px *= pad
+                py *= pad
+            self._rect = QRectF(xmn - px, ymn - py, 2 * px + xmx - xmn, 2 * py + ymx - ymn)
+        return self._rect
+
+    def viewTransformChanged(self) -> None:  # noqa: N802
+        self._rect = None
+        self.prepareGeometryChange()
 
 
 class _WatchTile(_Tile):
@@ -674,6 +972,7 @@ class BodyTile(_WatchTile):
         self.pick.hide()
         self.controls.addWidget(self.pick)
         self.message.setText(S.BODY_EMPTY)
+        use_fast_grid(self.plot.getAxis("left"))  # 격자선이 그림 시간의 절반이었다(같은 픽셀로 빠르게)
         self.focus_line = _focus_line(t)
         self.plot.addItem(self.focus_line, ignoreBounds=True)
         self.rep_line = _curve(_pen(t.ink, 1.2, Qt.PenStyle.DashLine))
@@ -685,11 +984,21 @@ class BodyTile(_WatchTile):
             line.setToolTip(S.BODY_LIMITS)
             line.hide()
             self.plot.addItem(line)
-        self.lines: list[pg.PlotCurveItem] = []
-        self.bands: list[pg.PlotCurveItem] = []
+        # 수치마다 평균 선과 띠: 곡선 항목을 수치마다 두지 않고 선 항목 하나·띠 항목 하나(_SeriesLayer, v3.0 지연 고침).
+        # 띠(z −10)를 모두 그린 뒤 선(z 10)을 수치 순서로 그린다(곡선 항목을 따로 두던 그림과 같은 순서)
+        self.band_layer = _SeriesLayer("fill")
+        self.band_layer.setZValue(-10)
+        self.line_layer = _SeriesLayer("line")
+        self.line_layer.setZValue(10)
+        self.plot.addItem(self.band_layer)
+        self.plot.addItem(self.line_layer)
+        self.lines: list[_SeriesData] = []
+        """수치마다 평균 선 자료(getData, 시험용)."""
+        self.bands: list[_SeriesData] = []
         self._series: hs.BodySeries | None = None
         self._x = np.zeros(0)
         self._colors: list[str] = []
+        self._left_label: str | None = None
 
     @property
     def selected(self) -> int:
@@ -712,21 +1021,26 @@ class BodyTile(_WatchTile):
         self._rebuild_items(len(params))
 
     def _rebuild_items(self, count: int) -> None:
-        for item in (*self.lines, *self.bands):
-            self.plot.removeItem(item)
         t = self.theme
         self._colors = [t.series[j] if (count <= MAX_SERIES or j < MAX_SERIES - 1) else t.muted
                         for j in range(count)]
-        self.lines = []
-        self.bands = []
-        for j in range(count):
-            band = _band(self._colors[j], 45)
-            line = _curve(_pen(self._colors[j], 1.5))
-            line.setZValue(10)
-            self.plot.addItem(band)
-            self.plot.addItem(line)
-            self.bands.append(band)
-            self.lines.append(line)
+        self.band_layer.set_count(0, QBrush())  # 수치가 바뀌면 계열을 새로(앞 환경의 자료·펜을 남기지 않게)
+        self.line_layer.set_count(0, QPen())
+        self.band_layer.set_count(count, QBrush())
+        self.line_layer.set_count(count, QPen())
+        for j, color in enumerate(self._colors):
+            self.band_layer.set_style(j, _qcolor(color, 45))
+            self.line_layer.set_style(j, _pen(color, 1.5))
+        self.band_layer.commit()
+        self.line_layer.commit()
+        self.lines = self.line_layer.views()
+        self.bands = self.band_layer.views()
+
+    def _set_left_label(self, text: str) -> None:
+        # setLabel은 같은 글이어도 축 그림을 버리고 다시 만든다(축 하나 2~3ms): 글이 바뀔 때만
+        if text != self._left_label:
+            self._left_label = text
+            self.plot.setLabel("left", text, color=self.theme.ink2)
 
     def update_data(self) -> None:
         meta = self.dash.watch_meta
@@ -738,7 +1052,7 @@ class BodyTile(_WatchTile):
             self._series = None
             self.show_message(S.BODY_EMPTY)
             return
-        if len(self.lines) != meta.n_body:
+        if self.line_layer.count != meta.n_body:
             self._rebuild_items(meta.n_body)
         self.stack.setCurrentWidget(self.view)
         self._series = bs
@@ -746,47 +1060,47 @@ class BodyTile(_WatchTile):
         self._x = x
         sel = self.selected
         t = self.theme
+        lines, bands = self.line_layer, self.band_layer
         if sel < 0:
             lows = np.array([p.low for p in meta.body])
             span = np.array([p.high - p.low for p in meta.body])
-            for j, (line, band) in enumerate(zip(self.lines, self.bands, strict=True)):
-                pct = (bs.mean[:, j] - lows[j]) / span[j] * 100.0
-                line.setData(x, pct)
-                line.show()
-                if self._colors[j] == t.muted:
-                    band.setData([], [])
+            # 수치마다 (값 − 최소) ÷ 폭 × 100을 한 번에(열마다 따로 계산한 값과 비트까지 같다)
+            pct = (bs.mean - lows) / span * 100.0
+            lo = (bs.lo - lows) / span * 100.0
+            hi = (bs.hi - lows) / span * 100.0
+            for j, color in enumerate(self._colors):
+                lines.set_series(j, x, pct[:, j])
+                lines.set_style(j, _pen(color, 1.5))  # 「모두」로 돌아오면 원래 색
+                lines.set_shown(j, True)
+                if color == t.muted:
+                    bands.set_series(j, np.zeros(0), np.zeros(0))
                 else:
-                    _set_band(band, x, (bs.lo[:, j] - lows[j]) / span[j] * 100.0,
-                              (bs.hi[:, j] - lows[j]) / span[j] * 100.0)
-                band.show()
+                    bands.set_series(j, *_band_xy(x, lo[:, j], hi[:, j]))
+                bands.set_style(j, _qcolor(color, 45))
+                bands.set_shown(j, True)
             self.rep_line.setData([], [])
             for line in self.limits:
                 line.hide()
-            self.plot.setLabel("left", S.BODY_AXIS_ALL, color=t.ink2)
+            self._set_left_label(S.BODY_AXIS_ALL)
             self.keep_y(self.plot, 0.0, 100.0)
         else:
             p = meta.body[sel]
-            for j, (line, band) in enumerate(zip(self.lines, self.bands, strict=True)):
+            for j in range(meta.n_body):
                 if j == sel:
-                    line.setPen(_pen(t.series[0], 1.5))
-                    line.setData(x, bs.mean[:, j])
-                    band.setBrush(_qcolor(t.series[0], 45))
-                    _set_band(band, x, bs.lo[:, j], bs.hi[:, j])
-                    line.show()
-                    band.show()
-                else:
-                    line.hide()
-                    band.hide()
+                    lines.set_style(j, _pen(t.series[0], 1.5))
+                    lines.set_series(j, x, bs.mean[:, j])
+                    bands.set_style(j, _qcolor(t.series[0], 45))
+                    bands.set_series(j, *_band_xy(x, bs.lo[:, j], bs.hi[:, j]))
+                lines.set_shown(j, j == sel)
+                bands.set_shown(j, j == sel)
             self.rep_line.setData(x, bs.rep[:, sel])
             for line, v in zip(self.limits, (p.low, p.high), strict=True):
                 line.setPos(float(v))
                 line.show()
-            self.plot.setLabel("left", p.name, color=t.ink2)
+            self._set_left_label(p.name)
             self.keep_y(self.plot, float(p.low), float(p.high))
-        if sel < 0:
-            for j, line in enumerate(self.lines):  # 「모두」로 돌아오면 원래 색
-                line.setPen(_pen(self._colors[j], 1.5))
-                self.bands[j].setBrush(_qcolor(self._colors[j], 45))
+        bands.commit()
+        lines.commit()
         self._place_focus(self.focus_line)
         self.set_notes([S.BODY_REPS_ONLY if not bool(bs.observed.all()) else "", self.loading_note()])
 

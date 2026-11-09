@@ -7,14 +7,11 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import re
 import string
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 from evolab import paths
 from evolab.app import strings as S
@@ -36,7 +33,7 @@ V30_NAMES: tuple[str, ...] = (
     "HELPW_PAGE_MISSING", "HELPW_SHOW_MISSING", "HELPW_TOUR_BUSY", "HELPW_LINK_BLOCKED", "WHATS_THIS_HINT",
     "WHATS_THIS_NONE", "WHATS_THIS_MORE", "HELP_GLOSSARY_TERMS", "HELP_PAGES", "HELP_TIPS", "HINT_LAB_IDLE_TITLE",
     "HINT_LAB_IDLE", "HINT_LAB_TOUR", "HINT_DASH_EMPTY", "HINT_DASH_ONE", "HINT_EDITOR_EMPTY", "ERR_NEXT_LABEL",
-    "ERR_DETAILS", "ERR_REPORT_BUTTON", "ERR_PERMISSION", "ERR_PERMISSION_NEXT", "ERR_NOT_FOUND",
+    "ERR_REPORT_BUTTON", "ERR_PERMISSION", "ERR_PERMISSION_NEXT", "ERR_NOT_FOUND",
     "ERR_NOT_FOUND_NEXT", "ERR_DISK_FULL", "ERR_DISK_FULL_NEXT", "ERR_MEMORY", "ERR_MEMORY_NEXT",
     "ERR_ENV_FILE_NEXT", "ERR_BUILD_NEXT", "ERR_RUN_STORE_NEXT", "ERR_RECORD_NEXT", "ERR_UNEXPECTED",
     "ERR_UNEXPECTED_NEXT", "DIAG_CRASH_TITLE", "DIAG_CRASH_TEXT", "DIAG_CRASH_AGAIN", "DIAG_PREVIOUS_TITLE",
@@ -50,7 +47,8 @@ V30_NAMES: tuple[str, ...] = (
     "SELFTEST_ERR_TOUR_SLOW", "SELFTEST_CHECK_HELP", "SELFTEST_HELP_DETAIL", "SELFTEST_CHECK_QT_KO",
     "SELFTEST_ERR_QT_KO", "SELFTEST_CHECK_LOGS", "CLI_HELP_SELFTEST_TOUR",
 )
-"""v3 설계 6절의 v3.0 새 상수(ABOUT_TEXT는 ABOUT_TEXT_V3로: strings.py v3.0 머리말 참고)."""
+"""v3 설계 6절의 v3.0 새 상수(ABOUT_TEXT는 ABOUT_TEXT_V3로: strings.py v3.0 머리말 참고). ERR_DETAILS는 통합에서 뺐다:
+오류 상자의 「자세히」는 Qt의 표준 단추(qtbase_ko 번역 「자세한 정보 표시...」)라 쓰는 곳이 없다."""
 
 V31_NAMES = ("INST_PUBLISHER", "PORTABLE_README", "EXP_FORMAT", "EXP_INFO_MF", "PHONE_TEXT", "PHONE_TOO_BIG",
              "CLI_HELP_EXPORT", "CLI_HELP_VIDEO_PROBE", "SELFTEST_CHECK_EXPORT")
@@ -157,9 +155,7 @@ def test_help_tips_keys_are_anchors() -> None:
 
 
 def test_help_pages_keys_match_content_pages() -> None:
-    """HELP_PAGES 키 = content.PAGES(B 묶음). content.py가 생기기 전에는 건너뛴다."""
-    if importlib.util.find_spec("evolab.app.help.content") is None:
-        pytest.skip("app/help/content.py는 B 묶음이 만든다")
+    """HELP_PAGES 키 = content.PAGES(설계 T2)."""
     from evolab.app.help import content
 
     assert tuple(S.HELP_PAGES) == tuple(content.PAGES)

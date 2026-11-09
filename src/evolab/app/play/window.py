@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app.errors import reason, show_error
 from evolab.app.play.record import PlayRecord, align_record, new_record
 from evolab.spec import model as m
 from evolab.spec.compiled import EnvSpec
@@ -644,7 +645,7 @@ class PlayWindow(QWidget):
         try:
             self._start_episode(seed, replaying)
         except EpisodeBuildError as exc:
-            QMessageBox.warning(self, S.PLAY_OPEN_FAILED, self.build_failed_text(seed, exc))
+            show_error(self, S.PLAY_OPEN_FAILED, exc, message=self.build_failed_text(seed, exc))
             return False
         return True
 
@@ -865,7 +866,7 @@ class PlayWindow(QWidget):
         try:
             self.record.save(path)
         except OSError as exc:
-            QMessageBox.warning(self, S.PLAY_SAVE_RECORD, S.PLAY_SAVE_FAILED.format(reason=exc.strerror or exc))
+            show_error(self, S.PLAY_SAVE_RECORD, exc, message=S.PLAY_SAVE_FAILED.format(reason=reason(exc)))
             return
         QMessageBox.information(self, S.PLAY_SAVE_RECORD, S.PLAY_SAVED.format(path=path))
 
@@ -879,7 +880,9 @@ class PlayWindow(QWidget):
         try:
             rec = align_record(self.spec, PlayRecord.load(path))
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, S.PLAY_REPLAY_TITLE, S.PLAY_RECORD_BAD.format(reason=exc))
+            # 입력 기록 오류(설계 4.8): 까닭은 우리 한국어 글·OS 오류 글만 본문에, 모르는 예외 원문은 「자세히」로
+            show_error(self, S.PLAY_REPLAY_TITLE, exc, message=S.PLAY_RECORD_BAD.format(reason=reason(exc)),
+                       next_step=S.ERR_RECORD_NEXT)
             return
         if rec.env_hash != env_hash(self.spec.file):
             QMessageBox.warning(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_ENV_DIFF)

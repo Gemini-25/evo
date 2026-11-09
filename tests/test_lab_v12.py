@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QMessageBox, QSlider
 from test_history import fake_generation, stats_row
 
 from evolab import paths
+from evolab.app import errors
 from evolab.app import strings as S
 from evolab.app.lab import view as lab_view
 from evolab.app.lab.brain_view import BrainTile
@@ -655,7 +656,9 @@ def test_observation_summary_failure_is_a_status_notice_not_a_box(
     lab._update_status()
     assert lab.status.text().endswith("\n" + note)
     lab.client._dispatch({"type": "error", "fatal": False, "message": "other"})
-    assert message_boxes == [(S.LAB_ERROR_TITLE, "other")]
+    # v3.0(설계 D26·3.2): 다른 오류는 지금처럼 상자지만 show_error 상자(다음 할 일 + 오류 보고 묶음 단추)다
+    boxes = [b for b in errors.open_error_boxes() if b.parent() is lab]
+    assert message_boxes == [] and [(b.windowTitle(), b.friendly.message) for b in boxes] == [(S.LAB_ERROR_TITLE, "other")]
     lab._on_rewound(snapshot(store))  # 같은 학습 프로세스 안의 되감기: 알림은 한 번만 오므로 남긴다
     assert lab.status.text().endswith("\n" + note)
     assert lab.open_run(store.root)
