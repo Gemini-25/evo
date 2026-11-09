@@ -1,2 +1,4 @@
 # 테스트용 실행 폴더는 바이트 그대로(환경 사본의 해시를 run.json에 기록하므로 줄바꿈을 바꾸면 안 된다)
 tests/data/** -text
+# v6 오라클은 v3.1 출시판 소스의 바이트 사본이고 tests/test_oracle_sane.py가 sha256으로 확인한다(윈도우 체크아웃에서도 줄바꿈 그대로)
+tests/oracle/** -text
