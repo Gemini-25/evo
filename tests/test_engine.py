@@ -370,3 +370,80 @@ def test_pool_wait_handles_many_objects() -> None:
     conns[65][1].send("x")
     ready = pool_mod._wait([r for r, _ in conns], timeout=1.0)
     assert ready == [conns[65][0]]
+
+
+# ---------------------------------------------------------------------------
+# v6.0 T16: 워커 수·평가 창·먼저 돌린 시험과 무관 (v6 설계 8.1 T16, E 묶음)
+# ---------------------------------------------------------------------------
+
+
+def _same_eval(a: Any, b: Any) -> None:
+    for name in ("scores", "steps", "blocks", "action_abs", "weighted"):
+        x, y = getattr(a, name), getattr(b, name)
+        assert x.dtype == y.dtype and x.shape == y.shape and x.tobytes() == y.tobytes(), name
+    assert a.end_events == b.end_events and a.outcomes == b.outcomes
+    assert (a.trajectories is None) == (b.trajectories is None)
+    for u, v in zip(a.trajectories or [], b.trajectories or [], strict=True):
+        assert (u is None) == (v is None)
+        if u is not None:
+            assert u.poses.tobytes() == v.poses.tobytes() and u.outputs.tobytes() == v.outputs.tobytes()
+            assert (u.every, u.dt, u.end_step) == (v.every, v.dt, v.end_step)
+    assert (a.observations is None) == (b.observations is None)
+    for u, v in zip(a.observations or [], b.observations or [], strict=True):
+        assert (u is None) == (v is None)
+        if u is not None:
+            for name in ("hist", "out_sum", "cells", "counts"):
+                assert getattr(u, name).tobytes() == getattr(v, name).tobytes(), name
+            assert (u.steps, u.outside) == (v.steps, v.outside)
+
+
+def test_t16_results_do_not_depend_on_workers_or_window(batch: Any) -> None:
+    """T16: 워커 0·1·3 × 평가 창 2·12(와 기본)가 궤적·관찰까지 같다(v6 워커는 첫 작업 뒤 GC를 얼림)."""
+    from evolab.engine import observe as observing
+
+    layout, genomes, pairs = batch
+    spec = compile_env(LANDER_TEXT)
+    version = env_hash(spec.file)[:16]
+    frame, _ = observing.world_frame(spec, version, pairs[0][1])
+    n = len(pairs)
+    kw: dict[str, Any] = {"record": [i % 4 == 0 for i in range(n)],
+                          "observe": [2 if i % 3 == 0 else 1 for i in range(n)], "frame": tuple(frame.as_array())}
+    ref = WorkerPool(0).evaluate(version, LANDER_TEXT, layout, genomes, pairs, **kw)
+    for window in (2, 12):
+        for w in (0, 1, 3):
+            with WorkerPool(w, window=window) as pool:
+                pool.evaluate(version, LANDER_TEXT, layout, genomes, pairs[:2])  # 워커마다 첫 작업(얼림) 먼저
+                _same_eval(pool.evaluate(version, LANDER_TEXT, layout, genomes, pairs, **kw), ref)
+
+
+@pytest.mark.parametrize("name", ["lander", "jump"])
+def test_t16_worker_that_ran_twenty_other_trials_first_gives_the_same_result(name: str) -> None:
+    """T16: 다른 시험 20개를 먼저 돌린(그래서 GC를 얼린) 워커와 새 워커가 같은 쌍에 같은 결과(창 2·12)."""
+    text = (paths.builtin_env_dir() / f"{name}.evoenv").read_text(encoding="utf-8")
+    spec = compile_env(text)
+    layout = layout_for(spec)
+    genomes = layout.initial()[None, :] + 0.3 * np.random.default_rng(16).standard_normal((2, layout.dim))
+    target = [(0, seeds.judge_trials(3)[2]), (1, seeds.judge_trials(3)[1])]
+    others = [(k % 2, t) for k, t in enumerate(seeds.validation_trials(20))]
+    rec = [True, False]
+    for window in (2, 12):
+        with WorkerPool(1, window=window) as fresh:
+            first = fresh.evaluate("v", text, layout, genomes, target, record=rec, observe=[1, 1])
+        with WorkerPool(1, window=window) as used:
+            used.evaluate("v", text, layout, genomes, others)
+            used.evaluate("v", text, layout, genomes, others[::-1])
+            later = used.evaluate("v", text, layout, genomes, target, record=rec, observe=[1, 1])
+        _same_eval(first, later)
+        _same_eval(first, WorkerPool(0).evaluate("v", text, layout, genomes, target, record=rec, observe=[1, 1]))
+
+
+def test_t16_trainer_is_independent_of_workers_and_window() -> None:
+    """T16: 학습 5세대가 워커 0(창 기본)과 워커 3(창 2)에서 통계(시간 열 빼고)·챔피언이 같다."""
+    runs = []
+    for workers, window in ((0, None), (3, 2)):
+        with WorkerPool(workers, window=window) as pool:
+            t = Trainer(LANDER_TEXT, small_config(max_generations=5), pool)
+            rows: list[dict[str, Any]] = []
+            t.run(rows.append)
+        runs.append((strip(rows), t.learner.best().tobytes(), t.state.champion.score))
+    assert runs[0] == runs[1]

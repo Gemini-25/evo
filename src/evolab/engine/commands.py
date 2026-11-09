@@ -2,7 +2,9 @@
 
 화면 없이 학습하고(train), 성능을 재고(bench), 완료 기준을 판정한다(judge). 출력은 모두 한국어이고 strings.py에 있다.
 train --no-observe는 그래프용 관찰 기록(v1.2)만 끈다(Trainer 인자, 설정·run.json에는 남지 않음). bench는 단일 코어
-측정 뒤 관찰을 켠 같은 평가를 한 번 더 돌려 차이를 알린다(D32).
+측정 뒤 관찰을 켠 같은 평가를 한 번 더 돌려 차이를 알린다(D32). v6.0(v6 설계 4.10·D17): 단일 코어 줄은 학습과 같은 평가 창
+(evaluate.EVAL_WINDOW)으로 재고 문구에 창 크기를 적는다. 새 줄: 「평가 창」(BENCH_WINDOWS를 번갈아), 「관전 재생 길이」(이미 잰
+평가의 시험 0번 스텝 수, 계산이 더 들지 않음), 「pymunk C 함수 바로 부르기」(episode._CP_FAST).
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -21,7 +23,7 @@ from evolab import paths
 from evolab.app import strings as S
 from evolab.engine import observe as observing
 from evolab.engine import seeds
-from evolab.engine.evaluate import OBSERVE_ACTIONS, OBSERVE_POSITIONS, mean_of_built
+from evolab.engine.evaluate import EVAL_WINDOW, OBSERVE_ACTIONS, OBSERVE_POSITIONS, mean_of_built
 from evolab.engine.pool import PoolError, WorkerPool, default_workers
 from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import (
@@ -414,6 +416,38 @@ def progress_lines(spec: Any, blocks: np.ndarray, failed: np.ndarray | None = No
 
 BENCH_OBSERVE_ROUNDS = 3
 """bench가 단일 코어 평가를 관찰 끔·켬으로 번갈아 재는 횟수(중앙값으로 비교)."""
+BENCH_WINDOWS: Final = (4, 8, 12, 16, 24)
+"""bench 「평가 창」 줄이 재는 창 크기(v6 설계 D17). 사용자 PC에서 EVAL_WINDOW 기본값을 고르는 근거(H1, 되돌릴 지점 3)."""
+BENCH_WINDOW_ROUNDS: Final = 2
+"""창마다 잰 횟수. 회차마다 순서를 뒤집어(4→24, 24→4) 기계가 점점 빨라지거나 느려져도 한쪽으로 쏠리지 않게 한다."""
+PLAYBACK_TAIL_S: Final = 0.5
+"""관전 재생이 가장 긴 궤적 뒤에 더 보여 주는 시간(초). app/lab/view.py의 재생 끝 규칙(가장 긴 궤적 + 0.5초)과 같은 값."""
+
+
+def bench_windows(version: str, env_text: str, layout: Any, genomes: np.ndarray, pairs: list[tuple[int, Any]],
+                  windows: tuple[int, ...] = BENCH_WINDOWS,
+                  rounds: int = BENCH_WINDOW_ROUNDS) -> tuple[dict[int, float], int]:
+    """단일 코어 평가를 창 크기마다 번갈아 rounds번 잰 µs/스텝 중앙값과 가장 빠른 창(같으면 작은 창).
+
+    결과는 창과 상관없이 같다(evaluate 머리말). 스텝 수는 첫 평가의 값을 쓴다."""
+    times: dict[int, list[float]] = {w: [] for w in windows}
+    steps = 0
+    for k in range(rounds):
+        for w in (windows if k % 2 == 0 else tuple(reversed(windows))):
+            pool = WorkerPool(0, window=w)
+            t0 = time.perf_counter()
+            r = pool.evaluate(version, env_text, layout, genomes, pairs)
+            times[w].append(time.perf_counter() - t0)
+            steps = steps or int(r.steps.sum())
+    us = {w: statistics.median(t) / max(steps, 1) * 1e6 for w, t in times.items()}
+    best = min(windows, key=lambda w: (us[w], w))
+    return us, best
+
+
+def playback_seconds(spec: Any, steps: np.ndarray, trials_n: int) -> float:
+    """무작위 유전자 1세대의 시험 0번 가장 긴 궤적 길이(초): 쌍이 개체마다 시험 trials_n개씩 놓인 평가의 스텝 수에서."""
+    first = np.asarray(steps)[0::max(1, trials_n)]
+    return float(first.max()) * float(spec.file.world.dt) if first.size else 0.0
 
 
 def bench_command(args: Any) -> int:
@@ -474,11 +508,20 @@ def bench_command(args: Any) -> int:
     steps = int(res.steps.sum())
     el = statistics.median(off_times)
     nn_share = res.nn_seconds / max(res.nn_seconds + res.sim_seconds, 1e-12)
-    say(S.BENCH_SINGLE.format(sps=steps / el, us=el / steps * 1e6, nn=100 * nn_share, steps=steps, sec=el))
+    say(S.BENCH_SINGLE.format(window=EVAL_WINDOW, sps=steps / el, us=el / steps * 1e6, nn=100 * nn_share, steps=steps,
+                              sec=el))
     el_obs = statistics.median(on_times)
     ratios = [100.0 * (off / on - 1.0) for off, on in zip(off_times, on_times, strict=True)]
     say(S.BENCH_OBSERVE.format(sps=int(res_obs.steps.sum()) / el_obs, pct=100.0 * (el / el_obs - 1.0),
                                rounds=BENCH_OBSERVE_ROUNDS, lo=min(ratios), hi=max(ratios)))
+    us, best = bench_windows(version, env_text, layout, genomes, pairs)
+    rows = S.BENCH_WINDOW_SEP.join(S.BENCH_WINDOW_ROW.format(w=w, us=us[w]) for w in BENCH_WINDOWS)
+    say(S.BENCH_WINDOW.format(rows=rows, best=best, rounds=BENCH_WINDOW_ROUNDS))
+    sec = playback_seconds(spec, res.steps, trials_n)
+    say(S.BENCH_PLAYBACK.format(sec=sec, wait=sec + PLAYBACK_TAIL_S))
+    from evolab.world.physics2d import episode as runtime
+
+    say(S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_ON if runtime._CP_FAST else S.BENCH_FAST_OFF))
 
     for w in counts:
         with WorkerPool(w) as pool:

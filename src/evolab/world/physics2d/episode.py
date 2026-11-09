@@ -14,11 +14,22 @@ v2.1 몸 구조(설계 4.11, D34·D35·D39): 물체의 있음 칸(exists)으로 
 spec/structure.present)는 만들지 않는다. 그 물체에 끝이 닿은 관절·모터, 그 물체의 추진기·점프·차량·공기역학도 없고, 그
 구동기 채널은 죽은 채널(실제 출력·명령 모두 0)이다. 그 물체·관절에 단 센서는 늘 0(레이도 0), 접촉 질의는 거짓. 있음 칸을
 쓰는 물체가 없으면 없는 물체가 없어(빈 집합) v1·v2.0 파일은 예전과 같은 계산을 같은 순서로 한다.
+
+v6.0 런타임 가속(v6 설계 4.1~4.6·4.8, D6~D14): 결과는 v3.1과 비트 단위로 같다(tests/oracle의 얼린 v3.1 사본과 같은 기계에서
+바이트 비교: tests/test_speed_identity.py, tests/test_speed_runtime.py). 바꾼 것은 셋 중 하나다: 공개 API가 부르는 같은 C 함수를
+같은 인수로 바로 부름(물체 상태 읽기, 힘·토크·속도·모터 쓰기 = _setup_c_paths, 둘째 스텝부터 cpSpaceStep = _first_space_step),
+같은 식을 같은 순서로 계산하되 스텝마다 하던 문자열 비교·사전 찾기·객체 만들기를 만들 때 한 번으로(값 읽기·몸 상태 센서
+특수화, 사건 한 루프 _fire_plan, 접촉 맞음 기억, 공기역학 _aero_fast, 레이 필터 한 번 쓰기, 꼬리표 frozenset 공유), 행동을
+목록으로 받는 step_values. 초월 함수는 math만 쓴다(numpy는 끝 비트가 다르다). 규칙: Episode는 만든 뒤 공간에 물체·모양·관절을
+더하거나 빼지 않고 접촉 콜백은 공간을 바꾸지 않는다(cpSpaceStep을 바로 부르는 전제). 그런 코드가 생기면(예: v5 대전의 물체
+추가) 그 Episode는 _raw_space를 None으로 되돌려 공개 Space.step을 쓴다. _CP_FAST가 거짓이면(pymunk 내부가 바뀐 판, 만들 때
+정함) 모든 곳이 공개 API 길을 지난다(같은 결과).
 """
 
 from __future__ import annotations
 
 import math
+import operator
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -72,6 +83,8 @@ AERO_MAX_FRICTION = 10.0
 AERO_MIN_SPEED2 = 1e-12
 """상대 바람 속력²이 이보다 작으면 그 변에는 힘이 없다."""
 JUMP_NEVER = -(10**9)
+_INFS = (math.inf, -math.inf)
+"""step_values가 0으로 바꾸는 무한대 둘(x in _INFS = x가 ±무한대)."""
 """아직 뛴 적 없는 점프 추진기의 '마지막 점프 스텝'(첫 스텝부터 뛸 수 있게)."""
 
 
@@ -186,8 +199,16 @@ try:
     _CP_SEGMENT_FIRST: Any = _CP_LIB.cpSpaceSegmentQueryFirst
     _CP_GET_POSITION: Any = _CP_LIB.cpBodyGetPosition
     _CP_GET_ANGLE: Any = _CP_LIB.cpBodyGetAngle
+    _CP_GET_VELOCITY: Any = _CP_LIB.cpBodyGetVelocity
+    _CP_GET_ANGULAR_VELOCITY: Any = _CP_LIB.cpBodyGetAngularVelocity
+    _CP_GET_FORCE: Any = _CP_LIB.cpBodyGetForce
+    _CP_GET_TORQUE: Any = _CP_LIB.cpBodyGetTorque
     _CP_SET_VELOCITY: Any = _CP_LIB.cpBodySetVelocity
     _CP_SET_ANGULAR_VELOCITY: Any = _CP_LIB.cpBodySetAngularVelocity
+    _CP_SET_FORCE: Any = _CP_LIB.cpBodySetForce
+    _CP_SET_TORQUE: Any = _CP_LIB.cpBodySetTorque
+    _CP_MOTOR_SET_RATE: Any = _CP_LIB.cpSimpleMotorSetRate
+    _CP_SPACE_STEP: Any = _CP_LIB.cpSpaceStep
     _CP_FAST = True
 except (ImportError, AttributeError):  # pragma: no cover - pymunk 내부가 바뀐 판
     _CP_FAST = False
@@ -289,6 +310,83 @@ def _param_values(env: m.EnvFile, body_params: Sequence[float] | np.ndarray | No
 
 
 # ---------------------------------------------------------------------------
+# 몸 상태 값·센서 특수화 (v6 설계 4.3, D9)
+# ---------------------------------------------------------------------------
+# 스텝마다 항목 이름을 문자열로 비교하던 일을 만들 때 한 번으로 옮긴다. 식(각도 (a + π) % τ − π, 속력 hypot, 몸 좌표 회전)과
+# 값은 Episode._state·옛 body_state와 같다(tests/test_speed_runtime.py T8이 모든 항목·좌표계를 무작위 상태로 비교한다).
+
+_STATE_INDEX = {"x": 0, "y": 1, "vx": 3, "vy": 4, "omega": 5}
+"""_bstate 튜플 (x, y, 각도, vx, vy, 각속도)에서 그대로 읽는 세계 좌표 항목."""
+_ANGLE, _SPEED, _FWD, _LAT = 6, 7, 8, 9
+"""몸 상태 센서가 _bstate 튜플 뒤에 덧붙여 읽는 계산 값의 자리: 감싼 각도, 속력, 앞뒤 속도, 옆 속도."""
+
+
+def _state_getter(bstate: Callable[[str], tuple[float, ...]], bid: str, f: str) -> Callable[[], float]:
+    """수식 값 "<물체>.<항목>"(sy.BODY_STATE, 세계 좌표) 하나를 읽는 함수 = v3.1 Episode._state(bid, f)와 같은 값."""
+    if f == "angle":
+        pi, tau = math.pi, geo.TAU
+
+        def angle() -> float:
+            return (bstate(bid)[2] + pi) % tau - pi  # geo.wrap_angle과 같은 식
+        return angle
+    if f == "speed":
+        hypot = math.hypot
+
+        def speed() -> float:
+            st = bstate(bid)
+            return hypot(st[3], st[4])
+        return speed
+    k = _STATE_INDEX.get(f, 3 if f == "vx" else 4)
+
+    def item() -> float:
+        return bstate(bid)[k]
+    return item
+
+
+def _body_state_fn(bstate: Callable[[str], tuple[float, ...]], body: str, fields: tuple[str, ...],
+                   frame: str) -> Callable[[], tuple[float, ...]]:
+    """몸 상태 센서 하나의 원래 값 함수. 항목마다 읽을 자리를 만들 때 한 번 정한다: 세계 좌표 항목은 _bstate 튜플에서
+    그대로(operator.itemgetter), 감싼 각도·속력·몸 좌표 속도가 필요하면 그 값만 계산해 튜플 뒤에 붙인 뒤 읽는다.
+    몸 좌표 속도는 한 번의 cos·sin 뒤 fwd = vx·c + vy·s, lat = −vx·s + vy·c(옛 body_state와 같은 식)."""
+    need_body = frame == "body" or "v_fwd" in fields or "v_lat" in fields
+    slots: list[int] = []
+    for f in fields:
+        if f == "angle":
+            slots.append(_ANGLE)
+        elif f == "speed":
+            slots.append(_SPEED)
+        elif f == "v_fwd" or (f == "vx" and frame == "body"):
+            slots.append(_FWD)
+        elif f == "v_lat" or (f == "vy" and frame == "body"):
+            slots.append(_LAT)
+        else:
+            slots.append(_STATE_INDEX.get(f, 3 if f == "vx" else 4))
+    need_angle, need_speed = _ANGLE in slots, _SPEED in slots
+    extra = need_body or need_angle or need_speed
+    pick: Callable[[tuple[float, ...]], tuple[float, ...]]
+    if len(slots) == 1:
+        k = slots[0]
+        pick = lambda st: st[k:k + 1]  # noqa: E731 - 항목 하나: 튜플 한 칸
+    else:
+        pick = operator.itemgetter(*slots)
+    if not extra:
+        return lambda: pick(bstate(body))
+    cos, sin, hypot, pi, tau = math.cos, math.sin, math.hypot, math.pi, geo.TAU
+
+    def body_state() -> tuple[float, ...]:
+        st = bstate(body)
+        a, vx, vy = st[2], st[3], st[4]
+        if need_body:
+            c, si = cos(a), sin(a)
+            fwd, lat = vx * c + vy * si, -vx * si + vy * c
+        else:
+            fwd = lat = 0.0
+        return pick(st + ((a + pi) % tau - pi if need_angle else 0.0, hypot(vx, vy) if need_speed else 0.0, fwd, lat))
+
+    return body_state
+
+
+# ---------------------------------------------------------------------------
 # Episode
 # ---------------------------------------------------------------------------
 
@@ -300,6 +398,8 @@ class _ContactChannel:
     raw: bool = False
     last_true: float = -1e9
     value: bool = False
+    memo: dict[Any, bool] = field(default_factory=dict)
+    """모양 → 선택자에 맞음(v6 D11). 모양의 물체·꼬리표는 만든 뒤 바뀌지 않으므로 처음 볼 때 한 번 _matches로 정한다."""
 
 
 @dataclass
@@ -345,6 +445,8 @@ class _Vehicle:
     """한 스텝 동안 구름 저항으로 남는 속도 비율 exp(-drag x dt)."""
     gain: float = 0.0
     """한 스텝 동안 가속 1(m/s²)이 더하는 속도 (1 - decay) / drag (drag가 0이면 dt)."""
+    raw: Any = None
+    """cpBody 포인터(_setup_c_paths, v6 D7). None이면 공개 API를 쓴다."""
 
 
 @dataclass
@@ -373,6 +475,8 @@ class _Jump:
     ground: _ContactChannel | None = None
     """땅 접촉 채널(앞 스텝 값, 디바운스 적용). _setup_contacts 뒤에 _connect_jumps가 잇는다."""
     last: int = JUMP_NEVER
+    raw: Any = None
+    """cpBody 포인터(_setup_c_paths, v6 D7). None이면 공개 API를 쓴다."""
 
 
 @dataclass
@@ -461,6 +565,8 @@ class Episode:
         self.space.collision_slop = COLLISION_SLOP
         self.bodies: dict[str, pymunk.Body] = {}
         self._shape_info: dict[pymunk.Shape, tuple[str, frozenset[str]]] = {}
+        self._tagsets: dict[tuple[str, ...], frozenset[str]] = {}
+        """꼬리표 목록 → frozenset(같은 내용이면 하나를 나눠 씀, v6 D13b)."""
         self._geoms: list[BodyGeom] = []
         self._regions: dict[str, _Region] = {}
         self._region_geoms: list[RegionGeom] = []
@@ -496,6 +602,7 @@ class Episode:
         self._build_joints()
         self._build_actuators()
         self._setup_contacts()
+        self._setup_c_paths()
         self._connect_jumps()
         self._build_checkpoints()
         self._values: dict[str, Any] = {}
@@ -504,12 +611,21 @@ class Episode:
 
         self.moving_bodies = [g.id for g in self._geoms if g.moving]
         self._moving = [self.bodies[i] for i in self.moving_bodies]
+        self._moving_raw = [self._raw[i] for i in self.moving_bodies]
         # hold초 유지: 조건이 처음 참이 된 스텝부터 hold초가 지난 스텝에 일어난다(hold=0이면 바로).
         self._events = [_EventState(e, 1 + max(0, math.ceil(min(ev.hold / self.dt, MAX_STEPS) - 1e-9)))
                         for e, ev in self._event_defs()]
         self._builtin = {"timeout": _EventState("timeout", 1), "out_of_bounds": _EventState("out_of_bounds", 1)}
         states = {**self._builtin, **{st.id: st for st in self._events}}
         self._end_states = [(end, states[end.event]) for end in spec.terminations if end.event in states]
+        # 사건 갱신 계획(v6 D10): (상태, 조건 함수(내장 사건은 None), "<id>.count" 또는 None, "<id>.since" 또는 None).
+        # 순서는 옛 _update_events와 같다: timeout, out_of_bounds, 사건 순서(spec.event_order).
+        self._fire_plan: list[tuple[_EventState, Callable[[dict[str, Any]], Any] | None, str | None, str | None]] = [
+            (st, cond, f"{st.id}.count" if st.id in self._count_needed else None,
+             f"{st.id}.since" if st.id in self._since_needed else None)
+            for st, cond in [(self._builtin["timeout"], None), (self._builtin["out_of_bounds"], None),
+                             *((st, spec.events[st.id]) for st in self._events)]
+        ]
         self._refresh_values()
 
     # ------------------------------------------------------------------
@@ -543,16 +659,23 @@ class Episode:
         """구동기 출력(brain.outputs 순서, 각 구동기 고유 범위)으로 한 스텝 진행한다."""
         if self._done:
             return
-        values = action.tolist() if isinstance(action, np.ndarray) else list(action)
+        self.step_values(action.tolist() if isinstance(action, np.ndarray) else list(action))
+
+    def step_values(self, values: list[float]) -> None:
+        """step()의 몸통(v6 설계 D14·7.3): 행동을 파이썬 float 목록으로 받는다. 평가기는 묶음마다 ndarray.tolist()를 한 번
+        하고 행마다 이것을 부른다(쌍마다 ndarray 행을 만들지 않는다). 규칙은 step()과 같다: 끝났으면 아무 일도 안 하고, 길이가
+        다르면 RT_ACTION_SIZE ValueError, 값마다 float() 뒤 NaN·무한대는 0, 구동기 범위로 자르고, 없는 부품(v2.1)의 채널은 0.
+        받은 목록은 고치지 않는다."""
+        if self._done:
+            return
         if len(values) != len(self._out_index):
             raise ValueError(S.RT_ACTION_SIZE.format(got=len(values), want=len(self._out_index)))
         self._u_prev = self._u
         u = [0.0] * len(self._u_names)
-        for x, idx in zip(values, self._out_index, strict=True):
+        for x, (idx, lo, hi) in zip(values, self._out_plan, strict=True):
             x = float(x)
-            if x != x or x in (math.inf, -math.inf):
+            if x != x or x in _INFS:
                 x = 0.0
-            lo, hi = self._u_range[idx]
             u[idx] = lo if x < lo else (hi if x > hi else x)
         for idx in self._dead_channels:  # 없는 부품의 구동기(v2.1): 명령도 0(부드러움 블록이 세지 않게)
             u[idx] = 0.0
@@ -564,7 +687,11 @@ class Episode:
             self._apply_aero()
         if self._kinematic:
             self._drive_kinematic()
-        self.space.step(self.dt)
+        raw_space = self._raw_space
+        if raw_space is not None:  # 둘째 스텝부터: Space.step과 같은 C 함수(v6 D8, _first_space_step)
+            _CP_SPACE_STEP(raw_space, self.dt)
+        else:
+            self._first_space_step()
         self._cache.clear()
         self._pos_cache.clear()
         self.steps += 1
@@ -608,9 +735,14 @@ class Episode:
 
     def snapshot(self) -> FrameState:
         poses = np.empty((len(self._moving), 3), dtype=np.float64)
-        for i, b in enumerate(self._moving):
-            poses[i, 0], poses[i, 1] = b.position
-            poses[i, 2] = b.angle
+        for i, (b, raw) in enumerate(zip(self._moving, self._moving_raw, strict=True)):
+            if raw is not None:  # 공개 API와 같은 C 함수(v6 D6)
+                p = _CP_GET_POSITION(raw)
+                poses[i, 0], poses[i, 1] = p.x, p.y
+                poses[i, 2] = _CP_GET_ANGLE(raw)
+            else:
+                poses[i, 0], poses[i, 1] = b.position
+                poses[i, 2] = b.angle
         return FrameState(self.time, poses, np.array(self._u_applied, dtype=np.float32))
 
     def geometry(self) -> WorldGeometry:
@@ -718,9 +850,18 @@ class Episode:
     ) -> None:
         self.bodies[body_id] = body
         pyshapes = [s for s, _ in shapes]
+        # 같은 (물체, 꼬리표)의 모양은 (id, frozenset) 하나를 함께 쓴다(v6 D13b: 읽기만 함, Episode 안에서만 나눔).
+        infos: dict[tuple[str, ...], tuple[str, frozenset[str]]] = {}
+        tagsets = self._tagsets
         for k, s in enumerate(pyshapes):
-            t = per_shape_tags[k] if per_shape_tags is not None else tags
-            self._shape_info[s] = (body_id, frozenset(t))
+            t = tuple(per_shape_tags[k] if per_shape_tags is not None else tags)
+            info = infos.get(t)
+            if info is None:
+                fs = tagsets.get(t)
+                if fs is None:
+                    fs = tagsets[t] = frozenset(t)
+                info = infos[t] = (body_id, fs)
+            self._shape_info[s] = info
         if body.body_type == pymunk.Body.STATIC and len(pyshapes) > SHUFFLE_ABOVE:
             # Chipmunk의 경계 상자 트리는 한 줄로 늘어선 선분을 차례로 넣으면 한쪽으로 쏠려 넣기가 제곱 시간이 된다
             # (2만 개: 차례로 4.4초, 섞으면 0.04초). 늘 같은 순서로 섞어 결정성은 그대로다.
@@ -1168,6 +1309,8 @@ class Episode:
         self._abs_sum = [0.0] * n
         index = {c.name: i for i, c in enumerate(channels)}
         self._out_index = [index[name] for name in self.spec.outputs]
+        self._out_plan = [(i, *self._u_range[i]) for i in self._out_index]
+        """신경망 출력 k번 → (채널 번호, 범위 아래, 위). step_values가 스텝마다 찾던 것을 한 번에(v6 D14)."""
         self._tanks: dict[str, _Tank] = {}
         self._thrusters: list[_Thruster] = []
         for a in self.env.actuators:
@@ -1346,26 +1489,26 @@ class Episode:
         1 / (D x dt)배로 줄인다(한 스텝의 공기힘 충격이 힘 거는 점의 상대 속도보다 크게 속도를 바꾸지 않게). 합과 상한은 물체마다:
         한 물체에 단 공기역학 부품들의 변을 모두 더한 뒤 한 번 줄이고, 발동 수도 (물체, 스텝)마다 한 번 센다."""
         wx, wy = self.wind
-        exp, asin, sqrt, hypot = math.exp, math.asin, math.sqrt, math.hypot
+        exp, asin, sqrt, hypot, cos, sin = math.exp, math.asin, math.sqrt, math.hypot, math.cos, math.sin
         width = AERO_STALL_WIDTH
-        for body, bid, parts in self._aero_bodies:
+        cp_attached, cp_shift, min_speed2 = AERO_CP_ATTACHED, AERO_CP_STALL_SHIFT, AERO_MIN_SPEED2
+        dt = self.dt
+        # v6 설계 4.5(D12): 1/질량·1/관성과 부품 값은 만들 때 한 번(_aero_fast), 힘 읽기·쓰기는 C. 식·순서는 그대로이고
+        # min(1.0, x)만 같은 값의 조건식 x if x < 1.0 else 1.0(파이썬 min은 같거나 NaN이면 첫 인수 1.0).
+        for body, bid, raw, inv_m, inv_i, parts in self._aero_fast:
             _x, _y, a, vx, vy, w = self._bstate(bid)
-            c, s_ = math.cos(a), math.sin(a)
+            c, s_ = cos(a), sin(a)
             fx = fy = tq = 0.0
             dsum = 0.0
-            inv_m = 1.0 / body.mass
-            inv_i = 1.0 / body.moment
-            for part in parts:
-                qk, slope, cd90 = part.qk, part.slope, part.cd90
-                stall, fric, induced = part.stall, part.friction, part.induced
-                for nx_, ny_, dx, dy, mx, my, ln in part.edges:
+            for qk, slope, cd90, stall, fric, induced, edges in parts:
+                for nx_, ny_, dx, dy, mx, my, ln in edges:
                     nx, ny = nx_ * c - ny_ * s_, nx_ * s_ + ny_ * c
                     ex, ey = dx * c - dy * s_, dx * s_ + dy * c
                     rx, ry = mx * c - my * s_, mx * s_ + my * c
                     # 1) 변 가운데에서 잰 바람: 표면 마찰, 받음각·실속 정도, 압력 중심
                     ux, uy = wx - (vx - w * ry), wy - (vy + w * rx)
                     u2 = ux * ux + uy * uy
-                    if u2 < AERO_MIN_SPEED2:
+                    if u2 < min_speed2:
                         continue
                     speed = sqrt(u2)
                     un = ux * nx + uy * ny
@@ -1380,21 +1523,23 @@ class Episode:
                         dsum += fm / speed * (inv_m + cr * cr * inv_i)
                     if un >= 0.0:
                         continue  # 바람을 등진 변
-                    sa = min(1.0, -un / speed)
+                    sa = -un / speed
+                    sa = sa if sa < 1.0 else 1.0  # = min(1.0, sa)
                     sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
-                    xcp = AERO_CP_ATTACHED + AERO_CP_STALL_SHIFT * sig
+                    xcp = cp_attached + cp_shift * sig
                     f = xcp - 0.5 if ux * ex + uy * ey >= 0.0 else 0.5 - xcp  # 흐름이 먼저 닿는 끝에서 xcp
                     px, py = rx + ex * f, ry + ey * f
                     # 2) 압력 중심에서 다시 잰 바람으로 힘을 계산해 그 점에 건다
                     ux, uy = wx - (vx - w * py), wy - (vy + w * px)
                     u2 = ux * ux + uy * uy
-                    if u2 < AERO_MIN_SPEED2:
+                    if u2 < min_speed2:
                         continue
                     speed = sqrt(u2)
                     un = ux * nx + uy * ny
                     if un >= 0.0:
                         continue
-                    sa = min(1.0, -un / speed)
+                    sa = -un / speed
+                    sa = sa if sa < 1.0 else 1.0  # = min(1.0, sa)
                     ca = sqrt(1.0 - sa * sa)
                     sig = 1.0 / (1.0 + exp(-(asin(sa) - stall) / width))
                     q = qk * u2 * ln
@@ -1415,16 +1560,21 @@ class Episode:
                     if fm > 0.0:
                         cr = (px * force_y - py * force_x) / fm
                         dsum += fm / speed * (inv_m + cr * cr * inv_i)
-            if dsum * self.dt > 1.0:
-                scale = 1.0 / (dsum * self.dt)
+            if dsum * dt > 1.0:
+                scale = 1.0 / (dsum * dt)
                 fx *= scale
                 fy *= scale
                 tq *= scale
                 self._aero_clamped += 1
             if fx or fy or tq:
-                f0 = body.force
-                body.force = (f0.x + fx, f0.y + fy)
-                body.torque = body.torque + tq
+                if raw is not None:  # 공개 API와 같은 C 함수(v6 D7)
+                    f0 = _CP_GET_FORCE(raw)
+                    _CP_SET_FORCE(raw, (f0.x + fx, f0.y + fy))
+                    _CP_SET_TORQUE(raw, _CP_GET_TORQUE(raw) + tq)
+                else:
+                    f0 = body.force
+                    body.force = (f0.x + fx, f0.y + fy)
+                    body.torque = body.torque + tq
 
     def _build_checkpoints(self) -> None:
         default = self._vehicles[0].bid if self._vehicles else (self._agent_ids[0] if self._agent_ids else None)
@@ -1494,7 +1644,7 @@ class Episode:
         for slot, k in self._drag_slots:
             st = self._bstate(self._force_bodies[slot][0])
             drag[slot] = (k * (wx - st[3]), k * (wy - st[4]))
-        for slot, (bid, body) in enumerate(self._force_bodies):
+        for slot, (bid, body, raw) in enumerate(self._force_raw):
             a = acc[slot]
             fx, fy, tq = a
             dx, dy = drag[slot]
@@ -1502,8 +1652,12 @@ class Episode:
                 continue
             ang = self._bstate(bid)[2]
             c, s_ = math.cos(ang), math.sin(ang)
-            body.force = (fx * c - fy * s_ + dx, fx * s_ + fy * c + dy)
-            body.torque = tq
+            if raw is not None:  # 공개 API와 같은 C 함수(v6 D7)
+                _CP_SET_FORCE(raw, (fx * c - fy * s_ + dx, fx * s_ + fy * c + dy))
+                _CP_SET_TORQUE(raw, tq)
+            else:
+                body.force = (fx * c - fy * s_ + dx, fx * s_ + fy * c + dy)
+                body.torque = tq
             a[0] = a[1] = a[2] = 0.0
 
     def _apply_actuators(self) -> None:
@@ -1517,10 +1671,14 @@ class Episode:
             i = jp.channel_index
             applied[i] = 0.0
             if u[i] >= 0.5 and self._jump_allowed(jp):
-                v = jp.body.velocity
+                raw = jp.raw
+                v = _CP_GET_VELOCITY(raw) if raw is not None else jp.body.velocity
                 vd = v.x * jp.dx + v.y * jp.dy
                 if vd < jp.speed:
-                    jp.body.velocity = (v.x + (jp.speed - vd) * jp.dx, v.y + (jp.speed - vd) * jp.dy)
+                    if raw is not None:  # 공개 API와 같은 C 함수(v6 D7)
+                        _CP_SET_VELOCITY(raw, (v.x + (jp.speed - vd) * jp.dx, v.y + (jp.speed - vd) * jp.dy))
+                    else:
+                        jp.body.velocity = (v.x + (jp.speed - vd) * jp.dx, v.y + (jp.speed - vd) * jp.dy)
                     self._cache.pop(jp.bid, None)
                 jp.last = self.steps
                 applied[i] = 1.0
@@ -1543,20 +1701,31 @@ class Episode:
             acc[0] += t.force[0] * x
             acc[1] += t.force[1] * x
             acc[2] += t.torque * x
-        for mo in self._motors:
-            # Chipmunk SimpleMotor는 (b 각속도 - a 각속도) = -rate로 맞춘다. +출력이 b를 a에 대해 반시계로 돌게 부호를 바꾼다.
-            mo.constraint.rate = -u[mo.channel_index] * mo.max_speed
+        # Chipmunk SimpleMotor는 (b 각속도 - a 각속도) = -rate로 맞춘다. +출력이 b를 a에 대해 반시계로 돌게 부호를 바꾼다.
+        if self._motor_raw is not None:  # 공개 API(SimpleMotor.rate)와 같은 C 함수(v6 D7)
+            for raw, ci, max_speed in self._motor_raw:
+                _CP_MOTOR_SET_RATE(raw, -u[ci] * max_speed)
+        else:
+            for mo in self._motors:
+                mo.constraint.rate = -u[mo.channel_index] * mo.max_speed
         for v in self._vehicles:
             # 자전거 모형: 옆미끄럼을 grip만큼 없애고, 회전 속도는 앞뒤 속도와 조향각으로 정한다.
             _x, _y, ang, vx, vy, _w = self._bstate(v.bid)
             c, s_ = math.cos(ang), math.sin(ang)
             fwd = vx * c + vy * s_
             lat = (-vx * s_ + vy * c) * (1.0 - v.grip)
-            v.body.velocity = (fwd * c - lat * s_, fwd * s_ + lat * c)
+            raw = v.raw
+            if raw is not None:  # 공개 API와 같은 C 함수(v6 D7)
+                _CP_SET_VELOCITY(raw, (fwd * c - lat * s_, fwd * s_ + lat * c))
+            else:
+                v.body.velocity = (fwd * c - lat * s_, fwd * s_ + lat * c)
             omega = fwd * math.tan(u[v.ch_steer] * v.steer) / v.wheelbase
             if v.lat_max > 0.0 and abs(omega * fwd) > v.lat_max:
                 omega = math.copysign(v.lat_max / abs(fwd), omega)  # 횡가속도 한계: 빠르면 덜 꺾인다
-            v.body.angular_velocity = omega
+            if raw is not None:
+                _CP_SET_ANGULAR_VELOCITY(raw, omega)
+            else:
+                v.body.angular_velocity = omega
             self._cache.pop(v.bid, None)
             acc = self._acc[v.slot]
             target = fwd * v.decay + u[v.ch_throttle] * v.accel * v.gain
@@ -1580,6 +1749,47 @@ class Episode:
         self._contacts_dirty = True
         self._cache: dict[str, tuple[float, float, float, float, float, float]] = {}
         self._pos_cache: dict[str, tuple[float, float]] = {}
+
+    def _setup_c_paths(self) -> None:
+        """C 함수를 바로 부를 포인터를 한 번 모은다(v6 설계 4.1, D6·D7). self.bodies는 없는 물체(v2.1)를 뺀 것이다.
+
+        _CP_FAST가 아니면(pymunk 내부가 바뀐 판) 포인터가 모두 None이고 모든 곳이 공개 API 길을 지난다(결과는 같다:
+        공개 API가 같은 C 함수를 같은 인수로 부른 뒤 Vec2d로 감쌀 뿐이다). 물체·관절은 Episode가 붙잡고 있으므로 포인터가
+        가리키는 C 메모리는 Episode가 사는 동안 살아 있다."""
+        self._fast = _CP_FAST
+        self._raw_space: Any = None
+        """cpSpace 포인터. 첫 스텝(공개 Space.step) 뒤에 채운다(_first_space_step)."""
+        self._raw: dict[str, Any] = {bid: _body_c(b) for bid, b in self.bodies.items()}
+        self._force_raw: list[tuple[str, pymunk.Body, Any]] = [(bid, b, self._raw[bid]) for bid, b in self._force_bodies]
+        self._agent_raw: list[Any] | None = [self._raw[b] for b in self._agent_ids] if self._fast else None
+        motor_raw = [getattr(mo.constraint, "_constraint", None) if _CP_FAST else None for mo in self._motors]
+        self._motor_raw: list[tuple[Any, int, float]] | None = (
+            [(raw, mo.channel_index, mo.max_speed) for raw, mo in zip(motor_raw, self._motors, strict=True)]
+            if all(raw is not None for raw in motor_raw) else None)
+        for v in self._vehicles:
+            v.raw = self._raw[v.bid]
+        for jp in self._jumps:
+            jp.raw = self._raw[jp.bid]
+        # 공기역학(v6 D12): 물체마다 (물체, id, 포인터, 1/질량, 1/관성, 부품마다 (qk, slope, cd90, stall, friction, induced,
+        # 변 목록)). 물체 질량·관성은 모양을 모두 단 뒤 바뀌지 않는다(_apply_aero가 스텝마다 나누던 값과 같다).
+        self._aero_fast: list[tuple[pymunk.Body, str, Any, float, float, list[tuple[Any, ...]]]] = [
+            (body, bid, self._raw[bid], 1.0 / body.mass, 1.0 / body.moment,
+             [(p.qk, p.slope, p.cd90, p.stall, p.friction, p.induced, p.edges) for p in parts])
+            for body, bid, parts in self._aero_bodies
+        ]
+
+    def _first_space_step(self) -> None:
+        """공개 Space.step 한 번(v6 설계 4.2, D8). 첫 스텝에 pymunk가 동적 물체의 질량·관성을 검사하고 검사 목록을 비운다.
+
+        그 뒤로 Space.step의 파이썬 부분(검사 목록, 잠금, 스텝 중 더하기·빼기 목록, 빈 모양 목록, 스텝 뒤 콜백)은 이 런타임에서
+        늘 빈 일이라(tests/test_speed_runtime.py T7) 둘째 스텝부터는 그 안의 cpSpaceStep(같은 C 함수, 같은 인수)을 바로 부른다.
+        전제: Episode는 만든 뒤 공간에 물체·모양·관절을 더하거나 빼지 않고, 접촉 콜백(_on_begin·_on_separate)은 공간을 바꾸지
+        않는다. 그런 코드가 생기면(예: v5 대전의 물체 추가) 그 Episode는 _raw_space를 None으로 되돌려 공개 Space.step을 쓴다.
+        _CP_FAST가 아니었으면(만들 때 정함) 늘 공개 Space.step이다."""
+        space = self.space
+        space.step(self.dt)
+        if self._fast and not space.threaded and not space._bodies_to_check:
+            self._raw_space = getattr(space, "_space", None)
 
     def _contact_channel(self, body: str, selectors: Sequence[str]) -> _ContactChannel:
         key = (body, tuple(selectors))
@@ -1632,7 +1842,17 @@ class Episode:
         for ch in self._contacts.values():
             if dirty:
                 touching = self._touching[ch.body]
-                ch.raw = any(self._matches(s, ch.selectors) for s in touching) if touching else False
+                hit = False
+                if touching:  # = any(self._matches(s, ch.selectors) for s in touching), 모양마다 한 번만 판정(v6 D11)
+                    memo = ch.memo
+                    for s in touching:
+                        m_ = memo.get(s)
+                        if m_ is None:
+                            m_ = memo[s] = self._matches(s, ch.selectors)
+                        if m_:
+                            hit = True
+                            break
+                ch.raw = hit
             if ch.raw:
                 ch.last_true = t
                 ch.value = True
@@ -1653,7 +1873,8 @@ class Episode:
             return (c[0], c[1])
         p = self._pos_cache.get(body_id)
         if p is None:
-            v = self.bodies[body_id].position
+            raw = self._raw[body_id]
+            v = _CP_GET_POSITION(raw) if raw is not None else self.bodies[body_id].position  # 같은 C 함수(v6 D6)
             p = (v.x, v.y)
             self._pos_cache[body_id] = p
         return p
@@ -1662,32 +1883,18 @@ class Episode:
         """(x, y, 각도, vx, vy, 각속도). 스텝마다 물체당 한 번만 pymunk에서 읽는다."""
         c = self._cache.get(body_id)
         if c is None:
-            b = self.bodies[body_id]
-            p = b.position
-            v = b.velocity
-            c = (p.x, p.y, b.angle, v.x, v.y, b.angular_velocity)
+            raw = self._raw[body_id]
+            if raw is not None:  # 공개 API(Body.position 등)와 같은 C 함수, Vec2d 없이(v6 D6)
+                p = _CP_GET_POSITION(raw)
+                v = _CP_GET_VELOCITY(raw)
+                c = (p.x, p.y, _CP_GET_ANGLE(raw), v.x, v.y, _CP_GET_ANGULAR_VELOCITY(raw))
+            else:
+                b = self.bodies[body_id]
+                p = b.position
+                v = b.velocity
+                c = (p.x, p.y, b.angle, v.x, v.y, b.angular_velocity)
             self._cache[body_id] = c
         return c
-
-    def _state(self, body_id: str, f: str, frame: str = "world") -> float:
-        x, y, a, vx, vy, w = self._bstate(body_id)
-        if f == "x":
-            return x
-        if f == "y":
-            return y
-        if f == "angle":
-            return geo.wrap_angle(a)
-        if f == "omega":
-            return w
-        if f == "speed":
-            return math.hypot(vx, vy)
-        if f in ("v_fwd", "v_lat") or frame == "body":
-            c, s = math.cos(a), math.sin(a)
-            fwd, lat = vx * c + vy * s, -vx * s + vy * c
-            if f in ("v_fwd", "vx"):
-                return fwd
-            return lat
-        return vx if f == "vx" else vy
 
     def _target_point(self, ref: str) -> geo.Point:
         if ref in self._regions:
@@ -1712,41 +1919,13 @@ class Episode:
         if isinstance(s, m.BodyState):
             names = [f"{s.id}.{f}" for f in s.fields]
             scales = [s.scale.get(f, sy.DEFAULT_STATE_SCALE[f]) for f in s.fields]
-            fields = tuple(s.fields)
-            body, frame = s.body, s.frame
-
-            def body_state() -> tuple[float, ...]:
-                x, y, a, vx, vy, w = self._bstate(body)
-                need_body = frame == "body" or "v_fwd" in fields or "v_lat" in fields
-                if need_body:
-                    c, si = math.cos(a), math.sin(a)
-                    fwd, lat = vx * c + vy * si, -vx * si + vy * c
-                out = []
-                for f in fields:
-                    if f == "x":
-                        out.append(x)
-                    elif f == "y":
-                        out.append(y)
-                    elif f == "angle":
-                        out.append((a + math.pi) % geo.TAU - math.pi)
-                    elif f == "omega":
-                        out.append(w)
-                    elif f == "speed":
-                        out.append(math.hypot(vx, vy))
-                    elif f == "v_fwd" or (f == "vx" and frame == "body"):
-                        out.append(fwd)
-                    elif f == "v_lat" or (f == "vy" and frame == "body"):
-                        out.append(lat)
-                    else:
-                        out.append(vx if f == "vx" else vy)
-                return tuple(out)
-
-            return names, scales, body_state
+            return names, scales, _body_state_fn(self._bstate, s.body, tuple(s.fields), s.frame)
         if isinstance(s, m.Target):
             tgt, body, frame = s.target, s.body, s.frame
 
             def target() -> tuple[float, ...]:
-                x, y, a, *_ = self._bstate(body)
+                st = self._bstate(body)
+                x, y, a = st[0], st[1], st[2]
                 tx, ty = self._target_point(tgt)
                 dx, dy = tx - x, ty - y
                 if frame == "body":
@@ -1790,9 +1969,7 @@ class Episode:
         key = tuple(selectors)
         if not hasattr(self, "_ray_bits"):
             self._ray_bits: dict[tuple[str, ...], int] = {}
-            for shape in self._shape_info:
-                f = shape.filter
-                shape.filter = pymunk.ShapeFilter(group=f.group, categories=1, mask=f.mask)
+            self._first_ray_filters()
         bit = self._ray_bits.get(key)
         if bit is None:
             bit = 1 << (1 + len(self._ray_bits))
@@ -1804,6 +1981,37 @@ class Episode:
                     f = shape.filter
                     shape.filter = pymunk.ShapeFilter(group=f.group, categories=f.categories | bit, mask=f.mask)
         return pymunk.ShapeFilter(group=AGENT_GROUP, mask=bit)  # 에이전트 모양(자기 몸)은 맞지 않는다
+
+    def _first_ray_filters(self) -> None:
+        """첫 _ray_filter 호출에서 모든 모양의 범주를 한 번만 쓴다(v6 설계 4.6, D13a).
+
+        옛 길은 모든 모양을 범주 1로 쓴 뒤 레이 꼬리표 묶음마다 맞는 모양을 다시 썼다(맞는 묶음 수 + 1번). 여기서는 레이
+        센서가 _ray_filter를 부를 순서(센서 선언 순서, 없는 물체에 단 레이 센서는 부르지 않음)로 꼬리표 묶음에 같은 비트
+        1 << (1 + k)를 미리 정하고, 모양마다 범주 = 1 | (맞는 비트들)을 한 번 쓴다. 마지막 필터 값(그룹·범주·마스크)이 옛
+        길과 같다(cpShapeSetFilter의 다른 일은 물체 깨우기뿐이고 이 공간은 잠들지 않는다). 31비트를 넘는 묶음은 여기서 비트를
+        정하지 않아, 그 묶음을 부르는 레이 센서에서 옛 길처럼 RT_TOO_MANY_RAY_TARGETS가 난다. 미리 정하지 않은 묶음(센서가 아닌
+        호출)은 _ray_filter가 옛 길대로 다음 비트를 붙인다."""
+        keys: list[tuple[str, ...]] = []
+        for sensor in self.env.sensors:
+            if isinstance(sensor, m.Rays) and not (self._absent and sensor.body in self._absent):
+                k = tuple(sensor.hits)
+                if k not in keys:
+                    keys.append(k)
+        bits = self._ray_bits
+        for k in keys:
+            bit = 1 << (1 + len(bits))
+            if bit >= 1 << 31:
+                break
+            bits[k] = bit
+        plan = list(bits.items())
+        matches = self._matches
+        for shape in self._shape_info:
+            cats = 1
+            for k, bit in plan:
+                if matches(shape, k):
+                    cats |= bit
+            f = shape.filter
+            shape.filter = pymunk.ShapeFilter(group=f.group, categories=cats, mask=f.mask)
 
     def _rays_fn(self, s: m.Rays) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
         n = s.count
@@ -1902,7 +2110,7 @@ class Episode:
                 getters[q.channel] = (lambda q=q: self._distance(q.a, q.b))
         for bid in self.bodies:
             for f in sy.BODY_STATE:
-                getters[f"{bid}.{f}"] = (lambda b=bid, f=f: self._state(b, f))
+                getters[f"{bid}.{f}"] = _state_getter(self._bstate, bid, f)
         if self._absent:
             # 검사가 없어질 수 있는 물체의 몸 상태·거리·영역을 수식에서 막으므로(SPEC_EXISTS_REF) 보통 쓰이지 않는다. 쓰여도
             # 멈추지 않게 0을 둔다(접촉 질의는 위에서 빈 접촉 칸이라 늘 거짓).
@@ -1964,34 +2172,51 @@ class Episode:
         defs = {e.id: e for e in self.env.events}
         return [(e, defs[e]) for e in self.spec.event_order]
 
-    def _fire(self, st: _EventState, cond: bool) -> None:
-        if cond:
-            st.consec += 1
-            if st.consec == st.hold_steps:
-                st.occurred = True
-                st.count += 1
-                st.last_time = self.time
-        else:
-            st.consec = 0
-        v = self._values
-        v[st.id] = st.occurred
-        if st.id in self._count_needed:
-            v[f"{st.id}.count"] = float(st.count)
-        if st.id in self._since_needed:
-            v[f"{st.id}.since"] = self.time - st.last_time if st.last_time is not None else self.time
-
     def _update_events(self) -> None:
-        self._fire(self._builtin["timeout"], self.steps >= self.max_steps)
+        """사건마다 v3.1 _fire와 같은 일을 한 루프로(v6 설계 4.4, D10): 조건 → 연속 수·발생·횟수·마지막 시각 → 값 사전.
+        사건 조건은 앞 사건이 이 스텝에 써 넣은 값을 본다(순서 그대로). 내장 사건 둘의 조건은 값 사전을 읽지 않으므로 먼저
+        계산한다: timeout = 스텝 수 ≥ 상한, out_of_bounds = 에이전트 물체 하나라도 경계 밖(NaN 포함, 첫 이탈에서 멈춤)."""
         x0, y0, x1, y1 = self.bounds
         oob = False
-        for bid in self._agent_ids:
-            px, py = self._bpos(bid)
-            if not (x0 <= px <= x1 and y0 <= py <= y1):  # NaN도 여기서 걸린다
-                oob = True
-                break
-        self._fire(self._builtin["out_of_bounds"], oob)
-        for st in self._events:
-            self._fire(st, bool(self.spec.events[st.id](self._values)))
+        agent_raw = self._agent_raw
+        if agent_raw is not None:  # 위치는 공개 API와 같은 C 함수로(v6 D6)
+            for raw in agent_raw:
+                p = _CP_GET_POSITION(raw)
+                px, py = p.x, p.y
+                if not (x0 <= px <= x1 and y0 <= py <= y1):  # NaN도 여기서 걸린다
+                    oob = True
+                    break
+        else:
+            for bid in self._agent_ids:
+                px, py = self._bpos(bid)
+                if not (x0 <= px <= x1 and y0 <= py <= y1):
+                    oob = True
+                    break
+        builtin = (self.steps >= self.max_steps, oob)
+        v = self._values
+        t = self.time
+        k = 0
+        for st, cond, count_key, since_key in self._fire_plan:
+            if cond is None:
+                c = builtin[k]
+                k += 1
+            else:
+                c = cond(v)  # if c: = bool(c)
+            if c:
+                n = st.consec + 1
+                st.consec = n
+                if n == st.hold_steps:
+                    st.occurred = True
+                    st.count += 1
+                    st.last_time = t
+            else:
+                st.consec = 0
+            v[st.id] = st.occurred
+            if count_key is not None:
+                v[count_key] = float(st.count)
+            if since_key is not None:
+                last = st.last_time
+                v[since_key] = t - last if last is not None else t
 
     def _check_termination(self) -> None:
         for end, st in self._end_states:

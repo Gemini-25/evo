@@ -330,7 +330,8 @@ JUDGE_OPEN_FAILED: Final = "실행 폴더를 열 수 없습니다: {reason}"
 JUDGE_NO_CHAMPION: Final = "아직 챔피언이 없습니다(검증 전에 멈춘 실행)."
 JUDGE_RESULT: Final = "판정({gen}세대 챔피언, 판정 시드 {n}개): 성공 {success}/{n} ({rate:.0f}%), 평균 점수 {mean:.2f}\n종료 원인: {ends}"
 BENCH_TITLE: Final = "성능 측정: {name} · 개체 {pop} × 시험 {trials}회 · 유전자 {dim}차원 (무작위 유전자, 1세대 기준)"
-BENCH_SINGLE: Final = "단일 코어: 초당 {sps:,.0f}스텝 ({us:.1f}µs/스텝), 신경망 계산 비율 {nn:.1f}%, {steps:,}스텝 {sec:.2f}초"
+BENCH_SINGLE: Final = ("단일 코어(창 {window}): 초당 {sps:,.0f}스텝 ({us:.1f}µs/스텝), 신경망 계산 비율 {nn:.1f}%, "
+                       "{steps:,}스텝 {sec:.2f}초")  # v6.0: 「창 {window}」(v6.0 전 보고서의 160쌍 한 묶음 값과 바로 비교하지 않게)
 BENCH_POOL: Final = "워커 {workers}개: 세대당 {sec:.2f}초 (중앙값), 초당 {sps:,.0f}스텝"
 BENCH_WORST: Final = "모든 시험이 최대 시간을 다 쓰는 최악의 세대: {steps:,}스텝 ≈ 워커 {workers}개로 {sec:.2f}초 (단일 코어 속도 기준 추정)"
 CLI_HELP_RESUME: Final = "이 실행 폴더의 마지막 체크포인트에서 이어서 학습"
@@ -1822,7 +1823,7 @@ ONB_STEP_WAIT_STUCK: Final = "{seconds}초가 지나도 1세대가 오지 않습
 ONB_STUCK_WAIT: Final = "더 기다리기"
 ONB_STUCK_HELP: Final = "문제 해결 보기"
 ONB_STEP_WATCH: Final = ("지금 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
-                         "기다리기 지루하면 「{speed}」을 4배로 바꿔 보세요.")
+                         "재생을 빨리 보고 싶으면 「{speed}」을 4배로 바꿔 보세요. 학습은 재생과 상관없이 계속됩니다.")  # v6.0: 관전 기본 「학습 먼저」
 ONB_SPEED_SET: Final = "4배로 바꾸기"
 ONB_STEP_PROGRESS: Final = ("세대마다 멀리 간 차를 닮은 새 차 {pop}대가 다시 달립니다. 「{trend}」 그래프의 평균 선을 보세요. "
                             "{goal}세대가 되면 다음으로 넘어갑니다.")
@@ -1914,9 +1915,12 @@ HELP_PAGES: Final = {
 
 ## 관전과 고속
 
-- 「{{LAB_SPECTATE}}」: 한 세대의 개체 전체를 겹쳐 보여 줍니다. 재생이 끝날 때까지 다음 세대를 기다리므로
-  「{{LAB_SPEED}}」 칸을 4배로 올리면 세대가 빨리 넘어갑니다. [배속 보여 주기](evolab://show/lab.speed)
-- 「{{LAB_FAST}}」: 기다리지 않고 학습만 하고, 정해 둔 세대마다 챔피언만 다시 보여 줍니다.
+- 「{{LAB_SPECTATE}}」: 한 세대의 개체 전체를 겹쳐 보여 줍니다. 「{{LAB_PACE}}」 칸에서 보는 방식을 고릅니다.
+  - 「{{LAB_PACE_SKIP}}」: 학습은 쉬지 않고, 재생이 끝날 때마다 그때까지 끝난 가장 새 세대를 보여 줍니다.
+    건너뛴 세대도 기록과 그래프에는 모두 남고, 아래 타임라인으로 언제든 다시 볼 수 있습니다.
+  - 「{{LAB_PACE_EVERY}}」: 모든 세대를 차례로 보여 주고, 재생이 끝날 때까지 다음 세대를 기다립니다.
+    「{{LAB_SPEED}}」 1배에서는 학습이 몇 배 느려지니 4배나 8배로 올리세요. [배속 보여 주기](evolab://show/lab.speed)
+- 「{{LAB_FAST}}」: 집단 대신 정해 둔 세대마다 챔피언만 다시 보여 줍니다. 학습은 「{{LAB_PACE_SKIP}}」 방식처럼 쉬지 않습니다.
 
 ## 환경 고르기
 
@@ -2186,6 +2190,10 @@ HELP_PAGES: Final = {
 
 ## 느릴 때
 
+가장 흔한 원인은 「{{LAB_PACE}}」 칸에서 「{{LAB_PACE_EVERY}}」 항목을 고르고 1배로 관전하는 것입니다. 이때는 학습이 재생을
+기다립니다. 「{{LAB_PACE}}」 칸을 「{{LAB_PACE_SKIP}}」 항목으로 바꾸거나 「{{LAB_FAST}}」 단추를 고르세요. v6부터 같은 결과를
+예전보다 빨리 계산합니다(결과는 예전 실행과 비트 단위로 같습니다).
+
 노트북은 전원을 연결하고 윈도우 전원 모드를 “최고 성능”으로 바꾸세요. 실험실 「{{LAB_SETTINGS_GROUP}}」 묶음의 워커 수는 코어 수보다 하나 적게 두는 것이 좋습니다.
 처음 실행은 윈도우 보안 검사 때문에 몇십 초 느릴 수 있습니다.
 
@@ -2291,7 +2299,7 @@ HELP_TIPS: Final = {
     "lab.continue": "멈춘 학습을 이어서 합니다.",
     "lab.step": "한 세대만 더 계산하고 멈춥니다.",
     "lab.end": "체크포인트를 남기고 학습 프로그램을 닫습니다. 나중에 「기록」에서 이어 할 수 있습니다.",
-    "lab.spectate": "집단 전체가 움직이는 모습을 세대마다 보여 줍니다. 학습은 재생이 끝날 때까지 기다립니다.",
+    "lab.spectate": "집단 전체가 움직이는 모습을 보여 줍니다. 학습이 재생을 기다릴지는 아래 「관전 방식」 칸에서 고릅니다.",
     "lab.fast": "기다리지 않고 학습만 빠르게 합니다. 정해 둔 세대마다 챔피언만 재생합니다.",
     "lab.speed": "관전 재생 속도입니다. 빠를수록 세대가 빨리 넘어갑니다.",
     "lab.fast_interval": "고속 모드에서 몇 세대마다 챔피언을 재생할지입니다.",
@@ -2557,3 +2565,43 @@ EDC_SNAP_STEP_TIP: Final = "격자 한 칸의 크기입니다. 점을 찍거나 
 # 자식이 끝났을 때나 인코더 시험 까닭(EXP_INFO_BUILTIN_TIP의 {reason})에서는 맞지 않는 말이라 MP4 작업이 끝났을 때만 붙인다.
 # ---------------------------------------------------------------------------
 EXP_PROCESS_DIED_GIF_HINT: Final = "GIF로 저장해 보세요."  # MP4 내보내기 자식이 갑자기 끝났을 때 EXP_PROCESS_DIED 뒤에 붙임
+
+# ---------------------------------------------------------------------------
+# v6.0 빠르게 (0단계 묶음: v6 설계 6절의 v6.0 줄, 명세 부록 A90~). v6.1(자라는 뇌) 줄은 v6.1 0'단계에서 더한다.
+# 관전 기본은 「학습 먼저」(PACE_DEFAULT = "skip", 사용자 결정 G1·Q1). 위 제자리에서 바꾼 것(같은 이름을 두 번 쓰지 않음):
+# - BENCH_SINGLE: 「단일 코어(창 {window})」 — engine/commands.py bench가 window=를 넘긴다(E 묶음).
+# - ONB_STEP_WATCH: 학습은 재생과 상관없이 계속된다(처음 실행 안내 ④).
+# - HELP_PAGES 「실험실」 쪽 「관전과 고속」 절, 「문제가 생겼을 때」 쪽 「느릴 때」 절 맨 앞 문단. 설계 글에서 자리 바로 뒤의 조사
+#   (「…」를·과·으로)만 「칸」·「항목」·「단추」·「방식」으로 바꿨다(v3 D19: 자리 뒤에 조사를 붙이지 않음, 채운 글의 받침과 어긋남).
+# - HELP_TIPS["lab.spectate"]: 「학습은 재생이 끝날 때까지 기다립니다」를 뺐다(기본이 「학습 먼저」라 맞지 않음, 설계 밖).
+# HELP_TIPS["lab.pace"] = LAB_PACE_TIP는 P 묶음이 「관전 방식」 칸(lab.pace_combo)과 연결표 키 lab.pace를 만들 때 함께 더한다
+# (HELP_TIPS 키는 모두 연결표에 있어야 한다: tests/test_v3_strings.py, test_help_anchors.py).
+# ---------------------------------------------------------------------------
+# ---- 관전 방식 (app/lab/view.py) ----
+LAB_PACE: Final = "관전 방식"
+LAB_PACE_SKIP: Final = "학습 먼저 (새 세대만 보기)"
+LAB_PACE_EVERY: Final = "세대마다 다 보기 (학습이 기다림)"
+LAB_PACE_TIP: Final = ("학습 먼저: 학습은 쉬지 않고, 재생이 끝날 때마다 그때까지 끝난 가장 새 세대를 보여 줍니다. "
+                       "건너뛴 세대도 기록과 그래프에 모두 남고 타임라인으로 다시 볼 수 있습니다.\n"
+                       "세대마다 다 보기: 모든 세대를 차례로 보여 주고, 재생이 끝날 때까지 학습이 기다립니다. "
+                       "1배속이면 학습이 몇 배 느려집니다.")
+LAB_HUD_LIVE_SKIP: Final = "{gen}세대 · 시험 0번 · {t:.1f}초 · {speed}배 · 학습은 {latest}세대까지"
+LAB_PACE_WAIT_HINT: Final = ("학습이 재생을 기다리느라 약 {times:.1f}배 느려졌습니다. "
+                             "「관전 방식」을 「학습 먼저」로 바꾸면 학습이 쉬지 않습니다.")
+LAB_PACE_CHANGED_NOTICE: Final = ("관전 방식이 「학습 먼저」로 바뀌었습니다. 학습은 쉬지 않고 화면은 가장 새 세대를 보여 줍니다. "
+                                  "예전처럼 세대마다 다 보려면 「보기」 묶음에서 바꾸세요.")  # 예전 설정(lab/mode가 있음)에 한 번
+
+# ---- 성능 측정과 자체 점검 (engine/commands.py, selftest.py) ----
+BENCH_WINDOW: Final = ("평가 창(살아 있는 에피소드 수): {rows} · 가장 빠른 창 {best}개 "
+                       "(번갈아 {rounds}번 잰 중앙값, 결과는 창과 상관없이 같음)")
+BENCH_WINDOW_ROW: Final = "{w}개 {us:.1f}µs"
+BENCH_WINDOW_SEP: Final = " · "
+BENCH_PLAYBACK: Final = ("관전 재생 길이(무작위 유전자 1세대, 시험 0번 가장 긴 궤적): {sec:.1f}초 → "
+                         "「세대마다 다 보기」 1배면 세대마다 최소 {wait:.1f}초")
+BENCH_FAST_PATHS: Final = "pymunk C 함수 바로 부르기: {state}"
+BENCH_FAST_ON: Final = "켜짐(레이·정해진 움직임·몸 상태·힘·한 스텝)"
+BENCH_FAST_OFF: Final = "꺼짐 — 이 pymunk 판에는 필요한 내부 함수가 없어 보통 길을 씁니다(결과는 같고 더 느립니다)"
+SELFTEST_CHECK_FASTPATH: Final = "빠른 계산 길 (물리 엔진 C 함수를 바로 부르는 길과 보통 길의 결과 비교)"
+SELFTEST_FASTPATH_SAME: Final = "빠른 계산 길이 켜져 있고 보통 길과 결과가 같습니다."
+SELFTEST_FASTPATH_OFF: Final = "빠른 계산 길이 꺼져 있습니다(이 물리 엔진 판에 필요한 내부 함수가 없음). 결과는 같고 계산만 느립니다."
+SELFTEST_FASTPATH_DIFF: Final = "빠른 계산 길과 보통 길의 결과가 다릅니다: {detail}"

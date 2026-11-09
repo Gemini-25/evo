@@ -9,10 +9,16 @@
 
 결과는 작업을 어떻게 나눴는지와 무관하다: 쌍마다 독립이고, 요청한 순서로 다시 맞춘다. 관찰 기록(v1.2)도 쌍마다
 독립이라 같다(WorkerPool.observes: 학습기는 이 표시가 있는 평가기에만 observe=·frame=을 넘긴다).
+
+GC(v6.0, v6 설계 4.9·D16): 워커는 첫 작업의 결과를 보낸 뒤 한 번 gc.collect(); gc.freeze()를 한다(WORKER_GC_FREEZE).
+그때까지 불러온 모듈·컴파일한 환경·배치 캐시 같은 오래 사는 객체가 수거 대상에서 빠져 전체 수거가 싸진다. 첫 작업의
+쓰레기(Episode ↔ 클로저 순환)는 얼리기 전 collect가 거두고, 되돌리지 않으므로 평가마다 얼리고 풀 때 생기는 누수 고리가
+없다. 화면 프로세스·WorkerPool(0)은 하지 않는다(v1.2 A39가 화면 프로세스를 따로 얼림). 수거 시점은 결과와 무관하다.
 """
 
 from __future__ import annotations
 
+import gc
 import multiprocessing as mp
 import os
 import queue
@@ -24,7 +30,7 @@ import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
 from multiprocessing.connection import wait
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -32,6 +38,10 @@ from evolab.app import strings as S
 from evolab.engine.evaluate import EvalResult, evaluate
 from evolab.policy.genome import GenomeLayout
 from evolab.world.physics2d.episode import Trial
+
+WORKER_GC_FREEZE: Final[bool] = True
+"""참이면 워커가 첫 작업을 끝낸(결과를 보낸) 뒤 gc.collect(); gc.freeze()를 한 번 한다(되돌리지 않음, v6 설계 D16).
+화면 프로세스·WorkerPool(0)은 하지 않는다. 워커를 띄울 때 이 프로세스의 값을 넘긴다(되돌릴 지점 4: False로 바꿈)."""
 
 POLL_S = 0.2
 MAX_RETRIES = 2
@@ -93,6 +103,8 @@ class Task:
     """쌍마다 관찰 코드 0·1·2(evaluate.OBSERVE_*). None이면 관찰 안 함(v1.2)."""
     frame: tuple[float, float, float, int, int] | None = None
     """관찰 코드 2의 격자 틀(x0, y0, 칸 크기, nx, ny)."""
+    window: int | None = None
+    """평가 창(evaluate의 window=, None이면 evaluate.EVAL_WINDOW). 결과와 무관하다(v6.0)."""
 
 
 def _lower_priority() -> None:
@@ -110,11 +122,33 @@ def _lower_priority() -> None:
             pass
 
 
-def _worker_main(worker_id: int, tasks: Any, results: Any) -> None:
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    _lower_priority()
+def _run_task(task: Task, specs: dict[str, Any], layouts: dict[str, GenomeLayout]) -> tuple[int, str, Any]:
+    """작업 하나를 평가한 결과 메시지. 환경·배치는 버전·내용별로 한 번만 만들어 둔다(specs·layouts에)."""
     from evolab.spec.io import compile_env
 
+    try:
+        spec = specs.get(task.env_version)
+        if spec is None:
+            spec = compile_env(task.env_text)
+            specs[task.env_version] = spec
+        key = repr(sorted(task.layout.items()))
+        layout = layouts.get(key)
+        if layout is None:
+            layout = GenomeLayout.from_dict(task.layout)
+            layouts[key] = layout
+        pairs = [(g, Trial(seed, track)) for g, seed, track in task.pairs]
+        res = evaluate(spec, layout, task.genomes, pairs, task.record, task.every, task.observe, task.frame,
+                       window=task.window)
+        return (task.id, "ok", res)
+    except Exception as exc:
+        return (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+
+
+def _worker_main(worker_id: int, tasks: Any, results: Any, gc_freeze: bool | None = None) -> None:
+    """워커 프로세스 본체. gc_freeze: 첫 작업 뒤 GC 얼림(None이면 이 모듈의 WORKER_GC_FREEZE, WorkerPool은 자기 값을 넘긴다)."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _lower_priority()
+    freeze = WORKER_GC_FREEZE if gc_freeze is None else bool(gc_freeze)
     specs: dict[str, Any] = {}
     layouts: dict[str, GenomeLayout] = {}
     parent = mp.parent_process()
@@ -129,25 +163,17 @@ def _worker_main(worker_id: int, tasks: Any, results: Any) -> None:
             return
         if task is None:
             return
-        try:
-            spec = specs.get(task.env_version)
-            if spec is None:
-                spec = compile_env(task.env_text)
-                specs[task.env_version] = spec
-            key = repr(sorted(task.layout.items()))
-            layout = layouts.get(key)
-            if layout is None:
-                layout = GenomeLayout.from_dict(task.layout)
-                layouts[key] = layout
-            pairs = [(g, Trial(seed, track)) for g, seed, track in task.pairs]
-            res = evaluate(spec, layout, task.genomes, pairs, task.record, task.every, task.observe, task.frame)
-            msg: tuple[int, str, Any] = (task.id, "ok", res)
-        except Exception as exc:
-            msg = (task.id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+        msg: tuple[int, str, Any] | None = _run_task(task, specs, layouts)
+        task = None  # 작업·결과를 붙잡지 않는다(아래 얼림이 함께 얼리지 않게)
         try:
             results.send(msg)
         except (EOFError, OSError):
             return
+        msg = None
+        if freeze:  # 첫 작업 뒤 한 번(v6 설계 D16): 첫 작업의 쓰레기를 거두고, 남은 오래 사는 객체를 수거 대상에서 뺀다
+            freeze = False
+            gc.collect()
+            gc.freeze()
 
 
 _STOP = object()
@@ -201,9 +227,11 @@ class WorkerPool:
     observes = True
     """evaluate가 observe=·frame=을 받고 EvalResult.observations를 채운다(학습기가 getattr로 확인, 설계 D8)."""
 
-    def __init__(self, workers: int | None = None, chunks_per_worker: int = 4) -> None:
+    def __init__(self, workers: int | None = None, chunks_per_worker: int = 4, window: int | None = None) -> None:
         self.workers = default_workers() if workers is None else max(0, workers)
         self.chunks_per_worker = chunks_per_worker
+        self.window = window
+        """평가 창(evaluate의 window=, None이면 evaluate.EVAL_WINDOW). 결과와 무관하다(v6.0, 테스트·bench가 바꿈)."""
         self._ctx = mp.get_context("spawn")
         self._procs: list[Any] = []
         self._links: list[_Link] = []
@@ -221,7 +249,7 @@ class WorkerPool:
             self._links[w].close()
         task_r, task_w = self._ctx.Pipe(duplex=False)
         res_r, res_w = self._ctx.Pipe(duplex=False)
-        proc = self._ctx.Process(target=_worker_main, args=(w, task_r, res_w), daemon=True)
+        proc = self._ctx.Process(target=_worker_main, args=(w, task_r, res_w, WORKER_GC_FREEZE), daemon=True)
         proc.start()
         task_r.close()  # 워커 쪽 끝은 워커만 가진다
         res_w.close()
@@ -294,7 +322,8 @@ class WorkerPool:
 
             t0 = time.perf_counter()
             obs = None if observe is None else [int(c) for c in observe]
-            res = evaluate(compile_env(env_text), layout, genomes, list(pairs), record, every, obs, frame_t)
+            res = evaluate(compile_env(env_text), layout, genomes, list(pairs), record, every, obs, frame_t,
+                           window=self.window)
             self.last_busy = time.perf_counter() - t0
             return res
         layout_d = layout.to_dict()
@@ -314,7 +343,7 @@ class WorkerPool:
             obs = [int(observe[i]) for i in idx] if observe is not None else None
             tasks.append(Task(self._next_task, env_version, env_text, layout_d, genomes[used], task_pairs,
                               rec if rec and any(rec) else None, every, obs if obs and any(obs) else None,
-                              frame_t if obs and any(obs) else None))
+                              frame_t if obs and any(obs) else None, self.window))
         parts = self._run(tasks)
         self.last_busy = sum(p.nn_seconds + p.sim_seconds for p in parts)
         return EvalResult.concat(parts, order)

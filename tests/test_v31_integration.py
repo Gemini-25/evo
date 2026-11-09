@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 SPEC = ROOT / "packaging" / "evolab.spec"
 V31_HEADER = "# v3.1 나누기와 설치"
+NEXT_RELEASE_HEADER = "\n# v6.0 빠르게"
+"""v3.1 블록의 끝: strings.py 맨 끝에 덧붙인 다음 출시 블록의 머리말(v6.0 0단계)."""
 
 
 def _spec_datas() -> list[tuple[Path, str]]:
@@ -62,9 +64,12 @@ def test_spec_puts_the_phone_player_where_the_code_looks() -> None:
 
 
 def _v31_constant_names() -> list[str]:
+    """v3.1 머리말부터 다음 출시 블록(v6.0 0단계가 끝에 덧붙인 블록) 앞까지. v6 블록의 상수는 v6 묶음이 차례로 쓴다."""
     text = (SRC / "evolab" / "app" / "strings.py").read_text(encoding="utf-8")
     start = text.index(V31_HEADER)
-    return re.findall(r"^([A-Z][A-Z0-9_]+): Final", text[start:], flags=re.MULTILINE)
+    end = text.find(NEXT_RELEASE_HEADER, start)
+    block = text[start:end] if end != -1 else text[start:]
+    return re.findall(r"^([A-Z][A-Z0-9_]+): Final", block, flags=re.MULTILINE)
 
 
 def test_every_v31_string_is_used() -> None:
