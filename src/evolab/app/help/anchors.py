@@ -94,6 +94,7 @@ def _table() -> dict[str, Anchor]:
         "end": "btn_end",
         "spectate": "rb_spectate",
         "fast": "rb_fast",
+        "pace": "pace_combo",
         "speed": "speed_combo",
         "fast_interval": "fast_interval",
         # 캔버스 아래 타임라인 줄

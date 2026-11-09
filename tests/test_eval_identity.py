@@ -177,8 +177,8 @@ def test_t2_batches_with_build_failures_match_the_oracle(window: int | None, mon
         pairs = [(i, t) for i in range(len(X)) for t in trials]
         n = len(pairs)
         frame, _ = observing.world_frame(spec, "t2", trials[0])
-        kw = {"record": [i % 2 == 0 for i in range(n)], "observe": [(i // 2) % 3 for i in range(n)],
-              "frame": None if frame is None else tuple(frame.as_array())}
+        kw: dict[str, Any] = {"record": [i % 2 == 0 for i in range(n)], "observe": [(i // 2) % 3 for i in range(n)],
+                              "frame": None if frame is None else tuple(frame.as_array())}
         ref = evaluate_v31(spec, layout, X, pairs, **kw)
         failed = int(np.isnan(ref.scores).sum())
         assert 0 < failed < n, label
@@ -197,7 +197,7 @@ def test_t2_all_pairs_failing_matches_the_oracle() -> None:
     layout = layout_for(spec)
     X = np.vstack([gene(layout, {"twist": t}) for t in (-2.0, -1.5)])
     pairs = [(i, Trial(seeds.derive(9, k))) for i in range(2) for k in range(3)]
-    kw = {"record": [True] * 6, "observe": [1] * 6}
+    kw: dict[str, Any] = {"record": [True] * 6, "observe": [1] * 6}
     ref = evaluate_v31(spec, layout, X, pairs, **kw)
     assert np.isnan(ref.scores).all()
     for window in (None, 1, 4):
@@ -249,5 +249,5 @@ def test_t1_formula_scoring_env_matches_the_oracle() -> None:
     X = np.vstack([gene(layout, {"twist": t}) for t in (0.0, -2.0, 0.6)])
     pairs = [(i, Trial(seeds.derive(9, k))) for i in range(3) for k in range(4)]
     ref = evaluate_v31(spec, layout, X, pairs)
-    assert np.isnan(ref.weighted).all() and math.isnan(float(ref.scores[4]))
+    assert ref.weighted is not None and np.isnan(ref.weighted).all() and math.isnan(float(ref.scores[4]))
     same_eval(evaluate(spec, layout, X, pairs, window=5), ref)

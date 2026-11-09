@@ -83,9 +83,9 @@ AERO_MAX_FRICTION = 10.0
 AERO_MIN_SPEED2 = 1e-12
 """상대 바람 속력²이 이보다 작으면 그 변에는 힘이 없다."""
 JUMP_NEVER = -(10**9)
+"""아직 뛴 적 없는 점프 추진기의 '마지막 점프 스텝'(첫 스텝부터 뛸 수 있게)."""
 _INFS = (math.inf, -math.inf)
 """step_values가 0으로 바꾸는 무한대 둘(x in _INFS = x가 ±무한대)."""
-"""아직 뛴 적 없는 점프 추진기의 '마지막 점프 스텝'(첫 스텝부터 뛸 수 있게)."""
 
 
 @dataclass(frozen=True)
@@ -1762,7 +1762,7 @@ class Episode:
         self._raw: dict[str, Any] = {bid: _body_c(b) for bid, b in self.bodies.items()}
         self._force_raw: list[tuple[str, pymunk.Body, Any]] = [(bid, b, self._raw[bid]) for bid, b in self._force_bodies]
         self._agent_raw: list[Any] | None = [self._raw[b] for b in self._agent_ids] if self._fast else None
-        motor_raw = [getattr(mo.constraint, "_constraint", None) if _CP_FAST else None for mo in self._motors]
+        motor_raw = [getattr(mo.constraint, "_constraint", None) if self._fast else None for mo in self._motors]
         self._motor_raw: list[tuple[Any, int, float]] | None = (
             [(raw, mo.channel_index, mo.max_speed) for raw, mo in zip(motor_raw, self._motors, strict=True)]
             if all(raw is not None for raw in motor_raw) else None)
@@ -1788,7 +1788,8 @@ class Episode:
         _CP_FAST가 아니었으면(만들 때 정함) 늘 공개 Space.step이다."""
         space = self.space
         space.step(self.dt)
-        if self._fast and not space.threaded and not space._bodies_to_check:
+        # pymunk 내부 이름이 바뀐 판이면(속성이 없으면) 공개 Space.step을 계속 쓴다.
+        if self._fast and getattr(space, "threaded", True) is False and getattr(space, "_bodies_to_check", None) == set():
             self._raw_space = getattr(space, "_space", None)
 
     def _contact_channel(self, body: str, selectors: Sequence[str]) -> _ContactChannel:
@@ -2030,17 +2031,20 @@ class Episode:
         # (각도 a + ang의 cos·sin)으로 끝점을 구하는 것은 그대로다.
         fast = _segment_first_c(space, filt) if own is None else None
         cos, sin = math.cos, math.sin
+        bstate = self._bstate
+        if fast is not None:
+            query, raw, cfilt, _owner, info = fast
 
         def rays() -> tuple[float, ...]:
             if memo[0] == self.steps:
                 return memo[1]
-            x, y, a, *_ = self._bstate(bid)
+            st = bstate(bid)
+            x, y, a = st[0], st[1], st[2]
             c, si = cos(a), sin(a)
             px, py = x + ox * c - oy * si, y + ox * si + oy * c
             start = (px, py)
-            out = []
+            out: list[float] = []
             if fast is not None:
-                query, raw, cfilt, _owner, info = fast
                 for ang in angles:
                     th = a + ang
                     query(raw, start, (px + length * cos(th), py + length * sin(th)), 0.0, cfilt, info)
@@ -2309,18 +2313,21 @@ class Episode:
             return self._distance(b.body, b.target) if b.agg == "final" or st.acc == math.inf else st.acc
         if isinstance(b, m.ProgressBlock):
             d = self._num(b.direction, "agent")
-            p = self.bodies[b.body].position
+            raw = self._raw[b.body]  # 끝값도 공개 API와 같은 C 함수로(v6 D6)
+            p = _CP_GET_POSITION(raw) if raw is not None else self.bodies[b.body].position
             s = self._start_pos[b.body]
             return (p.x - s[0]) * math.cos(d) + (p.y - s[1]) * math.sin(d)
         if isinstance(b, m.SurvivalBlock):
             return self.time
         if isinstance(b, m.SpeedBlock):
-            v = self.bodies[b.body].velocity
+            raw = self._raw[b.body]
+            v = _CP_GET_VELOCITY(raw) if raw is not None else self.bodies[b.body].velocity
             return math.hypot(v.x, v.y)
         if isinstance(b, m.TiltBlock):
-            if b.agg == "mean":
-                return st.acc / st.count if st.count else abs(geo.wrap_angle(self.bodies[b.body].angle))
-            return abs(geo.wrap_angle(self.bodies[b.body].angle))
+            if b.agg == "mean" and st.count:
+                return st.acc / st.count
+            raw = self._raw[b.body]
+            return abs(geo.wrap_angle(_CP_GET_ANGLE(raw) if raw is not None else self.bodies[b.body].angle))
         if isinstance(b, m.FuelBlock):
             t = self._tanks[b.tank]
             return (t.capacity - t.remaining) / t.capacity

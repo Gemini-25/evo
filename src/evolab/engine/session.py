@@ -7,8 +7,12 @@
   쓰지 못하므로, 학습이 세대를 계산하는 동안에도 화면이 멈추지 않게 하려는 것이다.
 - 설정 변경과 환경 교체는 멈춘 상태에서만, 세대 경계에서 적용한다. 적용할 때 체크포인트를 남기고 보호한다
   (명세: 환경 수정 지점은 정리하지 않는다). 변경은 세대 번호와 함께 events.jsonl에 남는다.
-- 관전 모드: 화면이 세대 N을 재생하는 동안 N+1을 계산하고, 재생이 끝났다는 알림(played) 없이 그보다 앞서지 않는다.
-  고속 모드는 기다리지 않는다. 어느 모드든 학습 결과는 같다(궤적 기록은 읽기만 한다).
+- 관전 모드: 화면이 세대 N을 재생하는 동안 N+1을 계산하고, 재생이 끝났다는 알림(played) 없이 그보다 앞서지 않는다
+  (관전 방식 「세대마다 다 보기」 PACE_EVERY). v6.0 「학습 먼저」(PACE_SKIP, 설계 4.12·D23)와 고속 모드는 기다리지 않는다
+  (관전이면 궤적은 지금처럼 기록해 보낸다: 화면이 그때까지 끝난 가장 새 세대를 고른다). 어느 모드·방식이든 학습 결과는 같다
+  (궤적 기록은 읽기만 하고, 기다림은 세대 사이의 쉼일 뿐이다).
+- 세대 메시지의 "waited"(v6.0 D25, 저장하지 않음): 그 세대를 계산하기 전에 재생을 기다린 초. 「학습 먼저」·고속이면 늘 0.
+  멈춘 동안은 세지 않는다.
 - 평가 오류(PoolError)로 세대가 중간에 끊기면 마지막 체크포인트로 되돌아가 멈춘다(rewind).
 - 세대 메시지에는 그 세대의 관찰 기록(v1.2 "observation": 세대 대표 파일의 obs_ 키 사전 또는 None)이 함께 간다.
   관찰 기록을 만들지 못하면(학습은 그대로) 비치명 오류를 세션에서 한 번만 알린다.
@@ -21,16 +25,23 @@ from __future__ import annotations
 import queue
 import signal
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from evolab.app import strings as S
 
 RUNNING = "running"
 PAUSED = "paused"
 FINISHED = "finished"
+
+PACE_SKIP: Final = "skip"
+"""관전 방식 「학습 먼저」(v6.0 D23): 학습은 재생을 기다리지 않고, 화면은 그때까지 끝난 가장 새 세대를 재생한다."""
+PACE_EVERY: Final = "every"
+"""관전 방식 「세대마다 다 보기」(v1.0~v3.1 동작): 화면이 세대 N-1 재생을 끝내기 전에는 N+1로 가지 않는다."""
+PACES: Final = (PACE_SKIP, PACE_EVERY)
 
 
 @dataclass
@@ -49,6 +60,9 @@ class SessionRequest:
     generation: int | None = None
     info: dict[str, Any] = field(default_factory=dict)
     """새 실행의 run.json에 더 넣을 것(예: 반복 실행 묶음 {"group": {...}}, 메모)."""
+    pace: str = PACE_EVERY
+    """관전 방식(PACES). 기본은 예전 동작(데이터클래스 기본값, v6 설계 7.3). 실험실은 칸 값(lab/pace, PACE_DEFAULT)을 넘긴다.
+    모르는 값이면 PACE_EVERY."""
 
 
 def session_main(cmd_conn: Any, event_conn: Any, request: SessionRequest) -> None:
@@ -70,8 +84,13 @@ class Session:
         self.gui_gone = False
         self.state = PAUSED
         self.spectate = bool(request.spectate)
+        self.pace = request.pace if request.pace in PACES else PACE_EVERY
         self.step_once = False
         self.acked = 0
+        self._waited = 0.0
+        """다음 세대를 계산하기 전에 재생을 기다린 초(세대 메시지 "waited"로 보내고 0으로)."""
+        self._wait_since: float | None = None
+        """지금 재생을 기다리기 시작한 시각(time.monotonic). 기다리지 않으면 None."""
         self.pool: Any = None
         self.store: Any = None
         self.trainer: Any = None
@@ -204,7 +223,9 @@ class Session:
         self._set_state(RUNNING if self.req.start_running else PAUSED)
         while not self.quit:
             idle = self.state != RUNNING or self._must_wait()
+            self._note_wait()
             self._drain(block=idle)
+            self._note_wait()
             if self.quit or self.state != RUNNING or self._must_wait():
                 continue
             reason = self.trainer.check_stop()
@@ -223,7 +244,17 @@ class Session:
                 self._pause()
 
     def _must_wait(self) -> bool:
-        return self.spectate and self.acked < self.trainer.state.generation - 1
+        return self.spectate and self.pace == PACE_EVERY and self.acked < self.trainer.state.generation - 1
+
+    def _note_wait(self) -> None:
+        """재생을 기다린 시간을 센다: 학습 중(RUNNING)이고 _must_wait인 동안만. 멈춤·끝남은 기다림이 아니다."""
+        waiting = self.state == RUNNING and self._must_wait()
+        now = time.monotonic()
+        if waiting and self._wait_since is None:
+            self._wait_since = now
+        elif not waiting and self._wait_since is not None:
+            self._waited += now - self._wait_since
+            self._wait_since = None
 
     def _drain(self, block: bool) -> None:
         try:
@@ -280,6 +311,9 @@ class Session:
                 self._pause()
         elif kind == "mode":
             self.spectate = bool(msg.get("spectate"))
+            pace = msg.get("pace")
+            if pace in PACES:  # 없으면 지금 값 그대로, 모르는 값은 무시(설계 4.12)
+                self.pace = str(pace)
             self.acked = self.trainer.state.generation
         elif kind == "played":
             self.acked = min(self.trainer.state.generation, max(self.acked, int(msg.get("generation", 0))))
@@ -380,6 +414,7 @@ class Session:
             config = TrainConfig.from_dict({**info.get("config", {}), **self.trainer.config.to_dict()})
             self.trainer = Trainer(self.trainer.env_text, config, self.pool, self.store)
         self.acked = self.trainer.state.generation
+        self._waited, self._wait_since = 0.0, None
         self.step_once = False
         self.state = PAUSED
         self._send({"type": "rewind", **self._snapshot()})
@@ -403,12 +438,18 @@ class Session:
             "champion": champion,
             "env_version": g.env_version,
             "observation": self.trainer.last_observation,
+            "waited": self._take_waited(),
         })
         problem = getattr(self.trainer, "observe_problem", None)
         if problem and problem != self.observe_sent:
             self.observe_sent = problem
             # notice: 학습은 그대로 이어지므로 화면은 막는 상자 대신 상태 글로 알린다(설계 D9)
             self._send({"type": "error", "fatal": False, "notice": True, "message": problem})
+
+
+    def _take_waited(self) -> float:
+        waited, self._waited = self._waited, 0.0
+        return float(waited)
 
 
 def _reason(exc: BaseException) -> str:

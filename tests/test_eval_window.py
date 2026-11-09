@@ -146,7 +146,6 @@ class _Counted(Episode):
     """observe·step 호출을 세고 살아 있는 것을 weakref로 모으는 Episode(이 테스트만)."""
 
     alive: weakref.WeakSet[Any] = weakref.WeakSet()
-    made: list[Any] = []
     peak = 0
     probe_every = 0
     calls = 0
@@ -157,8 +156,6 @@ class _Counted(Episode):
         self.after_done = 0
         self.is_reference = args[1] is None and kw.get("body") is None
         type(self).alive.add(self)
-        type(self).made.append(weakref.ref(self))
-        self.final_steps = -1
 
     def observe(self) -> np.ndarray:
         self.n_observe += 1
@@ -189,7 +186,6 @@ if not hasattr(Episode, "step_values"):
 @pytest.fixture
 def counted(monkeypatch: pytest.MonkeyPatch) -> type[_Counted]:
     _Counted.alive = weakref.WeakSet()
-    _Counted.made = []
     _Counted.peak = 0
     _Counted.calls = 0
     _Counted.probe_every = 0
@@ -360,7 +356,7 @@ class _SpyPool(pool_mod.WorkerPool):
     """워커를 띄울 때 넘기는 인수를 모으는 풀(이 테스트만)."""
 
     def _spawn(self, w: int) -> None:
-        real = self._ctx
+        real: Any = self._ctx  # type: ignore[has-type]
         seen = self.__dict__.setdefault("spawn_args", [])
 
         class Ctx:

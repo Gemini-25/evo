@@ -2605,3 +2605,8 @@ SELFTEST_CHECK_FASTPATH: Final = "빠른 계산 길 (물리 엔진 C 함수를 �
 SELFTEST_FASTPATH_SAME: Final = "빠른 계산 길이 켜져 있고 보통 길과 결과가 같습니다."
 SELFTEST_FASTPATH_OFF: Final = "빠른 계산 길이 꺼져 있습니다(이 물리 엔진 판에 필요한 내부 함수가 없음). 결과는 같고 계산만 느립니다."
 SELFTEST_FASTPATH_DIFF: Final = "빠른 계산 길과 보통 길의 결과가 다릅니다: {detail}"
+
+# ---------------------------------------------------------------------------
+# v6.0 P 묶음 (관전 방식): 「관전 방식」 칸(lab.pace_combo)의 풍선. 연결표 키 lab.pace(app/help/anchors.py)와 함께 더한다.
+# ---------------------------------------------------------------------------
+HELP_TIPS["lab.pace"] = LAB_PACE_TIP

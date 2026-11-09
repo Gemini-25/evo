@@ -16,6 +16,20 @@ v1.2 「보는 재미」(설계 4.3, 5.1, D16·D17·D19·D24):
 - 유전자 지도 점 두 번 누르기: 최근 64세대는 화면 메모리의 정확한 유전자, 아니면 세대 대표(GMAP_INEXACT).
 - 「세대끼리 경주」: app/race의 entries_from_generations + show_race.
 
+v6.0 관전 방식(v6 설계 4.12·5.1·5.2, D23~D25):
+- 「보기」 묶음의 「관전 방식」 칸(pace_combo): 「학습 먼저」(PACE_SKIP, 기본 PACE_DEFAULT)와 「세대마다 다 보기」(PACE_EVERY,
+  v3.1까지의 동작). 설정 lab/pace. 학습 프로세스에는 시작 요청(SessionRequest.pace)과 mode 명령의 "pace"로 알린다.
+- 「학습 먼저」: 재생 대기열은 가장 새 세대 하나만. 새 세대가 오면 기다리던(장면을 만드는 중이거나 만들어 둔) 앞 세대는 버리고
+  그 세대 번호로 played를 바로 보낸다(학습 프로세스의 acked와 「보는 재미」 따라가기를 지킴). 재생 중이 아닐 때 만들던 장면은
+  끝까지 만든다(세대가 장면 만들기보다 빨리 오면 화면이 영영 멈춰 있지 않게). 새 세대가 기다리면 지금 재생은 대표 시험 0번
+  궤적 끝 + 0.5초와 실제 시간 SKIP_MAX_VIEW초 가운데 이른 때에 끝낸다(기다리는 세대가 없으면 가장 긴 궤적까지). HUD 「학습은
+  n세대까지」. 통계·관찰 기록은 지금처럼 세대마다 모두 대시보드로 간다.
+- 「세대마다 다 보기」에서 최근 WAIT_HINT_WINDOW세대 동안 재생을 기다린 몫(세대 메시지 "waited")이 WAIT_HINT_RATIO를 넘으면 실행마다
+  한 번 상태 글 끝에 LAB_PACE_WAIT_HINT.
+- 기본이 「학습 먼저」이고 예전 설정(lab/mode가 있고 lab/pace가 없음)이면 처음 한 번 상태 글에 LAB_PACE_CHANGED_NOTICE
+  (lab/pace_notice = 1). 보기 칸을 저장할 때 lab/pace도 함께 쓰므로 v6에서 처음 쓴 사용자에게는 뜨지 않는다.
+- 화면에만 쓰는 일이라 학습 결과와 무관하다(T20: 세 방식의 통계·챔피언·체크포인트가 바이트 같음).
+
 v2.1 몸 구조(설계 4.13·5.3·D41):
 - 「몸 구조」 타일(app/lab/structure_tile.py)에 실행의 환경 버전 목록을 준다(세대마다 그 세대를 계산한 환경으로 구조를
   센다). 학습 중 환경을 바꾸면 그 버전을 더한다.
@@ -31,10 +45,11 @@ import dataclasses
 import gc
 import json
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 from PySide6.QtCore import QElapsedTimer, QObject, QSettings, Qt, QThread, QTimer, Signal
@@ -72,7 +87,7 @@ from evolab.app.lab.watch_types import BrainSource, WatchMeta
 from evolab.engine import seeds
 from evolab.engine.pool import default_workers
 from evolab.engine.replay import TRACE_BRAIN, Replay, TraceMode, agent_geoms, replay
-from evolab.engine.session import SessionRequest
+from evolab.engine.session import PACE_EVERY, PACE_SKIP, PACES, SessionRequest
 from evolab.engine.trainer import (
     MAX_QUALIFY_ENTRANTS,
     NEW_RUN_DEFAULTS,
@@ -113,6 +128,17 @@ FOCUS_BATCH_MS = 80
 FLIP_SECONDS = 20.0
 FLIP_RATE = (2.0, 15.0)
 """「세대 넘겨 보기」 속도 = clamp(기록 세대 수 ÷ FLIP_SECONDS, 최소, 최대)세대/초."""
+PACE_DEFAULT: Final = PACE_SKIP
+"""관전 방식 기본값(v6.0 D24): 설정 lab/pace가 없을 때. 사용자 결정(G1·Q1)으로 「학습 먼저」. 되돌릴 지점 5(입력 지연 M7이나 v3 안내
+시험이 깨짐)면 PACE_EVERY로 낸다."""
+SKIP_MAX_VIEW: Final = 15.0
+"""「학습 먼저」에서 새 세대가 기다릴 때 지금 세대를 실제 시간으로 이만큼(초)까지만 본다(v6 설계 4.12, M9에서 다시 정함)."""
+SKIP_TAIL_S: Final = 0.5
+"""「학습 먼저」에서 새 세대가 기다릴 때: 대표 시험 0번 궤적이 끝나고 이만큼(재생 시각, 초) 뒤에 다음 세대로."""
+WAIT_HINT_WINDOW: Final = 10
+"""기다림 알림(D25): 최근 이만큼의 세대로 본다."""
+WAIT_HINT_RATIO: Final = 0.5
+"""기다림 알림(D25): 그 세대들의 (기다린 시간 합) ÷ (계산 + 기다린 시간 합)이 이보다 크면 알린다."""
 ReplayJob = tuple[EnvSpec, GenomeLayout, np.ndarray, Trial, TraceMode]
 """다시 시뮬레이션 작업 하나: (환경, 유전자 배치, 유전자, 시험, 추적 종류 False | True | "brain")."""
 
@@ -487,6 +513,22 @@ class LabView(QWidget):
         self._scene_thread: _SceneThread | None = None
         self._scene_seq = 0
         self._closing = False
+        # v6.0 관전 방식(설계 4.12)
+        self.pace: str = PACE_DEFAULT
+        """관전 방식(PACES): 「보기」 묶음의 pace_combo 값."""
+        self._live_started = 0.0
+        """관전 중인 세대 재생을 시작한 실제 시각(time.monotonic, 「학습 먼저」의 SKIP_MAX_VIEW)."""
+        self._skip_end = math.inf
+        """「학습 먼저」에서 새 세대가 기다릴 때 지금 재생을 끝낼 재생 시각(대표 시험 0번 궤적 끝 + SKIP_TAIL_S)."""
+        self._wait_log: collections.deque[tuple[float, float]] = collections.deque(maxlen=WAIT_HINT_WINDOW)
+        """최근 세대의 (재생을 기다린 초, 계산 초): 「세대마다 다 보기」로 관전한 세대만."""
+        self._wait_hinted = False
+        """이 실행에서 기다림 알림(LAB_PACE_WAIT_HINT)을 이미 보였는가(실행마다 한 번)."""
+        self._wait_note = ""
+        """상태 글 끝줄: 기다림 알림. 실행이 바뀌거나 「학습 먼저」로 바꾸면 지움."""
+        self._pace_note = ""
+        """상태 글 끝줄: 관전 방식 기본값이 바뀌었다는 예전 사용자 알림(LAB_PACE_CHANGED_NOTICE). 방식을 바꾸거나 학습 프로세스가
+        닫히면 지움."""
         self._base_config: dict[str, Any] | None = None
         """복제한 실행의 설정 전체. 화면에 칸이 없는 값(validate_every 등)은 새 실행이 여기서 그대로 가져간다.
         복제할 때만 정한다: 열기·다른 실행 이어하기·환경 불러오기 뒤의 새 실행은 그런 값을 기본값으로 시작한다."""
@@ -811,6 +853,13 @@ class LabView(QWidget):
         mode.addWidget(self.rb_spectate)
         mode.addWidget(self.rb_fast)
         vf.addRow(mode)
+        # v6.0 관전 방식(설계 5.1): 관전·고속 줄 다음, 고속이면 흐리게
+        self.pace_combo = QComboBox()
+        for key, name in ((PACE_SKIP, S.LAB_PACE_SKIP), (PACE_EVERY, S.LAB_PACE_EVERY)):
+            self.pace_combo.addItem(name, key)
+        self.pace_combo.setCurrentIndex(self.pace_combo.findData(PACE_DEFAULT))
+        self.pace_combo.currentIndexChanged.connect(lambda _i: self.set_pace(str(self.pace_combo.currentData())))
+        vf.addRow(S.LAB_PACE, self.pace_combo)
         self.speed_combo = QComboBox()
         for n in SPEEDS:
             self.speed_combo.addItem(S.LAB_SPEED_ITEM.format(n=n), n)
@@ -847,6 +896,7 @@ class LabView(QWidget):
         speed = number("lab/speed", 1)
         mode = str(s.value("lab/mode", "spectate"))
         interval = number("lab/fast_interval", 10)
+        pace = str(s.value("lab/pace", PACE_DEFAULT))
         self._restoring = True
         try:
             if w > 0:
@@ -856,8 +906,23 @@ class LabView(QWidget):
             if mode == "fast":
                 self.rb_fast.setChecked(True)
             self.fast_interval.setValue(interval)
+            if pace in PACES:
+                self.pace_combo.setCurrentIndex(self.pace_combo.findData(pace))
         finally:
             self._restoring = False
+        self.pace_combo.setEnabled(self.rb_spectate.isChecked())
+        self._check_pace_notice()
+
+    def _check_pace_notice(self) -> None:
+        """기본 관전 방식을 「학습 먼저」로 바꾼 v6.0(D24): 예전 프로그램으로 실험실을 쓴 사용자(보기 칸을 저장한 lab/mode는 있고
+        lab/pace는 없음)에게 처음 한 번 상태 글로 알린다(lab/pace_notice = 1). v6에서 보기 칸을 저장하면 lab/pace도 함께 쓴다."""
+        s = self.settings
+        if PACE_DEFAULT != PACE_SKIP or s.contains("lab/pace") or not s.contains("lab/mode") \
+                or s.contains("lab/pace_notice"):
+            return
+        s.setValue("lab/pace_notice", 1)
+        self._pace_note = S.LAB_PACE_CHANGED_NOTICE
+        self._update_status()
 
     def _save_settings(self) -> None:
         if self._restoring:
@@ -866,6 +931,7 @@ class LabView(QWidget):
         self.settings.setValue("lab/mode", "spectate" if self.rb_spectate.isChecked() else "fast")
         self.settings.setValue("lab/fast_interval", self.fast_interval.value())
         self.settings.setValue("lab/workers", self.workers.value())
+        self.settings.setValue("lab/pace", self.pace)
 
     # ------------------------------------------------------------------
     # 환경과 설정
@@ -1079,7 +1145,7 @@ class LabView(QWidget):
         self._reset_run_view()
         self.state = "starting"
         req = SessionRequest(kind="new", env_text=self.env_text, config=config.to_dict(), runs_dir=str(paths.runs_dir()),
-                             workers=self.workers.value(), spectate=self.rb_spectate.isChecked())
+                             workers=self.workers.value(), spectate=self.rb_spectate.isChecked(), pace=self.pace)
         self.client.start(req)
         self._update_buttons()
         return True
@@ -1107,7 +1173,7 @@ class LabView(QWidget):
         self._reset_run_view()
         self.state = "starting"
         req = SessionRequest(kind="resume", run_dir=str(run_dir), generation=generation, workers=self.workers.value(),
-                             spectate=self.rb_spectate.isChecked())
+                             spectate=self.rb_spectate.isChecked(), pace=self.pace)
         self.client.start(req)
         self._update_buttons()
         return True
@@ -1173,7 +1239,9 @@ class LabView(QWidget):
         return False
 
     def set_spectate(self, on: bool) -> None:
-        self.client.send({"type": "mode", "spectate": bool(on)})
+        self.client.send({"type": "mode", "spectate": bool(on), "pace": self.pace})
+        self.pace_combo.setEnabled(bool(on))  # 고속이면 관전 방식은 뜻이 없다(설계 5.1)
+        self._wait_log.clear()
         self.queue.clear()
         self._drop_scene_jobs()
         self._last_played = None
@@ -1191,6 +1259,26 @@ class LabView(QWidget):
 
     def set_speed(self, n: int) -> None:
         self.speed = n
+        self._save_settings()
+
+    def set_pace(self, pace: str) -> None:
+        """관전 방식(v6.0 설계 4.12)을 바꾼다: 학습 프로세스에 mode 명령으로 알리고(「학습 먼저」면 기다림이 바로 풀림) 설정에
+        남긴다. 「학습 먼저」로 바꾸면 기다리던 세대 가운데 가장 새 것만 남긴다."""
+        if pace not in PACES or pace == self.pace:
+            return
+        self.pace = pace
+        if self.pace_combo.currentData() != pace:
+            self.pace_combo.setCurrentIndex(self.pace_combo.findData(pace))
+        self.client.send({"type": "mode", "spectate": self.rb_spectate.isChecked(), "pace": pace})
+        self._wait_log.clear()
+        notes = (self._pace_note, self._wait_note)
+        self._pace_note = ""
+        if pace == PACE_SKIP:
+            self._wait_note = ""  # 알림이 권한 것을 했다
+            if self.view_mode == "live":
+                self._keep_newest_waiting()
+        if notes != (self._pace_note, self._wait_note):
+            self._refresh_status()
         self._save_settings()
 
     # ------------------------------------------------------------------
@@ -1223,6 +1311,9 @@ class LabView(QWidget):
         self._brain_live = None
         self._replay_brain = None
         self._world_pending.clear()
+        self._wait_log.clear()
+        self._wait_hinted = False
+        self._wait_note = ""
         self.dashboard.clear()  # 보는 재미 기록·보는 세대·뇌 원천도 비운다
         self._brain_key = None
         self.canvas.set_hud("")  # 앞 실행의 「n세대 · 시험 0번」 글을 남기지 않는다
@@ -1333,9 +1424,12 @@ class LabView(QWidget):
         self.timeline.setMaximum(max(1, self.generation))
         if at_end:
             self.timeline.setValue(self.generation)
+        self._note_waited(msg, row)
         self._update_status()
         if msg.get("trajectories") is not None:
             if self.view_mode == "live":
+                if self.pace == PACE_SKIP:
+                    self._keep_newest_waiting(dropping_all=True)  # 재생 대기열은 가장 새 세대 하나(설계 4.12)
                 if self.layout is not None and self.layout.n_body:
                     self._scene_jobs.append(msg)  # 장면을 백그라운드에서 만든 뒤 재생 줄에 넣는다
                     self._next_scene()
@@ -1349,6 +1443,64 @@ class LabView(QWidget):
             self.last_fast_candidate = msg
             self._maybe_fast_replay()
         self._update_buttons()  # 첫 세대가 오면 타임라인·1세대 vs 지금을 학습 중에도 쓸 수 있다
+
+    def _keep_newest_waiting(self, dropping_all: bool = False) -> None:
+        """「학습 먼저」의 재생 대기열 하나(설계 4.12): 기다리는 관전 세대를 버리고 그 세대 번호로 played를 보낸다.
+
+        dropping_all(새 세대가 막 왔다): 기다리는 것을 모두 버린다(새 세대가 그 자리에 든다). 아니면(「학습 먼저」로 바꿈) 가장 새
+        것 하나는 남긴다. 장면을 만드는 중인 세대는 재생 중이면 멈추게 하고(v1.2 _drop_scene_jobs), 재생 중이 아니면 끝까지
+        만든다: 세대가 장면 만들기보다 빨리 오면 만들 때마다 멈춰 화면이 다음 세대를 영영 보이지 못하므로.
+        """
+        waiting = [*self.queue, *self._scene_jobs]
+        if not waiting:
+            return
+        newest = max(waiting, key=lambda m: int(m["generation"]))
+        keep = None if dropping_all else newest
+        building = self._scene_jobs[0] if self._scene_thread is not None and self._scene_jobs else None
+        if building is not None and self.playing is None and keep is not building:
+            keep_building = building  # 화면이 쉬고 있다: 만드는 것을 마저 만들어 먼저 보인다
+        else:
+            keep_building = None
+        ready = [m for m in self.queue if m is keep]
+        jobs = [m for m in self._scene_jobs if m is keep or m is keep_building]
+        for m in waiting:
+            if m is not keep and m is not keep_building:
+                self.client.send({"type": "played", "generation": int(m["generation"])})
+        self.queue.clear()
+        self.queue.extend(ready)
+        if building is not None and not any(m is building for m in jobs):
+            self._drop_scene_jobs()  # 만드는 중인 것을 멈추게 한다(결과는 꼬리표가 달라 버려진다)
+            self._scene_jobs.extend(jobs)
+            self._next_scene()  # 멈춘 스레드가 끝나면(_scene_done) 그때 남은 것을 만든다
+        else:
+            self._scene_jobs.clear()
+            self._scene_jobs.extend(jobs)
+
+    def _note_waited(self, msg: Mapping[str, Any], row: Mapping[str, Any]) -> None:
+        """기다림 알림(D25): 「세대마다 다 보기」로 관전한 세대의 (기다린 초, 계산 초)를 모아, 최근 WAIT_HINT_WINDOW세대 동안 기다린
+        몫이 WAIT_HINT_RATIO를 넘으면 실행마다 한 번 상태 글 끝에 알린다. 배수 = 전체 ÷ (전체 − 기다림)."""
+        if not (self.pace == PACE_EVERY and self.view_mode == "live" and self.rb_spectate.isChecked()):
+            self._wait_log.clear()
+            return
+        waited = _float_value(msg.get("waited"))
+        compute = _float_value(row.get("gen_seconds"))
+        if waited is None or compute is None or not math.isfinite(waited) or not math.isfinite(compute):
+            return
+        self._wait_log.append((max(0.0, waited), max(0.0, compute)))
+        if self._wait_hinted or len(self._wait_log) < WAIT_HINT_WINDOW:
+            return
+        wait = sum(w for w, _c in self._wait_log)
+        total = wait + sum(c for _w, c in self._wait_log)
+        if total <= 0 or wait / total <= WAIT_HINT_RATIO or total - wait <= 0:
+            return
+        self._wait_hinted = True
+        self._wait_note = S.LAB_PACE_WAIT_HINT.format(times=total / (total - wait))
+
+    def _refresh_status(self) -> None:
+        """상태 글을 다시 만든다(끝난 학습이면 끝난 까닭 줄도)."""
+        self._update_status()
+        if self.state == "finished" and self._stopped_line:
+            self.status.setText(self.status.text() + "\n" + self._stopped_line)
 
     def _on_state(self, msg: dict[str, Any]) -> None:
         self.state = str(msg.get("state"))
@@ -1410,13 +1562,14 @@ class LabView(QWidget):
         self.state = "closed" if self.run_dir is not None else "idle"
         self.queue.clear()
         self._drop_scene_jobs()
+        self._pace_note = ""  # 관전 방식 알림은 처음 학습 한 번 동안만(설계 D24)
         self._update_status()
         self._update_buttons()
 
     def _update_status(self) -> None:
         if not self.rows:
             text = S.LAB_STATE_NAMES.get(self.state, self.state)
-            for note in (self._session_note, self._map_notice, self._build_note):
+            for note in (self._session_note, self._map_notice, self._build_note, self._pace_note, self._wait_note):
                 if note:
                     text += "\n" + note
             self.status.setText(text)
@@ -1443,6 +1596,10 @@ class LabView(QWidget):
             text += "\n" + self._map_notice
         if self._build_note:
             text += "\n" + self._build_note
+        if self._pace_note:
+            text += "\n" + self._pace_note
+        if self._wait_note:
+            text += "\n" + self._wait_note
         self.status.setText(text)
 
     def _learner_status(self, row: Mapping[str, Any]) -> str | None:
@@ -1583,6 +1740,8 @@ class LabView(QWidget):
             # 앞 세대에서 클릭 검사한 개체: 캔버스가 더는 그 개체를 재생하지 않는다(뇌는 이 세대 대표 ②로)
             self._brain_play = None
         self._set_follow(msg)
+        self._live_started = time.monotonic()
+        self._skip_end = _trajectory_end(msg, int(msg["representative"])) + SKIP_TAIL_S
         self._start_clock()
         self._live_brain_for(msg, spec)
 
@@ -1618,6 +1777,10 @@ class LabView(QWidget):
                 self.client.send({"type": "played", "generation": int(msg["generation"])})
             else:
                 msg["_scene"] = (spec, result)
+                if self.pace == PACE_SKIP:  # 재생 대기열은 가장 새 세대 하나(앞서 만든 것이 남아 있으면 버린다)
+                    for old in [m for m in self.queue if int(m["generation"]) < int(msg["generation"])]:
+                        self.queue.remove(old)
+                        self.client.send({"type": "played", "generation": int(old["generation"])})
                 self.queue.append(msg)
                 if self.playing is None:
                     self._play_next()
@@ -1642,7 +1805,12 @@ class LabView(QWidget):
         self.play_t += min(dt_real, 0.25) * (self.speed if self.view_mode == "live" else 1.0)
         self.canvas.set_time(self.play_t)
         if self.view_mode == "live" and self.playing is not None:
-            self.canvas.set_hud(S.LAB_HUD_LIVE.format(gen=self.playing["generation"], t=self.play_t, speed=self.speed))
+            gen = int(self.playing["generation"])
+            if self.pace == PACE_SKIP and self.generation > gen:  # 학습이 앞서 있다(설계 5.2)
+                self.canvas.set_hud(S.LAB_HUD_LIVE_SKIP.format(gen=gen, t=self.play_t, speed=self.speed,
+                                                               latest=self.generation))
+            else:
+                self.canvas.set_hud(S.LAB_HUD_LIVE.format(gen=gen, t=self.play_t, speed=self.speed))
         elif self.view_mode == "fast":
             self.canvas.set_hud(S.LAB_HUD_FAST.format(gen=self._fast_last, t=self.play_t))
         elif self.view_mode == "replay":
@@ -1652,7 +1820,7 @@ class LabView(QWidget):
         if self._brain_wanted():
             self._brain_check()
             self.dashboard.show_time(self.play_t)
-        if self.play_t < self.canvas.duration() + 0.5:
+        if self.play_t < self.canvas.duration() + 0.5 and not self._skip_due():
             return
         if self.view_mode == "live" and self.playing is not None:
             self.client.send({"type": "played", "generation": int(self.playing["generation"])})
@@ -1672,6 +1840,14 @@ class LabView(QWidget):
             self.play_t = 0.0
         else:
             self._timer.stop()
+
+    def _skip_due(self) -> bool:
+        """「학습 먼저」에서 새 세대가 기다린다(장면까지 준비됨): 대표 시험 0번 궤적 끝 + SKIP_TAIL_S 또는 실제 시간 SKIP_MAX_VIEW초를
+        봤으면 지금 관전 재생을 끝낸다(설계 4.12). 기다리는 세대가 없으면 지금처럼 가장 긴 궤적까지. 타임라인 「다시 보기」 등에는
+        쓰지 않는다."""
+        if self.pace != PACE_SKIP or self.view_mode != "live" or self.playing is None or not self.queue:
+            return False
+        return self.play_t >= self._skip_end or time.monotonic() - self._live_started >= SKIP_MAX_VIEW
 
     # ------------------------------------------------------------------
     # 다시 시뮬레이션: 고속 모드 챔피언, 타임라인, 1세대 vs 지금, 클릭 검사
@@ -2459,6 +2635,17 @@ def switch_note(rows: Sequence[Mapping[str, Any]], i: int) -> str:
     if winner is None:
         winner = max(sorted(ends), key=lambda k: ends[k]) if ends else learner  # max는 같은 값이면 앞의 것
     return S.TRAIN_SWITCH_QUALIFY_PICK.format(gen=gen, winner=winner + 1, score=_score_text(ends.get(winner)))
+
+
+def _trajectory_end(msg: Mapping[str, Any], index: int) -> float:
+    """관전 세대 메시지에서 개체 index의 시험 0번 궤적 길이(초). 궤적이 없으면(조립 실패 등) 0."""
+    try:
+        traj = msg["trajectories"][index]
+    except (KeyError, IndexError, TypeError):
+        return 0.0
+    if traj is None or not getattr(traj, "frames", 0):
+        return 0.0
+    return float(traj.duration)
 
 
 def _int_value(v: Any) -> int | None:
