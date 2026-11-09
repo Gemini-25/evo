@@ -5,10 +5,19 @@ Episode와 같은 순전파(BatchBrain.forward, 행마다 독립)를 쓰므로 �
 
 추적(trace)은 시뮬레이션을 바꾸지 않고 읽기만 더한다: True면 입력·층별 활성화·센서 원래 값·레이를, "brain"(v1.2
 뇌 들여다보기의 가벼운 추적, 설계 D25)이면 입력과 층별 활성화만 남긴다(channel_values()·ray_view()를 부르지 않음).
+
+pause(v6.0 협조 양보, v3.0 남은 문제 「보는 재미」 8배 위 줄): 스텝마다 한 번 부르는 함수. 화면 프로세스의 배경 스레드는 화면
+스레드가 바쁜 동안(GUI_PRIORITY) 여기서 쉬어 GIL을 넘긴다(바퀴 차 30초 뇌 추적 하나가 140ms 안팎을 쉼 없이 돌아, 그동안 타일
+그림이 GIL을 다투었다). replay(pause=...)로 주거나, 스레드에서 `with pausing(fn):` 안에 부른 replay가 모두 쓴다(부르는 쪽이
+replay를 바꿔 끼워도 같은 스레드면 적용됨). 시뮬레이션 상태를 읽지도 쓰지도 않으므로 결과(궤적, 점수, 추적)는 pause가 없을 때와
+바이트 같다.
 """
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -49,16 +58,33 @@ def agent_geoms(geometry: WorldGeometry, moving: list[str]) -> list[BodyGeom]:
 TraceMode = bool | Literal["brain"]
 TRACE_BRAIN: Literal["brain"] = "brain"
 
+_local = threading.local()
+"""스레드마다 replay()의 양보 함수(pausing)."""
+
+
+@contextmanager
+def pausing(pause: Callable[[], object] | None) -> Iterator[None]:
+    """이 스레드에서 이 안에 부른 replay()가 스텝마다 pause()를 부르게 한다(pause 인자를 주지 않았을 때). 겹쳐 쓰면 안쪽 것."""
+    old = getattr(_local, "pause", None)
+    _local.pause = pause
+    try:
+        yield
+    finally:
+        _local.pause = old
+
 
 def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial, every: int = 2,
-           trace: TraceMode = False) -> Replay:
+           trace: TraceMode = False, pause: Callable[[], object] | None = None) -> Replay:
     """유전자 하나를 시험 하나로 끝까지 돌린다.
 
     trace=True면 스텝마다 입력·층별 활성화·센서 원래 값·레이를 남기고, trace="brain"이면 입력·층별 활성화만 남긴다
     (뇌 그림용 가벼운 추적). 어느 쪽이든 시뮬레이션 경로와 결과(궤적, 점수)는 trace=False와 같다.
+    pause가 있으면 스텝마다(관측 앞에서) 한 번 부른다(협조 양보, 모듈 설명). 돌려준 값은 쓰지 않고 결과도 그대로다.
     """
     if isinstance(trace, str) and trace != TRACE_BRAIN:
         raise ValueError(f"trace must be True, False or {TRACE_BRAIN!r}, got {trace!r}")
+    if pause is None:
+        pause = getattr(_local, "pause", None)
     neurons = bool(trace)  # 입력·층별 활성화
     full = neurons and not isinstance(trace, str)  # 센서 원래 값·레이까지
     g = np.ascontiguousarray(np.asarray(genome, dtype=np.float64).reshape(1, -1))
@@ -74,6 +100,8 @@ def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial
     ray_log: list[list[tuple[float, float, float, float, float]]] = []
     obs = np.zeros((1, layout.brain.n_in), dtype=np.float64)
     while not ep.done:
+        if pause is not None:
+            pause()
         o = ep.observe()  # 새 float32 배열(스텝마다 새로 만든다): 추적은 그대로 담고 끝에 한 번에 쌓는다
         obs[0] = o
         layers: list[np.ndarray] | None = [] if neurons else None

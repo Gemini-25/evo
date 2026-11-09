@@ -86,7 +86,7 @@ from evolab.app.lab.history import GUI_PRIORITY
 from evolab.app.lab.watch_types import BrainSource, WatchMeta
 from evolab.engine import seeds
 from evolab.engine.pool import default_workers
-from evolab.engine.replay import TRACE_BRAIN, Replay, TraceMode, agent_geoms, replay
+from evolab.engine.replay import TRACE_BRAIN, Replay, TraceMode, agent_geoms, pausing, replay
 from evolab.engine.session import PACE_EVERY, PACE_SKIP, PACES, SessionRequest
 from evolab.engine.trainer import (
     MAX_QUALIFY_ENTRANTS,
@@ -184,12 +184,16 @@ class _ReplayThread(QThread):
         self.jobs = jobs
 
     def run(self) -> None:
+        stop = self.isInterruptionRequested
         try:
             out = []
-            for spec, layout, genome, trial, trace in self.jobs:
-                gui_first(self.isInterruptionRequested)
-                out.append(replay(spec, layout, genome, trial, trace=trace))
-                release_episodes(self.isInterruptionRequested)
+            # v6.0 협조 양보(v3.0 남은 문제): 재생 하나(바퀴 차 30초 뇌 추적 140ms 안팎) 동안에도 화면 스레드가 바쁘면 스텝 사이에서
+            # 쉰다. 쉬는 자리만 늘 뿐 결과는 같다(engine/replay.py pausing).
+            with pausing(lambda: GUI_PRIORITY.wait(stop)):
+                for spec, layout, genome, trial, trace in self.jobs:
+                    gui_first(stop)
+                    out.append(replay(spec, layout, genome, trial, trace=trace))
+                    release_episodes(stop)
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다
             self.finished_job.emit(self.tag, exc)
             return
@@ -1412,6 +1416,12 @@ class LabView(QWidget):
         self._adopt_run(msg)
 
     def _on_generation(self, msg: dict[str, Any]) -> None:
+        # 세대 메시지 처리(통계 줄·보는 재미 기록·장면 넣기) 동안 배경 작업(장면 만들기, 뇌 추적, 세계 그림)을 쉬게 한다(v6.0, v3.0
+        # 남은 문제 「2세대가 올 때 GIL 다툼」)
+        with GUI_PRIORITY.busy():
+            self._on_generation_now(msg)
+
+    def _on_generation_now(self, msg: dict[str, Any]) -> None:
         row = msg["row"]
         self.generation = int(msg["generation"])
         self.rows.append(row)
@@ -1703,6 +1713,10 @@ class LabView(QWidget):
     # 관전 재생
     # ------------------------------------------------------------------
     def _play_next(self) -> None:
+        with GUI_PRIORITY.busy():  # 장면·집단을 캔버스에 넣는 동안 배경 작업을 쉬게 한다(v6.0)
+            self._play_next_now()
+
+    def _play_next_now(self) -> None:
         if not self.queue or self.spec is None or self.layout is None:
             self.playing = None
             return

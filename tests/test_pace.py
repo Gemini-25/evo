@@ -202,10 +202,40 @@ def _npz(path: Path) -> dict[str, tuple[str, tuple[int, ...], bytes]]:
         return {k: (str(z[k].dtype), tuple(z[k].shape), z[k].tobytes()) for k in z.files}
 
 
-def _checkpoint_bytes(state: dict[str, Any]) -> bytes:
-    state = dict(state)
-    state["state"] = {k: v for k, v in state["state"].items() if k != "elapsed"}  # 벽시계 경과 시간만 뺀다
-    return pickle.dumps(state, protocol=5)
+def _canon(obj: Any, seen: set[int] | None = None) -> Any:
+    """체크포인트를 비교할 수 있는 값으로: 배열은 (dtype, 모양, 바이트), 실수는 repr, 객체는 (클래스, 속성). 벽시계 값은 뺀다:
+    학습 상태의 경과 시간("elapsed")과 pycma 학습기 피클 안의 타이머(이름에 "timer"가 든 속성: 만든 시각·누적 시간). 둘은 같은
+    설정을 두 번 돌려도 다르고(같은 방식끼리도) 학습에 쓰이지 않는다. 피클 바이트 값은 풀어서 비교한다."""
+    seen = set() if seen is None else seen
+    if isinstance(obj, np.ndarray):
+        return ("nd", obj.dtype.str, obj.shape, obj.tobytes())
+    if isinstance(obj, float):
+        return ("f", repr(obj))
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, bytes):
+        if obj[:1] == b"\x80":
+            try:
+                return ("pickle", _canon(pickle.loads(obj), seen))
+            except Exception:  # noqa: BLE001 - 피클이 아니면 바이트 그대로
+                pass
+        return obj
+    if id(obj) in seen:
+        return "<cycle>"
+    seen.add(id(obj))
+    if isinstance(obj, dict):
+        return ("d", sorted((repr(k), _canon(v, seen)) for k, v in obj.items()
+                            if k != "elapsed" and "timer" not in str(k)))
+    if isinstance(obj, (list, tuple)):
+        return (type(obj).__name__, [_canon(v, seen) for v in obj])
+    if isinstance(obj, np.generic):
+        return ("np", obj.dtype.str, obj.tobytes())
+    if hasattr(obj, "__dict__"):
+        return (type(obj).__qualname__, _canon(vars(obj), seen))
+    try:
+        return ("p", pickle.dumps(obj, protocol=5))
+    except Exception:  # noqa: BLE001 - 피클할 수 없는 것(함수 등)은 이름만
+        return ("r", type(obj).__qualname__)
 
 
 def test_pace_does_not_change_training_results(qtbot: Any, tmp_path: Path) -> None:
@@ -223,8 +253,10 @@ def test_pace_does_not_change_training_results(qtbot: Any, tmp_path: Path) -> No
     checkpoints = {mode: st.checkpoints() for mode, st in stores.items()}
     assert checkpoints["skip"] == checkpoints["every"] == checkpoints["fast"] and checkpoints["skip"]
     for g in checkpoints["skip"]:
-        blobs = [_checkpoint_bytes(stores[m].load_checkpoint(g)[1]) for m in ("skip", "every", "fast")]
-        assert blobs[0] == blobs[1] == blobs[2], g
+        states = [stores[m].load_checkpoint(g)[1] for m in ("skip", "every", "fast")]
+        assert states[0]["learner"]["es"]  # pycma 상태가 있다(비교가 빈 것끼리가 아님)
+        canon = [_canon(st) for st in states]
+        assert canon[0] == canon[1] == canon[2], g
 
 
 # ---------------------------------------------------------------------------
