@@ -451,9 +451,10 @@ def test_selftest_check_lists() -> None:
     names = [n for n, _ in selftest.selftest_checks(2, check_gui=True)]
     assert names[-5:] == [S.SELFTEST_CHECK_HELP, S.SELFTEST_CHECK_LOGS, S.SELFTEST_CHECK_GUI, S.SELFTEST_CHECK_QT_KO,
                           S.SELFTEST_CHECK_TOUR]
-    assert set(NEW_CHECKS) <= set(names) and len(names) == 12  # v3.1: 「내보내기」 점검(설계 D59)
+    # v3.1: 「내보내기」 점검(설계 D59), v6.0: 「빠른 계산 길」 점검(v6 설계 D19, 창 없이 도는 점검)
+    assert set(NEW_CHECKS) <= set(names) and len(names) == 13
     no_gui = [n for n, _ in selftest.selftest_checks(2, check_gui=False)]
-    assert no_gui == names[:9] and S.SELFTEST_CHECK_LOGS in no_gui and S.SELFTEST_CHECK_HELP in no_gui
+    assert no_gui == names[:10] and S.SELFTEST_CHECK_LOGS in no_gui and S.SELFTEST_CHECK_HELP in no_gui
     full = [n for n, _ in selftest.selftest_checks(2, check_gui=True, tour="full")]
     assert full[-1] == S.SELFTEST_CHECK_TOUR_FULL.format(goal=tour.TOUR_GOAL)
     with pytest.raises(ValueError):

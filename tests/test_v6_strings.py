@@ -59,6 +59,11 @@ def test_changed_constants_follow_the_skip_default() -> None:
     assert S.BENCH_SINGLE.startswith("단일 코어(창 {window}): ")
     # 처음 실행 안내 ④: 자리는 그대로 {speed} 하나, 학습이 재생을 기다리지 않는다는 말
     assert _fields(S.ONB_STEP_WATCH) == {"speed"} and "학습은 재생과 상관없이 계속됩니다" in S.ONB_STEP_WATCH
+    # 「학습 먼저」는 1세대를 길어야 SKIP_MAX_VIEW(15초) 보이고 새 세대로 넘어간다: ④(배속 버튼은 30초 뒤)가 「지금 보이는 것이
+    # 1세대」라고 하면 곧 틀린 말이 된다(v6.0 검토)
+    for text in (S.ONB_STEP_WATCH, S.ONB_STEP_WATCH_FAST):
+        assert text.startswith("처음 보이는 것이 1세대입니다.") and "지금 보이는" not in text
+    assert "새 세대로 넘어갑니다" in S.ONB_STEP_WATCH
     assert "기다" not in S.HELP_TIPS["lab.spectate"].replace("기다릴지", "")
     assert S.LAB_PACE in S.HELP_TIPS["lab.spectate"]
 

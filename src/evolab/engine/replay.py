@@ -9,15 +9,16 @@ Episode와 같은 순전파(BatchBrain.forward, 행마다 독립)를 쓰므로 �
 pause(v6.0 협조 양보, v3.0 남은 문제 「보는 재미」 8배 위 줄): 스텝마다 한 번 부르는 함수. 화면 프로세스의 배경 스레드는 화면
 스레드가 바쁜 동안(GUI_PRIORITY) 여기서 쉬어 GIL을 넘긴다(바퀴 차 30초 뇌 추적 하나가 140ms 안팎을 쉼 없이 돌아, 그동안 타일
 그림이 GIL을 다투었다). replay(pause=...)로 주거나, 스레드에서 `with pausing(fn):` 안에 부른 replay가 모두 쓴다(부르는 쪽이
-replay를 바꿔 끼워도 같은 스레드면 적용됨). 시뮬레이션 상태를 읽지도 쓰지도 않으므로 결과(궤적, 점수, 추적)는 pause가 없을 때와
-바이트 같다.
+replay를 바꿔 끼워도 같은 스레드면 적용됨). pausing(fn, unit=...)의 unit은 첫 스텝 앞의 Episode 만들기(도중에 쉴 수 없는 일)를
+감싸는 문맥 관리자를 돌려주는 함수다(화면 프로세스는 GUI_PRIORITY.working). 둘 다 시뮬레이션 상태를 읽지도 쓰지도 않으므로 결과
+(궤적, 점수, 추적)는 없을 때와 바이트 같다.
 """
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
@@ -63,14 +64,16 @@ _local = threading.local()
 
 
 @contextmanager
-def pausing(pause: Callable[[], object] | None) -> Iterator[None]:
-    """이 스레드에서 이 안에 부른 replay()가 스텝마다 pause()를 부르게 한다(pause 인자를 주지 않았을 때). 겹쳐 쓰면 안쪽 것."""
-    old = getattr(_local, "pause", None)
-    _local.pause = pause
+def pausing(pause: Callable[[], object] | None,
+            unit: Callable[[], AbstractContextManager[object]] | None = None) -> Iterator[None]:
+    """이 스레드에서 이 안에 부른 replay()가 스텝마다 pause()를 부르고(pause 인자를 주지 않았을 때), 첫 스텝 앞의 Episode
+    만들기를 unit()이 돌려준 문맥 관리자 안에서 하게 한다. 겹쳐 쓰면 안쪽 것."""
+    old = getattr(_local, "pause", None), getattr(_local, "unit", None)
+    _local.pause, _local.unit = pause, unit
     try:
         yield
     finally:
-        _local.pause = old
+        _local.pause, _local.unit = old
 
 
 def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial, every: int = 2,
@@ -85,15 +88,17 @@ def replay(spec: EnvSpec, layout: GenomeLayout, genome: np.ndarray, trial: Trial
         raise ValueError(f"trace must be True, False or {TRACE_BRAIN!r}, got {trace!r}")
     if pause is None:
         pause = getattr(_local, "pause", None)
+    unit = getattr(_local, "unit", None)
     neurons = bool(trace)  # 입력·층별 활성화
     full = neurons and not isinstance(trace, str)  # 센서 원래 값·레이까지
     g = np.ascontiguousarray(np.asarray(genome, dtype=np.float64).reshape(1, -1))
     body = layout.body_values(g)[0] if layout.n_body else None
     brain = unpack(layout.brain, layout.brain_params(g))
-    ep = Episode(spec, body, trial)
-    rec = _Recorder(max(1, int(every)), ep.dt)
-    rec.add(ep)
-    geometry = ep.geometry()
+    with unit() if unit is not None else nullcontext():  # 도중에 쉴 수 없는 일(모듈 설명)
+        ep = Episode(spec, body, trial)
+        rec = _Recorder(max(1, int(every)), ep.dt)
+        rec.add(ep)
+        geometry = ep.geometry()
     obs_log: list[np.ndarray] = []
     act_log: list[list[np.ndarray]] = []
     raw_log: list[dict[str, float]] = []

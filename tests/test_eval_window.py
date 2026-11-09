@@ -413,3 +413,50 @@ def test_pool_window_reaches_the_workers() -> None:
         with pool_mod.WorkerPool(2, window=window) as pool:
             assert pool.window == window
             same(pool.evaluate("v", text, layout, X, pairs), ref)
+
+
+class _InlinePool(pool_mod.WorkerPool):
+    """워커를 띄우지 않고 작업(Task)을 이 프로세스에서 워커와 같은 함수(_run_task)로 돌리는 풀(이 테스트만): 풀이 만든 작업과
+    워커가 evaluate에 넘기는 값을 본다."""
+
+    def _spawn(self, w: int) -> None:
+        pass
+
+    def _run(self, tasks: list[Any]) -> list[EvalResult]:
+        out = []
+        for task in tasks:
+            self.__dict__.setdefault("tasks", []).append(task)
+            task_id, status, payload = pool_mod._run_task(task, {}, {})
+            assert task_id == task.id and status == "ok", payload
+            out.append(payload)
+        return out
+
+
+def test_pool_window_is_forwarded_to_the_worker_evaluate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T16 창 × 워커: WorkerPool(window=)가 작업마다 Task.window로 실리고, 워커 쪽(_run_task)이 그 값을 evaluate의 window=로
+    넘긴다(결과는 창과 무관해 같음만으로는 전달을 알 수 없으므로 넘긴 값을 직접 본다)."""
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        monkeypatch.setenv(name, "1")  # 워커 수가 있는 풀이 이 프로세스의 환경 변수를 바꾸므로 끝나면 되돌린다
+    seen: list[Any] = []
+    real = pool_mod.evaluate
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("window", "missing"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pool_mod, "evaluate", recording)
+    spec, layout, X, pairs = twist_batch()
+    text = _twist_text()
+    ref = evaluate(spec, layout, X, pairs)
+    for window in (None, 2, 5):
+        seen.clear()
+        pool = _InlinePool(2, window=window)
+        res = pool.evaluate("v", text, layout, X, pairs)
+        tasks = pool.__dict__["tasks"]
+        assert len(tasks) > 1 and [t.window for t in tasks] == [window] * len(tasks)
+        assert seen == [window] * len(tasks)
+        same(res, ref)
+    seen.clear()
+    with pool_mod.WorkerPool(0, window=3) as single:  # 워커 0개: 이 프로세스의 evaluate에 바로
+        single.evaluate("v", text, layout, X, pairs)
+    assert seen == [3]

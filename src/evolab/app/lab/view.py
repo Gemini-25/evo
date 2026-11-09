@@ -135,6 +135,11 @@ SKIP_MAX_VIEW: Final = 15.0
 """「학습 먼저」에서 새 세대가 기다릴 때 지금 세대를 실제 시간으로 이만큼(초)까지만 본다(v6 설계 4.12, M9에서 다시 정함)."""
 SKIP_TAIL_S: Final = 0.5
 """「학습 먼저」에서 새 세대가 기다릴 때: 대표 시험 0번 궤적이 끝나고 이만큼(재생 시각, 초) 뒤에 다음 세대로."""
+SKIP_SCENE_LEAD_S: Final = 0.8
+"""「학습 먼저」·몸 유전자 환경: 관전 재생 중에는 다음 세대의 장면을 지금 재생이 끝나기 이만큼(실제 시간, 초) 전에야 만들기
+시작한다(마지막으로 다 만든 장면의 실제 시간 두 배가 더 길면 그만큼). 세대가 올 때마다 만들면 재생 하나(최대 SKIP_MAX_VIEW초)
+동안 온 세대 대부분의 장면을 만들고 버렸다(바퀴 차 1배 45초: 장면 21번 중 보인 것 3번, 화면 프로세스 CPU 약 5.6초, v6.0 검토).
+화면에만 쓰는 일이라 학습 결과와 무관하다."""
 WAIT_HINT_WINDOW: Final = 10
 """기다림 알림(D25): 최근 이만큼의 세대로 본다."""
 WAIT_HINT_RATIO: Final = 0.5
@@ -171,25 +176,32 @@ def release_episodes(stop: Callable[[], bool]) -> None:
     일이 그림과 겹치지 않고, 그동안에도 화면 스레드는 pymunk가 GIL을 놓는 틈마다 돈다. 오래 사는 객체는 얼려 두었으므로
     (freeze_long_lived) 전체 수집이 훑는 것은 그 뒤에 만든 것뿐이다. 화면에만 쓰는 일이라 학습 결과와 무관하다."""
     gui_first(stop)
-    gc.collect()
+    with GUI_PRIORITY.working():  # 거두는 동안은 GIL을 쥔다: 화면이 무거운 일을 시작하면 이것이 끝나기를 잠깐 기다린다(v6.0)
+        gc.collect()
 
 
 class _ReplayThread(QThread):
     finished_job = Signal(object, object)
     """(꼬리표, Replay 목록 또는 예외)"""
 
-    def __init__(self, tag: Any, jobs: list[ReplayJob], parent: QObject | None = None) -> None:
+    def __init__(self, tag: Any, jobs: list[ReplayJob], parent: QObject | None = None, yield_steps: bool = False) -> None:
         super().__init__(parent)
         self.tag = tag
         self.jobs = jobs
+        self.yield_steps = yield_steps
+        """참이면 화면 스레드가 바쁜 동안 스텝 사이에서도 쉰다(뇌 추적 배경 작업). 거짓이면 v3.0처럼 작업마다 한 번만(gui_first)."""
 
     def run(self) -> None:
         stop = self.isInterruptionRequested
+        # v6.0 협조 양보(v3.0 남은 문제): 뇌 추적 배경 작업(yield_steps)은 재생 하나(바퀴 차 30초 뇌 추적 140ms 안팎) 동안에도 화면
+        # 스레드가 바쁘면 스텝 사이에서 쉰다. 사용자가 누른 재생(클릭 검사·타임라인·1세대 vs 지금·고속 챔피언)은 쉬지 않는다: 스텝마다
+        # 쉬면 학습 8배 관전 중 클릭 검사가 두 배 넘게 늦었다(중앙값 0.53 → 1.16초, 최대 2.2초, v6.0 검토). 첫 스텝 앞의 Episode
+        # 만들기는 어느 쪽이든 쉴 수 없는 일 하나로 센다(GUI_PRIORITY.working: 다른 배경 일과 번갈아, 화면이 바빠지면 그것이 끝나기를
+        # 잠깐 기다림). engine/replay.py pausing. 쉬는 자리만 바뀔 뿐 결과는 같다.
+        pause = (lambda: GUI_PRIORITY.wait(stop)) if self.yield_steps else None
         try:
             out = []
-            # v6.0 협조 양보(v3.0 남은 문제): 재생 하나(바퀴 차 30초 뇌 추적 140ms 안팎) 동안에도 화면 스레드가 바쁘면 스텝 사이에서
-            # 쉰다. 쉬는 자리만 늘 뿐 결과는 같다(engine/replay.py pausing).
-            with pausing(lambda: GUI_PRIORITY.wait(stop)):
+            with pausing(pause, unit=lambda: GUI_PRIORITY.working(stop)):
                 for spec, layout, genome, trial, trace in self.jobs:
                     gui_first(stop)
                     out.append(replay(spec, layout, genome, trial, trace=trace))
@@ -228,19 +240,23 @@ def build_scene(spec: EnvSpec, layout: GenomeLayout, population: np.ndarray, tri
     for i in range(len(population)):
         if cancel is not None and cancel():
             raise SceneCancelled
-        try:
-            ep = Episode(spec, body[i], trial)
-        except EpisodeBuildError:
-            agents.append([])
-            continue
-        geometry = ep.geometry()
-        if world is None:
-            world = geometry
-        agents.append(agent_geoms(geometry, ep.moving_bodies))
-        del ep, geometry  # 다음 개체를 만들기 전에 놓는다(위 설명)
+        # 개체 하나(Episode 만들기, 바퀴 세계는 언덕 모양 수천 개)는 도중에 쉴 수 없다: 화면이 그동안 무거운 일을 시작하면
+        # 이것이 끝나기를 잠깐 기다린다(GUI_PRIORITY.working, v6.0)
+        with GUI_PRIORITY.working():
+            try:
+                ep = Episode(spec, body[i], trial)
+            except EpisodeBuildError:
+                agents.append([])
+                continue
+            geometry = ep.geometry()
+            if world is None:
+                world = geometry
+            agents.append(agent_geoms(geometry, ep.moving_bodies))
+            del ep, geometry  # 다음 개체를 만들기 전에 놓는다(위 설명)
         if cancel is not None:
             cancel()  # 거두는 동안(바퀴 고르는 언덕차는 8~10ms) GIL을 쥐므로 화면이 바쁘면 끝날 때까지 기다린 뒤에(v3.0 ML)
-        gc.collect(1)
+        with GUI_PRIORITY.working():
+            gc.collect(1)
     if world is None:  # 모든 개체를 조립할 수 없다(학습기는 처음 몸이 조립되는 것을 시작할 때 확인한다)
         world = Episode(spec, layout.body_values(layout.initial()[None, :])[0], trial).geometry()
     return world, agents
@@ -265,15 +281,19 @@ class _SceneThread(QThread):
         super().__init__(parent)
         self.tag = tag
         self.args = (spec, layout, population, trial)
+        self.seconds: float | None = None
+        """다 만드는 데 걸린 실제 시간(초, 기다린 시간 포함). 끝까지 만들었을 때만(「학습 먼저」의 SKIP_SCENE_LEAD_S)."""
 
     def run(self) -> None:
         stop = self.isInterruptionRequested
+        t0 = time.perf_counter()
         try:
             gui_first(stop)
             out = build_scene(*self.args, cancel=lambda: gui_first(stop))
         except Exception as exc:  # 결과를 화면 스레드로 넘겨 알린다(멈춘 것도: 꼬리표가 달라 버려진다)
             self.finished_job.emit(self.tag, exc)
             return
+        self.seconds = time.perf_counter() - t0
         self.finished_job.emit(self.tag, out)
 
 
@@ -292,7 +312,8 @@ class _WorldThread(QThread):
         spec, trial = self.args
         gui_first(self.isInterruptionRequested)
         try:
-            out = Episode(spec, None, trial).geometry()
+            with GUI_PRIORITY.working():  # 세계 하나 만들기는 도중에 쉴 수 없다(v6.0, build_scene과 같음)
+                out = Episode(spec, None, trial).geometry()
         except Exception as exc:  # 결과를 화면 스레드로 넘긴다(못 만들면 밀도 타일은 계속 준비 중 글)
             self.finished_job.emit(self.tag, exc)
             return
@@ -516,6 +537,8 @@ class LabView(QWidget):
         """장면(몸 유전자 환경)을 백그라운드에서 만드는 중이거나 기다리는 관전 세대. 맨 앞이 만드는 중."""
         self._scene_thread: _SceneThread | None = None
         self._scene_seq = 0
+        self._scene_build_s = 0.0
+        """마지막으로 끝까지 만든 장면의 실제 시간(초): 「학습 먼저」에서 다음 장면을 언제 만들기 시작할지(SKIP_SCENE_LEAD_S)."""
         self._closing = False
         # v6.0 관전 방식(설계 4.12)
         self.pace: str = PACE_DEFAULT
@@ -545,6 +568,9 @@ class LabView(QWidget):
         self._inspect_index: int | None = None
         self._inspect_absent: tuple[int, frozenset[str]] | None = None
         """클릭 검사 재생 작업(_replay_tag)과 그 개체의 없는 부품 센서 채널(InspectPanel의 「(없음)」)."""
+        self._inspect_msg: dict[str, Any] | None = None
+        """클릭 검사한(또는 그 재생을 기다리는) 개체의 관전 세대 메시지. 그 세대를 재생하는 동안은 「학습 먼저」도 재생을 자르지
+        않는다(_skip_due). 다른 세대를 재생하기 시작하면 검사를 닫는다."""
         self._structure_noted: set[str] = set()
         """LAB_GA_NO_STRUCTURE를 이미 알린 실행 폴더(실행마다 한 번)."""
         self._clock = QElapsedTimer()
@@ -1246,6 +1272,9 @@ class LabView(QWidget):
         self.client.send({"type": "mode", "spectate": bool(on), "pace": self.pace})
         self.pace_combo.setEnabled(bool(on))  # 고속이면 관전 방식은 뜻이 없다(설계 5.1)
         self._wait_log.clear()
+        if not on and self._wait_note:  # 고속에서는 학습이 기다리지 않는다: 흐린 칸을 바꾸라는 알림을 지운다
+            self._wait_note = ""
+            self._refresh_status()
         self.queue.clear()
         self._drop_scene_jobs()
         self._last_played = None
@@ -1457,16 +1486,34 @@ class LabView(QWidget):
     def _keep_newest_waiting(self, dropping_all: bool = False) -> None:
         """「학습 먼저」의 재생 대기열 하나(설계 4.12): 기다리는 관전 세대를 버리고 그 세대 번호로 played를 보낸다.
 
-        dropping_all(새 세대가 막 왔다): 기다리는 것을 모두 버린다(새 세대가 그 자리에 든다). 아니면(「학습 먼저」로 바꿈) 가장 새
-        것 하나는 남긴다. 장면을 만드는 중인 세대는 재생 중이면 멈추게 하고(v1.2 _drop_scene_jobs), 재생 중이 아니면 끝까지
-        만든다: 세대가 장면 만들기보다 빨리 오면 만들 때마다 멈춰 화면이 다음 세대를 영영 보이지 못하므로.
+        dropping_all(새 세대가 막 왔다, 새 세대가 기다리는 자리에 든다): 아직 장면을 만들기 시작하지 않은 세대를 모두 버린다(설계
+        4.12). 몸 유전자 환경에서 장면을 다 만든 세대(대기열)와 만드는 중인 세대는 남긴다: 관전 재생 중에는 지금 재생이 끝나기
+        조금 전에야 장면을 만들기 시작하므로(_scene_later) 그 장면은 곧 보일 것이고, 버리면 새 세대 장면을 다시 만드느라 늦고 한
+        일을 버린다(v6.0 검토 고침: 설계는 만드는 중인 것을 멈추고 새 것을 만든다고 했다). 몸 유전자가 없는 환경의 대기열은
+        장면을 재생할 때 만드므로 모두 버린다.
+
+        아니면(「학습 먼저」로 바꿈) 가장 새 것 하나는 남긴다. 장면을 만드는 중인 세대는 재생 중이면 멈추게 하고(v1.2
+        _drop_scene_jobs), 재생 중이 아니면 끝까지 만든다: 세대가 장면 만들기보다 빨리 오면 만들 때마다 멈춰 화면이 다음 세대를
+        영영 보이지 못하므로.
         """
         waiting = [*self.queue, *self._scene_jobs]
         if not waiting:
             return
-        newest = max(waiting, key=lambda m: int(m["generation"]))
-        keep = None if dropping_all else newest
         building = self._scene_jobs[0] if self._scene_thread is not None and self._scene_jobs else None
+        if dropping_all:
+            kept = {id(building)} if building is not None else set()
+            if self.layout is not None and self.layout.n_body:
+                kept |= {id(m) for m in self.queue}
+            for m in waiting:
+                if id(m) not in kept:
+                    self.client.send({"type": "played", "generation": int(m["generation"])})
+            for line in (self.queue, self._scene_jobs):
+                left = [m for m in line if id(m) in kept]
+                line.clear()
+                line.extend(left)
+            return
+        newest = max(waiting, key=lambda m: int(m["generation"]))
+        keep = newest
         if building is not None and self.playing is None and keep is not building:
             keep_building = building  # 화면이 쉬고 있다: 만드는 것을 마저 만들어 먼저 보인다
         else:
@@ -1750,6 +1797,13 @@ class LabView(QWidget):
         self.canvas.set_scene(geometry, agents, channels=list(spec.actuator_channels), view=view_box(spec.file))
         self.canvas.set_population(list(msg["trajectories"]), ranks=ranks, champion=int(msg["representative"]))
         self.canvas.set_overlay([])
+        if self._inspect_index is not None or self._inspect_msg is not None:
+            # 앞 세대 개체를 들여다보던 중: 캔버스가 그 개체를 더 재생하지 않으므로 검사 칸·레이를 닫는다(늦게 온 검사 결과는
+            # _replay_done이 버린다). 뇌 원천은 아래에서 함께 정리한다.
+            self._inspect_index = None
+            self._inspect_msg = None
+            self.inspect.hide()
+            self.canvas.set_rays(None)
         if self._brain_play is not None and self._brain_play.get("inspect"):
             # 앞 세대에서 클릭 검사한 개체: 캔버스가 더는 그 개체를 재생하지 않는다(뇌는 이 세대 대표 ②로)
             self._brain_play = None
@@ -1764,9 +1818,10 @@ class LabView(QWidget):
         return build_scene(spec, self.layout, population, trial)
 
     def _next_scene(self) -> None:
-        """기다리는 관전 세대의 장면을 하나씩 차례로 백그라운드에서 만든다(세대 순서를 지킨다)."""
+        """기다리는 관전 세대의 장면을 하나씩 차례로 백그라운드에서 만든다(세대 순서를 지킨다). 「학습 먼저」로 재생 중이면
+        지금 재생이 끝나기 조금 전까지 미룬다(_scene_later: _tick이 다시 부른다)."""
         if (self._scene_thread is not None or self._closing or not self._scene_jobs or self.spec is None
-                or self.layout is None):
+                or self.layout is None or self._scene_later()):
             return
         msg = self._scene_jobs[0]
         seed, track = msg["trial"]
@@ -1779,8 +1834,32 @@ class LabView(QWidget):
         self._scene_thread = th
         th.start()
 
+    def _scene_later(self) -> bool:
+        """「학습 먼저」로 관전 세대를 재생하는 중이면 다음 장면은 아직 만들지 않는다(v6.0 검토 고침, 설계 T21 「마지막 하나만 장면을
+        만든다」): 다음에 보일 장면이 이미 있거나, 지금 재생이 끝나기까지(실제 시간) SKIP_SCENE_LEAD_S(또는 마지막 장면 만들기
+        시간의 두 배)보다 많이 남았다. 그 사이에 온 세대는 기다리는 자리를 바꿔 차지할 뿐 장면을 만들지 않는다. 늦게 시작해 재생
+        끝까지 다 만들지 못하면 재생이 그만큼(장면 만들기 시간 안) 길어질 뿐이다(_skip_due는 만든 장면이 있어야 끝낸다)."""
+        if self.pace != PACE_SKIP or self.view_mode != "live" or self.playing is None:
+            return False
+        if self.queue:
+            return True
+        return self._live_left() > max(SKIP_SCENE_LEAD_S, 2.0 * self._scene_build_s)
+
+    def _live_left(self) -> float:
+        """지금 관전 재생이 끝나기까지 남은 실제 시간(초): 다음 세대가 준비되어 있다고 칠 때(_skip_due의 규칙, 들여다보는
+        중이면 가장 긴 궤적까지)."""
+        speed = float(max(1, self.speed))
+        left = (self.canvas.duration() + 0.5 - self.play_t) / speed
+        if not self._inspecting_playing():
+            left = min(left, (self._skip_end - self.play_t) / speed,
+                       SKIP_MAX_VIEW - (time.monotonic() - self._live_started))
+        return left
+
     def _scene_done(self, tag: Any, result: Any) -> None:
         seq, msg, spec = tag
+        th = self._scene_thread
+        if th is not None and th.seconds is not None and not isinstance(result, Exception):
+            self._scene_build_s = th.seconds
         self._scene_thread = None
         if seq == self._scene_seq and self._scene_jobs and self._scene_jobs[0] is msg:
             self._scene_jobs.popleft()
@@ -1825,6 +1904,8 @@ class LabView(QWidget):
                                                                latest=self.generation))
             else:
                 self.canvas.set_hud(S.LAB_HUD_LIVE.format(gen=gen, t=self.play_t, speed=self.speed))
+            if self._scene_jobs and self._scene_thread is None:
+                self._next_scene()  # 「학습 먼저」: 지금 재생이 끝나기 조금 전이면 다음 장면을 만들기 시작한다(_scene_later)
         elif self.view_mode == "fast":
             self.canvas.set_hud(S.LAB_HUD_FAST.format(gen=self._fast_last, t=self.play_t))
         elif self.view_mode == "replay":
@@ -1844,6 +1925,7 @@ class LabView(QWidget):
                 self._play_next()
             else:
                 self._timer.stop()
+                self._next_scene()  # 미뤄 둔 장면이 있으면 지금 만든다(화면이 쉰다)
                 live = self._brain_live
                 if live is not None and live["rep"] is None and self._brain_job is not live:
                     # 재생이 끝날 때까지 추적이 없었다(뇌 그림이 안 보였다 등): 늦게 보여도 다시 돌 수 없으니 ②를 놓고
@@ -1861,7 +1943,13 @@ class LabView(QWidget):
         쓰지 않는다."""
         if self.pace != PACE_SKIP or self.view_mode != "live" or self.playing is None or not self.queue:
             return False
+        if self._inspecting_playing():
+            return False  # 이 세대의 개체를 들여다보는 중: v3.1처럼 가장 긴 궤적까지 본다(학습은 기다리지 않는다)
         return self.play_t >= self._skip_end or time.monotonic() - self._live_started >= SKIP_MAX_VIEW
+
+    def _inspecting_playing(self) -> bool:
+        """재생 중인 관전 세대의 개체를 클릭해 들여다보는 중이다(검사 칸이 보이거나 그 재생을 기다림)."""
+        return self._inspect_msg is not None and self._inspect_msg is self.playing
 
     # ------------------------------------------------------------------
     # 다시 시뮬레이션: 고속 모드 챔피언, 타임라인, 1세대 vs 지금, 클릭 검사
@@ -1914,6 +2002,9 @@ class LabView(QWidget):
         seq, (kind, info) = tag
         if seq != self._replay_tag:
             return  # 더 새로운 요청이 있다
+        if kind == "inspect" and not self._inspect_shown():
+            self._inspect_msg = None
+            return  # 그 개체의 세대가 캔버스에서 사라졌다(다음 세대 재생, 고속으로 바꿈 등): 검사 결과를 붙이지 않는다
         if isinstance(result, Exception):
             # 그 몸 수치로 조립할 수 없는 개체(v2 설계 4.9)는 그렇다고 앞에 붙인다. 모르는 예외 글은 「자세히」로(v3 설계 D26)
             built = S.PLAY_BODY_BUILD_FAILED + "\n" + str(result) if isinstance(result, EpisodeBuildError) else None
@@ -2104,12 +2195,20 @@ class LabView(QWidget):
             # 타임라인·겹쳐 보기 재생만 멈춘다. 관전 중인 세대는 계속 재생해야 끝 알림(played)이 가서 학습이 이어진다.
             self._timer.stop()
 
+    def _inspect_shown(self) -> bool:
+        """클릭 검사한 개체의 관전 세대가 아직 캔버스에 있다(재생 중이거나, 재생이 끝나 그대로 남음)."""
+        m = self._inspect_msg
+        if m is None or self.view_mode != "live":
+            return False
+        return self.playing is m or (self.playing is None and self._last_played is m)
+
     def _inspect(self, index: int) -> None:
         msg = self.playing
         if msg is None and self.view_mode == "live":
             msg = self._last_played  # 재생이 끝나 화면에 남은 세대
         if msg is None or self.layout is None:
             return
+        self._inspect_msg = msg  # 이 세대를 재생하는 동안은 「학습 먼저」도 재생을 자르지 않는다(_skip_due)
         seed, track = msg["trial"]
         gen = int(msg["generation"])
         spec = self.spec_for(msg.get("env_version"), gen)
@@ -2124,6 +2223,7 @@ class LabView(QWidget):
 
     def _close_inspect(self) -> None:
         self._inspect_index = None
+        self._inspect_msg = None
         self.inspect.hide()
         self.canvas.set_rays(None)
         if self.view_mode == "live":
@@ -2358,7 +2458,8 @@ class LabView(QWidget):
         self._brain_job = job
         self._brain_tag += 1
         th = _ReplayThread(("brain", self._brain_tag, which, job),
-                           [(job["spec"], self.layout, job["genome"], job["trial"], TRACE_BRAIN)], self)
+                           [(job["spec"], self.layout, job["genome"], job["trial"], TRACE_BRAIN)], self,
+                           yield_steps=True)  # 배경 작업: 화면이 바쁘면 스텝 사이에서도 쉰다(v6.0)
         th.finished_job.connect(self._brain_done)
         th.finished.connect(lambda t=th: self._brain_thread_finished(t))
         self._threads.append(th)

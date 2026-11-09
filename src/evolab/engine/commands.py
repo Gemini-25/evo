@@ -521,7 +521,9 @@ def bench_command(args: Any) -> int:
     say(S.BENCH_PLAYBACK.format(sec=sec, wait=sec + PLAYBACK_TAIL_S))
     from evolab.world.physics2d import episode as runtime
 
-    say(S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_ON if runtime._CP_FAST else S.BENCH_FAST_OFF))
+    # 깃발(cp* 함수를 불러옴)만이 아니라 이 환경의 Episode가 정말 모든 포인터를 얻는지(자체 점검 「빠른 계산 길」과 같은 판단)
+    fast = runtime._CP_FAST and runtime.fastpath_in_use(spec, trials[0])
+    say(S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_ON if fast else S.BENCH_FAST_OFF))
 
     for w in counts:
         with WorkerPool(w) as pool:

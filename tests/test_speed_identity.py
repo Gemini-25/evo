@@ -7,7 +7,7 @@
   돌려 관측·실제 출력·끝남을 스텝마다, 「깊이」 쌍은 모든 물체의 위치·속도·각도·각속도, 궤적 자세, 센서 원래 값, 레이,
   블록 값, 값 사전까지 스텝마다 비교한다. 행동은 공개 step(ndarray 행)과 새 내부 함수 step_values(tolist() 행)로 둘 다 넣는다.
   같은 비교를 얼린 평가기(evaluate_v31)의 Episode만 바꿔 끼워 궤적 기록(3쌍마다 1)·관찰 코드 0·1·2(+ 격자 틀) 길로도 한다
-  (평가기 쪽 비교 evaluate 대 evaluate_v31은 E 묶음의 tests/test_eval_window.py·T1 블록).
+  (평가기 쪽 비교 evaluate 대 evaluate_v31은 E 묶음의 tests/test_eval_identity.py).
 - T2(Episode): 몸 수치 때문에 조립되지 않는 쌍(꼬인 착륙선, 다각형 날개 글라이더 — tests/test_build_failure.py의 시험 환경)이
   섞인 묶음과 처음 몸 실패(오류)가 오라클과 같은 오류 글·같은 결과.
 - T9: 재생 길 — engine/replay.replay(추적 없음·"brain"·True), app/play/record.replay(사람 기록), 직접 조종 스텝 열(키 조합

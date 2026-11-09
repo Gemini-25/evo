@@ -12,6 +12,10 @@ v3.0 점검 넷(설계 4.11, D16, D25): 도움말 쪽, 기록 폴더 쓰기와 �
 v3.1 점검 하나(설계 D59): 「내보내기」 — 착륙선 내장 예제를 영 유전자로 다시 시뮬레이션한 앞 2초를 내보내기 자식 프로세스(화면의
 「내보내기…」와 같은 spawn 자식, 묶인 exe에서는 같은 exe)로 내장 MP4·폰 재생 파일로 만들어 상자 구조·프레임 수·자료 왕복을
 확인하고, Media Foundation 시험 결과를 정보로 적는다(없어도 통과). 창이 필요 없어 --no-gui에서도 돈다.
+
+v6.0 점검 하나(v6 설계 D19, 5.6): 「빠른 계산 길」 — 내장 예제 여섯의 같은 평가를 물리 엔진 C 함수를 바로 부르는 길과 보통 길
+(공개 pymunk API)로 두 번 돌려 결과가 바이트까지 같은지 본다. 길이 꺼져 있으면(이 pymunk 판에 내부 함수가 없음) 안내하고
+통과하되, CI(EVOLAB_SELFTEST_REQUIRE_FASTPATH=1 또는 GitHub Actions)에서는 실패로 본다. 창이 필요 없어 --no-gui에서도 돈다.
 """
 
 from __future__ import annotations
@@ -405,6 +409,91 @@ def _two_wheel_body(spec: Any) -> np.ndarray:
     return np.array([on.get(p.id, p.value) for p in sy.evolved_params(spec.file)], dtype=np.float64)
 
 
+# ---------------------------------------------------------------------------
+# v6.0 점검: 빠른 계산 길 (물리 엔진 C 함수를 바로 부르는 길과 보통 길의 결과 비교)
+# ---------------------------------------------------------------------------
+
+
+FASTPATH_REQUIRED_ENV: Final = "EVOLAB_SELFTEST_REQUIRE_FASTPATH"
+"""1이면 「빠른 계산 길」이 꺼진 것도 실패로 본다. GitHub Actions 안(GITHUB_ACTIONS=true)에서도 그렇다(v6 설계 8.6: 꺼지면
+사용자에게는 안내, CI에서는 실패. 묶은 exe에 pymunk._chipmunk_cffi가 빠지면 W2가 잡는다)."""
+FASTPATH_GENOMES: Final = 3
+"""내장 예제마다 처음 유전자 둘레의 무작위 유전자 수(학습 시험 2개씩, 3쌍마다 궤적, 2쌍마다 행동 관찰)."""
+FASTPATH_TRIALS: Final = 2
+FASTPATH_SEED: Final = 6
+
+
+def fastpath_required() -> bool:
+    return (os.environ.get(FASTPATH_REQUIRED_ENV, "").strip() == "1"
+            or os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true")
+
+
+def _eval_fingerprint(res: Any) -> list[tuple[str, bytes]]:
+    """EvalResult의 결과 칸 전부(점수·스텝·블록·가중 블록·행동 평균·종료 사건·결과·궤적·관찰)를 칸 이름과 바이트로.
+    걸린 시간(nn_seconds·sim_seconds)만 뺀다."""
+    out = [(name, getattr(res, name).tobytes()) for name in ("scores", "steps", "blocks", "action_abs", "weighted")]
+    out += [("end_events", repr(res.end_events).encode()), ("outcomes", repr(res.outcomes).encode())]
+    for k, tr in enumerate(res.trajectories or []):
+        if tr is not None:
+            meta = repr((tr.every, tr.dt, tr.end_step)).encode()
+            out.append((f"trajectory {k}", tr.poses.tobytes() + tr.outputs.tobytes() + meta))
+    for k, ob in enumerate(res.observations or []):
+        if ob is not None:
+            arrays = b"".join(getattr(ob, n).tobytes() for n in ("hist", "out_sum", "cells", "counts"))
+            out.append((f"observation {k}", arrays + repr((ob.steps, ob.outside)).encode()))
+    return out
+
+
+def _fastpath_in_use(spec: Any) -> bool:
+    """이 환경의 Episode가 정말 C 함수 길을 쓰는가(episode.fastpath_in_use: 모든 물체의 cpBody 포인터, 둘째 스텝부터 cpSpaceStep,
+    모터가 있으면 모터 포인터). _CP_FAST가 참이어도 pymunk 내부 이름이 바뀐 판이면 Episode가 공개 API 길로 돌아간다(결과는 같고
+    느림). bench 「pymunk C 함수 바로 부르기」 줄과 같은 판단이다."""
+    from evolab.world.physics2d.episode import Trial, fastpath_in_use
+
+    return fastpath_in_use(spec, Trial(FASTPATH_SEED))
+
+
+def _check_fastpath() -> str:
+    """「빠른 계산 길」(v6 설계 D19, 5.6): 내장 예제 여섯마다 같은 평가(무작위 유전자 × 학습 시험, 궤적·관찰 섞음)를 C 함수
+    길과 보통 길(공개 pymunk API, Episode를 만들 때 _CP_FAST를 거짓으로)로 두 번 돌려 모든 결과 칸이 바이트까지 같은지 본다.
+    길이 꺼져 있으면 안내만 하고 통과한다(결과는 같고 느릴 뿐). CI(fastpath_required)에서는 꺼짐도 실패."""
+    import pymunk
+
+    from evolab.engine.evaluate import evaluate
+    from evolab.engine.trainer import training_trials
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import load_env
+    from evolab.world.physics2d import episode as episode_mod
+
+    specs = [(name, load_env(paths.builtin_env_dir() / name)) for name in REQUIRED_EXAMPLES]
+    if not episode_mod._CP_FAST or not all(_fastpath_in_use(spec) for _name, spec in specs):
+        if fastpath_required():
+            raise SelfTestError(S.SELFTEST_FASTPATH_OFF)
+        return f"{S.SELFTEST_FASTPATH_OFF}\npymunk {pymunk.version}"
+    lines = [S.SELFTEST_FASTPATH_SAME, f"pymunk {pymunk.version}"]
+    for name, spec in specs:
+        layout = layout_for(spec)
+        rng = np.random.default_rng(FASTPATH_SEED)
+        genomes = layout.initial()[None, :] + 0.5 * rng.standard_normal((FASTPATH_GENOMES, layout.dim))
+        trials = training_trials(spec, FASTPATH_SEED, 0, FASTPATH_TRIALS)[:FASTPATH_TRIALS]
+        pairs = [(i, t) for i in range(FASTPATH_GENOMES) for t in trials]
+        record = [k % 3 == 0 for k in range(len(pairs))]
+        observe = [k % 2 for k in range(len(pairs))]
+        fast = evaluate(spec, layout, genomes, pairs, record=record, observe=observe)
+        episode_mod._CP_FAST = False
+        try:
+            public = evaluate(spec, layout, genomes, pairs, record=record, observe=observe)
+        finally:
+            episode_mod._CP_FAST = True
+        a, b = _eval_fingerprint(fast), _eval_fingerprint(public)
+        diff = [na for (na, va), (nb, vb) in zip(a, b, strict=False) if na != nb or va != vb]
+        if diff or len(a) != len(b):
+            raise SelfTestError(S.SELFTEST_FASTPATH_DIFF.format(detail=f"{name}: {', '.join(diff) or 'fields'}"))
+        lines.append(f"{name}: pairs={len(pairs)}, steps={int(fast.steps.sum())}, "
+                     f"checksum={_checksum(np.frombuffer(b''.join(v for _n, v in a), dtype=np.uint8))}")
+    return "\n".join(lines)
+
+
 def _headless_offscreen() -> None:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -762,6 +851,7 @@ def selftest_checks(workers: int, check_gui: bool = True, tour: str = "gen1") ->
         (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(workers)),
         (S.SELFTEST_CHECK_ENV, _check_builtin_env),
         (S.SELFTEST_CHECK_BUNDLE, _check_bundle_files),
+        (S.SELFTEST_CHECK_FASTPATH, _check_fastpath),
         (S.SELFTEST_CHECK_EXPORT, _check_export),
         (S.SELFTEST_CHECK_HELP, _check_help),
         (S.SELFTEST_CHECK_LOGS, _check_logs),

@@ -19,6 +19,7 @@ from evolab.app.lab import view as lab_view
 from evolab.app.lab.view import COLOR_NOW, SPEEDS, LabView
 from evolab.engine import seeds
 from evolab.engine.pool import WorkerPool, default_workers
+from evolab.engine.session import PACE_EVERY
 from evolab.engine.trainer import TrainConfig, Trainer
 from evolab.runs.catalog import clone_settings
 from evolab.runs.store import RunStore
@@ -262,11 +263,12 @@ def test_save_video_cancel_keeps_existing_file(qtbot: Any, lab: LabView, tmp_pat
 
 def test_spectate_buttons_inspect_after_playback_and_reload_marks(qtbot: Any, lab: LabView) -> None:
     lab.rb_spectate.setChecked(True)
+    lab.set_pace(PACE_EVERY)  # v6.0: 기본 관전 방식이 「학습 먼저」라 이 시험이 보는 기다리는 방식을 고른다
     lab.speed_combo.setCurrentIndex(3)  # 8배
     lab.max_generations.setValue(2)
     assert lab.start_new()
     qtbot.waitUntil(lambda: len(lab.rows) >= 1, timeout=120000)
-    assert lab.state == "running"  # 관전 모드: 2세대는 1세대 재생이 끝나야 끝난다
+    assert lab.state == "running"  # 관전 모드(세대마다 다 보기): 2세대는 1세대 재생이 끝나야 끝난다
     assert lab.btn_timeline.isEnabled() and lab.btn_versus.isEnabled()
     wait_state(qtbot, lab, "finished")
     qtbot.waitUntil(lambda: lab.playing is None and not lab.queue and not lab._timer.isActive(), timeout=120000)
@@ -315,6 +317,7 @@ def test_body_gene_spectate_scene_is_built_off_the_gui_thread(qtbot: Any, lab: L
     lab.popsize.setValue(6)
     lab.trials.setValue(1)
     lab.rb_spectate.setChecked(True)
+    lab.set_pace(PACE_EVERY)  # v6.0: 「세대마다 다 보기」여야 두 세대를 모두 재생한다(기본 「학습 먼저」는 test_pace.py)
     lab.speed_combo.setCurrentIndex(3)
     lab.max_generations.setValue(2)
     assert lab.start_new()

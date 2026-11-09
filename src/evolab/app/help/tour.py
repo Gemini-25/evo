@@ -71,8 +71,9 @@ HINT_MS: Final = 10_000
 TROUBLE_PAGE: Final = "trouble"
 REPORT_REASON: Final = "tour"
 SETTINGS_KEYS_TOUCHED: Final = ("onboarding/state", "onboarding/version", "lab/mode", "lab/speed", "lab/workers",
-                                "lab/fast_interval")
-"""안내 중 바뀔 수 있는 설정 키(T8): 안내 키와 실험실 보기 칸(관전·배속을 바꾸면 실험실이 보기 칸 넷을 함께 저장한다).
+                                "lab/fast_interval", "lab/pace")
+"""안내 중 바뀔 수 있는 설정 키(T8): 안내 키와 실험실 보기 칸(관전·배속을 바꾸면 실험실이 보기 칸 다섯을 함께 저장한다. v6.0:
+「관전 방식」 lab/pace).
 대시보드가 「보는 재미」 쪽이었으면 ⑤ 준비가 「학습 그래프」 쪽으로 바꾸며 dashboard/* 키도 저장한다."""
 
 

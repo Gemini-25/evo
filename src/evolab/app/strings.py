@@ -1822,8 +1822,9 @@ ONB_STEP_WAIT_SLOW: Final = "처음 실행은 윈도우 보안 검사 때문에 
 ONB_STEP_WAIT_STUCK: Final = "{seconds}초가 지나도 1세대가 오지 않습니다. 더 기다리거나 문제 해결 도움말을 보세요."
 ONB_STUCK_WAIT: Final = "더 기다리기"
 ONB_STUCK_HELP: Final = "문제 해결 보기"
-ONB_STEP_WATCH: Final = ("지금 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
-                         "재생을 빨리 보고 싶으면 「{speed}」을 4배로 바꿔 보세요. 학습은 재생과 상관없이 계속됩니다.")  # v6.0: 관전 기본 「학습 먼저」
+ONB_STEP_WATCH: Final = ("처음 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
+                         "학습은 재생과 상관없이 계속됩니다. 화면은 곧 새 세대로 넘어갑니다. "
+                         "재생을 빨리 보려면 「{speed}」을 4배로 바꿔 보세요.")  # v6.0: 관전 기본 「학습 먼저」(15초 안에 새 세대)
 ONB_SPEED_SET: Final = "4배로 바꾸기"
 ONB_STEP_PROGRESS: Final = ("세대마다 멀리 간 차를 닮은 새 차 {pop}대가 다시 달립니다. 「{trend}」 그래프의 평균 선을 보세요. "
                             "{goal}세대가 되면 다음으로 넘어갑니다.")
@@ -2447,7 +2448,7 @@ SELFTEST_ERR_TOUR_FAILED: Final = "처음 실행 안내가 끝까지 가지 못�
 SELFTEST_ERR_CRASH_NOT_LOGGED: Final = "일부러 멈춘 자식 프로세스의 치명적 오류가 faults.log에 남지 않았습니다: {detail}"  # EVOLAB_SELFTEST_CRASH=1(W2)
 
 # ---- v3.0 검토 수정(안내 실패 글·④ 배속·실험실 빈 상태, app/help/tour.py·hints.py) ----
-ONB_STEP_WATCH_FAST: Final = ("지금 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
+ONB_STEP_WATCH_FAST: Final = ("처음 보이는 것이 1세대입니다. 아직 배운 것이 없어 대부분 멈추거나 뒤집힙니다. "
                               "잠시 뒤 다음 단계로 넘어갑니다.")           # ④: 배속이 이미 4배 이상일 때(설계 D10)
 ONB_FAILED_NO_DETAIL: Final = "학습 프로세스를 띄우지 못했습니다"          # 실패 카드의 {reason}: 까닭 글이 오지 않았을 때
 HINT_LAB_IDLE_ANY: Final = "「{start}」을 누르면 개체 {pop}개가 「{env}」에서 동시에 연습을 시작합니다."  # 실험실 빈 상태(모든 환경)
@@ -2570,7 +2571,9 @@ EXP_PROCESS_DIED_GIF_HINT: Final = "GIF로 저장해 보세요."  # MP4 내보�
 # v6.0 빠르게 (0단계 묶음: v6 설계 6절의 v6.0 줄, 명세 부록 A90~). v6.1(자라는 뇌) 줄은 v6.1 0'단계에서 더한다.
 # 관전 기본은 「학습 먼저」(PACE_DEFAULT = "skip", 사용자 결정 G1·Q1). 위 제자리에서 바꾼 것(같은 이름을 두 번 쓰지 않음):
 # - BENCH_SINGLE: 「단일 코어(창 {window})」 — engine/commands.py bench가 window=를 넘긴다(E 묶음).
-# - ONB_STEP_WATCH: 학습은 재생과 상관없이 계속된다(처음 실행 안내 ④).
+# - ONB_STEP_WATCH: 학습은 재생과 상관없이 계속된다(처음 실행 안내 ④). v6.0 검토: 「학습 먼저」는 15초 안에 새 세대로 넘어가므로
+#   ONB_STEP_WATCH·ONB_STEP_WATCH_FAST의 「지금 보이는 것이 1세대」를 「처음 보이는 것이 1세대」로 바꾸고 새 세대로 넘어간다고 적었다
+#   (설계 6절 글과 다름, 보고서).
 # - HELP_PAGES 「실험실」 쪽 「관전과 고속」 절, 「문제가 생겼을 때」 쪽 「느릴 때」 절 맨 앞 문단. 설계 글에서 자리 바로 뒤의 조사
 #   (「…」를·과·으로)만 「칸」·「항목」·「단추」·「방식」으로 바꿨다(v3 D19: 자리 뒤에 조사를 붙이지 않음, 채운 글의 받침과 어긋남).
 # - HELP_TIPS["lab.spectate"]: 「학습은 재생이 끝날 때까지 기다립니다」를 뺐다(기본이 「학습 먼저」라 맞지 않음, 설계 밖).

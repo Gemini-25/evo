@@ -4,9 +4,11 @@
   무시. waited는 「학습 먼저」·고속에서 0, 「세대마다」에서 가짜 화면이 늦게 보낸 만큼.
 - T20 같은 실행을 「학습 먼저」·「세대마다 다 보기」(가짜 화면이 늦게 played)·고속으로 돌려 통계(시간 열 빼고)·챔피언·세대 대표 npz·
   체크포인트(경과 시간 빼고)가 바이트 같다.
-- T21 실험실(가짜 세션 메시지): 「학습 먼저」의 재생 대기열 하나, 버린 세대마다 played, 몸 유전자 환경은 마지막 세대만 장면을 만듦,
-  재생 끝 규칙(대표 시험 0번 끝 + 0.5초 / SKIP_MAX_VIEW초 / 기다리는 세대가 없으면 가장 긴 궤적까지), HUD, 고속이면 칸이 흐림.
-- T22 기다림 알림: 「세대마다」에서 최근 10세대 기다림 몫 > 0.5면 실행마다 한 번, 「학습 먼저」에서는 안 뜸.
+- T21 실험실(가짜 세션 메시지): 「학습 먼저」의 재생 대기열 하나, 버린 세대마다 played, 몸 유전자 환경은 마지막 세대만 장면을 만듦
+  (v6.0 검토: 재생이 끝나기 조금 전에야 만들기 시작해 장면 만들기가 세대 사이에 끝나도 보인 세대마다 하나), 재생 끝 규칙(대표 시험
+  0번 끝 + 0.5초 / SKIP_MAX_VIEW초 / 기다리는 세대가 없으면 가장 긴 궤적까지, 그 세대 개체를 들여다보는 중이면 자르지 않음), HUD,
+  고속이면 칸이 흐림.
+- T22 기다림 알림: 「세대마다」에서 최근 10세대 기다림 몫 > 0.5면 실행마다 한 번, 「학습 먼저」에서는 안 뜸, 고속으로 바꾸면 지움.
 - T23 PACE_DEFAULT와 설정: lab/pace가 없으면 기본값, 있으면 그 값, 기본이 "skip"이고 lab/mode가 있으면 알림 한 번(lab/pace_notice).
 """
 
@@ -314,9 +316,44 @@ def generation_message(view: LabView, gen: int, rep_seconds: float = 3.0, longes
 
 
 def tick_at(view: LabView, t: float) -> None:
-    """재생 시각을 t초 바로 앞에 두고 한 틱(틱이 실제 시간만큼 조금 더한다)."""
+    """재생 시각을 t초에 두고 한 틱. 틱은 앞 틱 뒤로 흐른 실제 시간을 더하므로 시계를 바로 앞에서 다시 시작한다(실제 시간에 기대지
+    않게: 앞 틱과 이 틱 사이에 GC 등으로 100ms가 넘게 멈춰도 경계 3.4 대 3.5가 그대로)."""
     view.play_t = t
+    view._clock.restart()
     view._tick()
+
+
+def freeze_clock(view: LabView) -> None:
+    """재생 시각을 테스트만 움직인다(tick_at): 틱 타이머가 저절로 돌지 않게."""
+    view._timer.setInterval(10**8)
+
+
+def gene_message(view: LabView, gen: int, **kw: Any) -> dict[str, Any]:
+    """몸 유전자 환경의 관전 세대 메시지: 가짜 집단의 마지막 유전자에 세대 번호를 적는다(장면 만들기 스파이가 읽음)."""
+    msg = generation_message(view, gen, **kw)
+    X = np.array(msg["population"], dtype=np.float64)
+    X[:, -1] = gen / 1000.0
+    msg["population"] = X
+    return msg
+
+
+def scene_spy(monkeypatch: pytest.MonkeyPatch, gate: threading.Event | None = None) -> tuple[list[int], list[int]]:
+    """build_scene을 감싸 (시작한 세대, 끝까지 만든 세대) 목록을 돌려준다. gate가 있으면 만들기 전에 그것을 기다린다."""
+    started: list[int] = []
+    built: list[int] = []
+    real = lab_view.build_scene
+
+    def spy(spec: Any, layout: Any, population: Any, trial: Any, cancel: Any = None) -> Any:
+        gen = int(round(float(np.asarray(population)[0, -1]) * 1000))
+        started.append(gen)
+        if gate is not None:
+            gate.wait(30)
+        out = real(spec, layout, population, trial, cancel=cancel)
+        built.append(gen)
+        return out
+
+    monkeypatch.setattr(lab_view, "build_scene", spy)
+    return started, built
 
 
 def test_skip_keeps_only_the_newest_waiting_generation_and_ends_playback_early(qtbot: Any, lab: Any) -> None:
@@ -388,71 +425,126 @@ def test_fast_mode_greys_the_pace_field(qtbot: Any, lab: Any) -> None:
 
 def test_body_gene_env_builds_a_scene_only_for_the_newest_generation(qtbot: Any, lab: Any,
                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """T21: 재생 중 온 세대 5개 중 마지막 하나만 장면을 만든다. 재생 중에는 지금 재생이 끝나기 조금 전(SKIP_SCENE_LEAD_S)에야
+    만들기 시작하므로 그 사이 온 세대는 기다리는 자리를 바꿔 차지하고 played만 보낸다(v6.0 검토 고침)."""
     assert lab.load_env(HILL)
     assert lab.layout is not None and lab.layout.n_body > 0
-    fed = threading.Event()
-    built: list[int] = []
-    real = lab_view.build_scene
-
-    def spy(spec: Any, layout: Any, population: Any, trial: Any, cancel: Any = None) -> Any:
-        gen = int(round(float(np.asarray(population)[0, -1]) * 1000))  # 가짜 집단의 마지막 유전자에 세대 번호를 적었다
-        if gen > 1:
-            fed.wait(30)  # 다섯 세대를 다 넣을 때까지(그 사이 멈추라는 요청이 온다)
-        out = real(spec, layout, population, trial, cancel=cancel)
-        built.append(gen)
-        return out
-
-    monkeypatch.setattr(lab_view, "build_scene", spy)
-
-    def message(gen: int) -> dict[str, Any]:
-        msg = generation_message(lab, gen)
-        X = np.array(msg["population"], dtype=np.float64)
-        X[:, -1] = gen / 1000.0
-        msg["population"] = X
-        return msg
-
-    lab._on_generation(message(1))
-    qtbot.waitUntil(lambda: lab.playing is not None, timeout=60000)
+    freeze_clock(lab)
+    started, built = scene_spy(monkeypatch)
+    lab._on_generation(gene_message(lab, 1, rep_seconds=10.0))
+    qtbot.waitUntil(lambda: lab.playing is not None, timeout=60000)  # 화면이 쉬고 있으면 바로 만든다
     for g in range(2, 7):
-        lab._on_generation(message(g))
-    fed.set()
+        lab._on_generation(gene_message(lab, g, rep_seconds=10.0))
+        tick_at(lab, 0.5 * (g - 1))  # 대표 궤적 10초: 재생이 끝나기(10.5초)까지 아직 멀다
+        assert lab._scene_thread is None
+    assert [int(m["generation"]) for m in lab._scene_jobs] == [6] and not lab.queue
+    assert played(lab) == [2, 3, 4, 5]  # 버린 세대마다 바로 played
+    assert started == built == [1]
+    tick_at(lab, 10.5 - lab_view.SKIP_SCENE_LEAD_S / 2)  # 끝나기 조금 전: 가장 새 세대의 장면을 만든다
     qtbot.waitUntil(lambda: [int(m["generation"]) for m in lab.queue] == [6], timeout=60000)
-    assert built == [1, 6]  # 장면은 마지막 세대만(2세대 장면 만들기는 멈췄고 3~5세대는 시작도 하지 않았다)
-    assert played(lab) == [2, 3, 4, 5]
-    assert int(lab.playing["generation"]) == 1
+    assert started == built == [1, 6] and int(lab.playing["generation"]) == 1
+    tick_at(lab, 10.5 + 0.01)
+    assert int(lab.playing["generation"]) == 6 and played(lab) == [2, 3, 4, 5, 1]
+
+
+def test_skip_builds_one_scene_per_shown_generation(qtbot: Any, lab: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """v6.0 검토: 장면 만들기가 다음 세대가 오기 전에 끝나도(실제 학습: 세대 2초, 만들기 0.2초, 재생 최대 15초) 보이지 않을 장면을
+    만들지 않는다. 예전에는 세대마다 만들고 다음 세대가 오면 버려 보인 세대의 몇 배를 만들었다(바퀴 차 1배 45초: 21번 중 3번)."""
+    assert lab.load_env(HILL)
+    freeze_clock(lab)
+    started, built = scene_spy(monkeypatch)
+    lab._on_generation(gene_message(lab, 1, rep_seconds=10.0))
+    qtbot.waitUntil(lambda: lab.playing is not None, timeout=60000)
+    gen = 1
+    shown: list[int] = []
+    for _cycle in range(3):
+        shown.append(int(lab.playing["generation"]))
+        for k in range(4):  # 재생 하나 동안 세대 넷: 만들기가 돌았다면 다음 세대 전에 끝난다
+            gen += 1
+            lab._on_generation(gene_message(lab, gen, rep_seconds=10.0))
+            tick_at(lab, 1.0 + 2.0 * k)
+            qtbot.waitUntil(lambda: lab._scene_thread is None, timeout=60000)
+        tick_at(lab, 10.0)  # 재생이 끝나기 0.5초 전
+        qtbot.waitUntil(lambda: bool(lab.queue), timeout=60000)
+        tick_at(lab, 10.5 + 0.01)
+    shown.append(int(lab.playing["generation"]))
+    assert shown == [1, 5, 9, 13]
+    assert started == built == shown  # 보인 세대마다 장면 하나
+    assert sorted(played(lab)) == list(range(1, 13))  # 건너뛴 세대도 모두 played(학습·보는 재미 따라가기)
 
 
 def test_idle_screen_finishes_the_scene_it_is_building(qtbot: Any, lab: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """화면이 쉬고 있을 때(재생 중 아님) 만들던 장면은 새 세대가 와도 끝까지 만든다: 세대가 장면 만들기보다 빨리 와도 화면이
-    다음 세대를 보인다(설계 밖 보강, 보고서)."""
+    다음 세대를 보인다(설계 밖 보강, 보고서). 그다음 세대의 장면은 1세대 재생이 끝나기 조금 전에 만든다."""
     assert lab.load_env(HILL)
+    freeze_clock(lab)
     gate = threading.Event()
-    real = lab_view.build_scene
-    built: list[int] = []
-
-    def spy(spec: Any, layout: Any, population: Any, trial: Any, cancel: Any = None) -> Any:
-        gate.wait(30)
-        out = real(spec, layout, population, trial, cancel=cancel)
-        built.append(int(round(float(np.asarray(population)[0, -1]) * 1000)))
-        return out
-
-    monkeypatch.setattr(lab_view, "build_scene", spy)
-
-    def message(gen: int) -> dict[str, Any]:
-        msg = generation_message(lab, gen)
-        X = np.array(msg["population"], dtype=np.float64)
-        X[:, -1] = gen / 1000.0
-        msg["population"] = X
-        return msg
-
-    lab._on_generation(message(1))
-    lab._on_generation(message(2))
-    lab._on_generation(message(3))
+    started, built = scene_spy(monkeypatch, gate)
+    lab._on_generation(gene_message(lab, 1, rep_seconds=10.0))
+    lab._on_generation(gene_message(lab, 2, rep_seconds=10.0))
+    lab._on_generation(gene_message(lab, 3, rep_seconds=10.0))
     assert lab.playing is None and [int(m["generation"]) for m in lab._scene_jobs] == [1, 3]
     assert played(lab) == [2]
     gate.set()
+    qtbot.waitUntil(lambda: lab.playing is not None, timeout=60000)
+    assert built == [1] and int(lab.playing["generation"]) == 1
+    tick_at(lab, 1.0)
+    assert lab._scene_thread is None and [int(m["generation"]) for m in lab._scene_jobs] == [3]
+    tick_at(lab, 10.2)
     qtbot.waitUntil(lambda: built == [1, 3] and [int(m["generation"]) for m in lab.queue] == [3], timeout=60000)
+    assert int(lab.playing["generation"]) == 1 and started == [1, 3]
+
+
+def test_skip_does_not_cut_a_generation_while_one_of_its_individuals_is_inspected(qtbot: Any, lab: Any) -> None:
+    """v6.0 검토: 「학습 먼저」에서도 재생 중인 세대의 개체를 클릭해 들여다보는 동안은 그 세대를 자르지 않는다(v3.1처럼 가장 긴
+    궤적까지, 학습은 기다리지 않음). 다음 세대를 재생하기 시작하면 검사 칸·레이·겹쳐 그림을 닫는다."""
+    freeze_clock(lab)
+    lab._on_generation(generation_message(lab, 1))
+    tick_at(lab, 1.0)
+    lab._inspect(2)
+    qtbot.waitUntil(lambda: lab._inspect_index == 2, timeout=30000)
+    assert lab.inspect.isVisible() and len(lab.canvas._overlay) == 1
+    lab._on_generation(generation_message(lab, 2))
+    assert [int(m["generation"]) for m in lab.queue] == [2]
+    tick_at(lab, 3.0 + lab_view.SKIP_TAIL_S + 0.01)  # 대표 궤적 끝 + 0.5초: 들여다보지 않으면 여기서 끝난다
+    assert int(lab.playing["generation"]) == 1 and lab._inspect_index == 2 and lab.inspect.isVisible()
+    lab._live_started = time.monotonic() - lab_view.SKIP_MAX_VIEW - 0.01
+    tick_at(lab, 10.0)  # 실제 시간 상한도 들여다보는 동안은 쓰지 않는다
     assert int(lab.playing["generation"]) == 1
+    tick_at(lab, 20.0 + 0.5 + 0.01)  # 가장 긴 궤적 끝: 다음 세대로, 검사를 닫는다
+    assert int(lab.playing["generation"]) == 2 and played(lab) == [1]
+    assert lab._inspect_index is None and not lab.inspect.isVisible() and lab.canvas._overlay == []
+    assert lab.canvas._rays is None
+    # 검사를 닫았으면 다시 자른다
+    lab._on_generation(generation_message(lab, 3))
+    tick_at(lab, 3.0 + lab_view.SKIP_TAIL_S + 0.01)
+    assert int(lab.playing["generation"]) == 3
+
+
+def test_late_inspect_result_does_not_land_on_the_next_generation(qtbot: Any, lab: Any,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """v6.0 검토: 클릭 검사 재생이 끝나기 전에 그 세대가 캔버스에서 사라지면(다음 세대 재생) 늦게 온 결과를 붙이지 않는다.
+    결과를 기다리는 동안에도 「학습 먼저」는 그 세대를 자르지 않는다."""
+    freeze_clock(lab)
+    gate = threading.Event()
+    real = lab_view.replay
+    monkeypatch.setattr(lab_view, "replay", lambda *a, **k: (gate.wait(30), real(*a, **k))[1])
+    done: list[Any] = []
+    real_done = lab._replay_done
+    monkeypatch.setattr(lab, "_replay_done", lambda tag, result: (done.append(tag), real_done(tag, result)))
+    lab._on_generation(generation_message(lab, 1))
+    lab._on_generation(generation_message(lab, 2))
+    tick_at(lab, 3.3)
+    lab._inspect(2)  # 잘리기 0.2초 전에 클릭
+    tick_at(lab, 3.0 + lab_view.SKIP_TAIL_S + 0.01)
+    assert int(lab.playing["generation"]) == 1  # 검사 결과를 기다리는 동안 자르지 않는다
+    tick_at(lab, 20.0 + 0.5 + 0.01)
+    assert int(lab.playing["generation"]) == 2
+    gate.set()
+    qtbot.waitUntil(lambda: bool(done), timeout=30000)
+    assert lab._inspect_index is None and not lab.inspect.isVisible()
+    assert lab.canvas._overlay == [] and lab.canvas._rays is None
+    assert lab._brain_play is None or not lab._brain_play.get("inspect")
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +584,11 @@ def test_wait_hint_threshold_and_new_run(qtbot: Any, lab: Any) -> None:
     assert lab.status.text().endswith("\n" + S.LAB_PACE_WAIT_HINT.format(times=10.0))
     lab.rb_fast.setChecked(True)  # 고속에서는 기다림이 없다(세지 않음)
     assert not lab._wait_log
+    # 흐려진 「관전 방식」 칸을 바꾸라는 알림도 지운다(v6.0 검토), 고속 세대가 와도 다시 뜨지 않는다
+    assert S.LAB_PACE_WAIT_HINT.split("{")[0] not in lab.status.text() and lab._wait_note == ""
+    for g in range(11, 15):
+        lab._on_generation(generation_message(lab, g, waited=0.0, gen_seconds=1.0, trajectories=False))
+    assert S.LAB_PACE_WAIT_HINT.split("{")[0] not in lab.status.text()
 
 
 # ---------------------------------------------------------------------------

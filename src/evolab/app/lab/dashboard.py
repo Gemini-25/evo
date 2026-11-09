@@ -109,6 +109,10 @@ LOADING_REFRESH_S = 0.3
 PAINT_QUIET_S = 0.0
 """창을 다시 그린 뒤(UpdateRequest 처리, _PaintGuard) 배경 작업이 더 쉬는 시간(초). 관전 캔버스가 초당 60번 그리므로 0:
 그리는 동안만 쉬고 그림 사이에는 돈다(펌프 한 단계 뒤의 GUI_QUIET_S와 다르다)."""
+PUMP_HOLD_S = 0.5
+"""화면에 보이는 타일이 dirty가 되면(새 세대 등) 펌프가 그 타일들을 다 그릴 때까지 화면 프로세스의 배경 작업(관전 장면·세계
+그림 만들기, 다시 시뮬레이션)이 새 일을 시작하지 않게 잡아 두는 최대 시간(초, GuiPriority.hold, v6.0). 펌프가 보이는 dirty
+타일을 다 그리면 바로 푼다. 펌프 한 단계마다 다시 이만큼으로 늘린다."""
 
 _NAN = math.nan
 
@@ -2146,6 +2150,10 @@ class Dashboard(QWidget):
             else:
                 tile.refresh()
         if queued:
+            if self.history_loading is None and self._visible_dirty():
+                # 펌프가 곧 보이는 타일을 그린다: 그때까지 배경 작업이 새 일을 시작하지 않게(v6.0). 기록을 읽는 동안은 잡지
+                # 않는다(배경 읽기가 그 동안 멈추면 열기가 늦어진다. 읽는 동안의 그림은 LOADING_REFRESH_S로 따로 줄였다)
+                GUI_PRIORITY.hold(self, PUMP_HOLD_S)
             self._schedule_pump()
 
     def _refresh_dirty(self) -> None:
@@ -2167,13 +2175,27 @@ class Dashboard(QWidget):
         """타일이 화면에 보이는가(스크롤 영역 밖이거나 가려지면 visibleRegion이 비어 있다)."""
         return tile.isVisible() and not tile.visibleRegion().isEmpty()
 
+    def _visible_dirty(self) -> bool:
+        """지금 쪽에서 화면에 보이는 dirty 타일이 있는가(숨긴 타일 빼고)."""
+        return any(self._tiles[tid].dirty and tid not in self._hidden and self._in_view(self._tiles[tid])
+                   for tid in self._orders[self.page])
+
     def _pump_step(self) -> None:
         """이벤트 루프 차례 하나에 dirty 타일 하나: 지금 쪽 순서에서 화면에 보이는 첫 dirty 타일을 갱신하고 바로 그린다.
         남은 것이 있으면 다음 차례로 미룬다(사이에 입력을 처리). 스크롤 밖 타일은 보일 때까지 dirty로 둔다.
         배경으로 기록을 읽는 동안 「보는 재미」 타일은 LOADING_REFRESH_S에 한 번만 갱신하고(남은 dirty는 그때까지 미룸),
-        갱신하는 동안은 배경 읽기를 쉬게 한다(GUI_PRIORITY)."""
+        갱신하는 동안은 배경 읽기를 쉬게 한다(GUI_PRIORITY). v6.0: 보이는 dirty 타일이 남아 있는 동안은 배경 작업이 새 일을
+        시작하지 않게 잡아 두고(GuiPriority.hold, PUMP_HOLD_S), 다 그렸거나 지금 그릴 것이 없으면 푼다."""
         if not self.isVisible():
+            GUI_PRIORITY.release(self)
             return
+        if self._pump_once() and self.history_loading is None and self._visible_dirty():
+            GUI_PRIORITY.hold(self, PUMP_HOLD_S)  # 다음 차례에 또 그린다
+        else:
+            GUI_PRIORITY.release(self)
+
+    def _pump_once(self) -> bool:
+        """_pump_step의 한 단계. 타일 하나를 갱신해 그렸으면 True."""
         loading = self.history_loading is not None
         now = _clock()
         wait_s: float | None = None
@@ -2193,9 +2215,10 @@ class Dashboard(QWidget):
                     tile.repaint()
                 self.pump_steps += 1
                 self._schedule_pump()
-                return
+                return True
         if wait_s is not None:
             self._schedule_pump(delay_ms=math.ceil(wait_s * 1000))
+        return False
 
     def flush(self) -> None:
         """지금 쪽의 dirty 타일을 모두 바로 갱신한다(스크롤 밖 포함, 테스트·화면 저장용)."""

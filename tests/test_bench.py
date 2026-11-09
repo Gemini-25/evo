@@ -105,6 +105,19 @@ def test_t17_playback_and_fast_path_lines(lander_out: list[str], monkeypatch: py
     assert S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_ON) not in off
 
 
+def test_fast_path_line_says_off_when_episodes_fall_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v6.0 검토: 「pymunk C 함수 바로 부르기」 줄은 깃발(_CP_FAST, cp* 함수를 불러옴)만이 아니라 이 환경의 Episode가 정말 포인터를
+    얻는지를 본다(자체 점검 「빠른 계산 길」과 같은 판단, episode.fastpath_in_use). pymunk 내부 이름이 바뀌어 물체 포인터를 얻지
+    못하면 깃발이 참이어도 「꺼짐」."""
+    assert runtime._CP_FAST
+    monkeypatch.setattr(runtime, "_body_c", lambda body: None)
+    spec = load_env(LANDER)
+    assert not runtime.fastpath_in_use(spec)
+    out = bench_lines("--popsize", "2", "--generations", "1", "--workers", "1")
+    assert S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_OFF) in out
+    assert S.BENCH_FAST_PATHS.format(state=S.BENCH_FAST_ON) not in out
+
+
 def test_bench_windows_measures_every_window_and_picks_the_fastest(monkeypatch: pytest.MonkeyPatch) -> None:
     spec, layout, genomes, pairs, _ = bench_batch(LANDER, 2)
     text = LANDER.read_text(encoding="utf-8")

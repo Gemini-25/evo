@@ -23,6 +23,7 @@ import bisect
 import math
 import os
 import sys
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -55,6 +56,9 @@ GUI_QUIET_S: Final = 0.03
 pyqtgraph는 setData 뒤 그림을 다음 이벤트 루프 차례에 그리므로 그 그림까지 GIL을 다투지 않게 한다."""
 GUI_WAIT_MAX_S: Final = 0.25
 """배경 읽기가 화면을 기다리는 최대 시간(초). 화면이 계속 바빠도 이만큼마다 파일 하나는 읽는다(굶지 않게)."""
+UNIT_WAIT_MAX_S: Final = 0.03
+"""화면 스레드가 무거운 일(busy)을 시작할 때 배경 스레드가 하던 쉴 수 없는 일 하나(GuiPriority.working: Episode 하나 만들기,
+전체 GC)가 끝나기를 기다리는 최대 시간(초, v6.0). 그 일은 혼자 돌면 수 ms(바퀴 세계 하나 6ms 안팎)다."""
 PCA_SMALL_DIM: Final = 256
 """이 차원 이하는 누적 공분산(ΣX, ΣXᵀX) + eigh, 넘으면 표본의 무작위 PCA(D18)."""
 PCA_SAMPLE_ROWS: Final = 4096
@@ -815,25 +819,87 @@ class GuiPriority:
     quiet는 늘 시간으로만 끝난다. 이벤트 루프가 잠들려 할 때(aboutToBlock) 끝내지 않는 까닭: 그 신호가 리눅스(glib)에서는
     이벤트 루프가 한 바퀴 돌 때마다, 윈도우에서는 정말 한가할 때만 와서, 운영체제마다 다르게 쉬게 된다. 시간으로만 끝내면
     어디서나 같고, 테스트(T39)가 재는 것이 그대로 앱의 동작이다.
+
+    hold(v6.0, v3.0 남은 문제 「2세대가 올 때 GIL 다툼」): 곧 무거운 일이 올 것을 아는 화면 스레드(대시보드 펌프: 새 세대가 와서
+    보이는 타일이 dirty)가 그 일이 끝날 때까지(최대 seconds초) 배경 작업이 새 일을 시작하지 않게 잡아 둔다. 배경 작업은 일 하나
+    (Episode 하나 만들기 등)를 시작한 뒤에는 그 안에서 쉬지 못해, 펌프가 그 사이에 시작되면 끝날 때까지 GIL을 다툰다(바퀴 세계
+    하나 만들기가 언덕 모양을 수천 번 더하는 동안 첫 타일 그림 40ms가 100ms 넘게 늘었다). 주인마다 따로 잡고 release로 푼다.
+    시간이 지나면 저절로 풀린다(펌프가 돌지 못해도 배경 작업이 굶지 않게).
+
+    working(v6.0): 배경 스레드가 그 안에서 쉴 수 없는 일 하나(Episode 하나 만들기, 전체 GC)를 감싼다. 이런 일은 프로세스에서
+    보통 한 번에 하나만 돈다(배경 스레드끼리도 GIL을 다투지 않게: 관전 장면·세계 그림·다시 시뮬레이션이 함께 돌면 셋 다 느려지고
+    화면 몫도 줄었다). 시작할 때 화면이 바쁘면 먼저 기다린다(wait). 화면 스레드는 busy()에 들어갈 때(겹친 안쪽이 아니면) 그런
+    일이 돌고 있으면 끝나기를 잠깐(최대 UNIT_WAIT_MAX_S) 자며 기다린다: 그동안 배경 스레드가 GIL을 혼자 써서 금방 끝나고, 다음
+    일은 busy를 보고 시작하지 않으므로 화면의 무거운 일은 GIL을 다투지 않는다. 함께 돌면 서로 GIL을 넘길 때마다 간격(1ms)씩
+    기다려 둘 다 몇 배 느려졌다(첫 타일 그림 40ms가 100ms 넘게). 계산 결과는 같다(쉬는 때만 바뀐다).
     """
 
     def __init__(self) -> None:
         self._busy = 0
         self._quiet_until = 0.0
+        self._holds: dict[int, float] = {}
+        """hold 주인(id) → 풀리는 시각(time.monotonic)."""
+        self._units = 0
+        """돌고 있는 배경 working() 수(보통 0 또는 1)."""
+        self._count_lock = threading.Lock()
+        self._unit_lock = threading.RLock()
 
     @contextmanager
     def busy(self, quiet: float = GUI_QUIET_S) -> Iterator[None]:
-        """화면 스레드: 이 안에서는 배경 읽기가 쉰다(끝난 뒤 quiet초 더). 겹쳐 불러도 된다."""
+        """화면 스레드: 이 안에서는 배경 읽기가 쉰다(끝난 뒤 quiet초 더). 겹쳐 불러도 된다. 바깥 busy에 들어갈 때 배경의
+        쉴 수 없는 일(working)이 돌고 있으면 끝나기를 최대 UNIT_WAIT_MAX_S초 기다린다."""
         self._busy += 1
         try:
+            if self._busy == 1 and self._units:
+                end = time.monotonic() + UNIT_WAIT_MAX_S
+                while self._units and time.monotonic() < end:
+                    time.sleep(0.0005)
             yield
         finally:
             self._busy -= 1
             self._quiet_until = max(self._quiet_until, time.monotonic() + quiet)
 
+    @contextmanager
+    def working(self, stop: Callable[[], bool] | None = None) -> Iterator[None]:
+        """배경 스레드: 그 안에서 쉴 수 없는 일 하나(프로세스에서 한 번에 하나: 앞 일이 GUI_WAIT_MAX_S 넘게 끝나지 않으면 그냥
+        함께 돈다). 화면이 바쁘면 시작하기 전에 기다리고(wait), 화면 스레드가 busy에 들어가면 이것이 끝나기를 잠깐 기다린다.
+        같은 스레드에서 겹쳐 써도 된다."""
+        got = self._unit_lock.acquire(timeout=GUI_WAIT_MAX_S)
+        try:
+            self.wait(stop)
+            with self._count_lock:
+                self._units += 1
+            try:
+                yield
+            finally:
+                with self._count_lock:
+                    self._units -= 1
+        finally:
+            if got:
+                self._unit_lock.release()
+
+    def hold(self, owner: object, seconds: float) -> None:
+        """화면 스레드: owner의 무거운 일이 곧 온다. 지금부터 seconds초 동안(또는 release까지) 배경 작업을 쉬게 한다."""
+        self._holds[id(owner)] = time.monotonic() + seconds
+
+    def release(self, owner: object) -> None:
+        """화면 스레드: owner가 잡아 둔 것을 푼다(다른 주인의 hold와 busy·quiet는 그대로)."""
+        self._holds.pop(id(owner), None)
+
     @property
     def is_busy(self) -> bool:
-        return self._busy > 0 or time.monotonic() < self._quiet_until
+        if self._busy > 0:
+            return True
+        now = time.monotonic()
+        if now < self._quiet_until:
+            return True
+        holds = self._holds
+        if holds:
+            try:
+                return any(now < until for until in list(holds.values()))
+            except RuntimeError:  # 배경 스레드가 읽는 사이 화면 스레드가 바꿨다: 바쁜 쪽으로
+                return True
+        return False
 
     def wait(self, stop: Callable[[], bool] | None = None, limit: float = GUI_WAIT_MAX_S) -> None:
         """배경 스레드: 화면이 바쁘면 한가해질 때까지(최대 limit초, stop()이 참이면 바로) 잔다."""

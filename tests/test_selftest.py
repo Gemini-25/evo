@@ -56,8 +56,9 @@ def test_full_selftest_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert code == 0, report
     assert S.SELFTEST_SUMMARY_OK in report
     # v1~v2.1 점검 7개 + v3.0 점검 넷(도움말 쪽, 기록 폴더와 묶음, Qt 한국어, 처음 실행 안내: 설계 3.2 「자체 점검 항목 넷 늘어남」)
-    # v3.1: 「내보내기」 점검 하나 더(설계 D59)
-    assert report.count(f"[{S.SELFTEST_PASS}]") == 12
+    # v3.1: 「내보내기」 점검 하나 더(설계 D59), v6.0: 「빠른 계산 길」 점검 하나 더(v6 설계 D19)
+    assert report.count(f"[{S.SELFTEST_PASS}]") == 13
+    assert f"[{S.SELFTEST_PASS}] {S.SELFTEST_CHECK_FASTPATH} (" in report and S.SELFTEST_FASTPATH_SAME in report
 
 
 def test_temporary_user_dirs_keeps_error_logs_when_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

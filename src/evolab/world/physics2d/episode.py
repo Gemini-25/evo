@@ -86,6 +86,8 @@ JUMP_NEVER = -(10**9)
 """아직 뛴 적 없는 점프 추진기의 '마지막 점프 스텝'(첫 스텝부터 뛸 수 있게)."""
 _INFS = (math.inf, -math.inf)
 """step_values가 0으로 바꾸는 무한대 둘(x in _INFS = x가 ±무한대)."""
+_NO_DRAG: list[tuple[float, float]] = []
+"""바람 항력을 받는 물체가 없을 때 _apply_forces가 쓰는 표시(물체마다 항력 (0.0, 0.0))."""
 
 
 @dataclass(frozen=True)
@@ -221,7 +223,7 @@ def _segment_first_c(space: pymunk.Space, filt: pymunk.ShapeFilter) -> tuple[Any
 
     부르는 법: query(raw, 시작, 끝, 0.0, cfilt, info) 뒤 info.alpha가 맞은 비율(맞지 않으면 1.0). 결과 구조체는 이 레이
     센서만 쓴다(질의마다 C 함수가 처음 값으로 다시 채운다). 주인을 함께 붙잡아 필터 구조체 메모리가 살아 있게 한다."""
-    raw = getattr(space, "_space", None) if _CP_FAST else None
+    raw = _space_c(space)
     if raw is None:
         return None
     owner = _CP_FFI.new("cpShapeFilter *", (filt.group, filt.categories, filt.mask))
@@ -232,6 +234,32 @@ def _body_c(body: pymunk.Body) -> Any:
     """body의 cpBody 포인터(C 함수에 바로 넘길 것). 쓸 수 없으면 None(공개 API를 쓴다). 포인터 객체가 C 메모리의 주인이라
     붙잡고 있는 동안 물체가 풀리지 않는다."""
     return getattr(body, "_body", None) if _CP_FAST else None
+
+
+def _space_c(space: pymunk.Space) -> Any:
+    """space의 cpSpace 포인터(cpSpaceStep·레이 질의에 바로 넘길 것). 쓸 수 없으면 None(공개 API를 쓴다)."""
+    return getattr(space, "_space", None) if _CP_FAST else None
+
+
+def _constraint_c(constraint: pymunk.Constraint) -> Any:
+    """관절(모터)의 cpConstraint 포인터. 쓸 수 없으면 None(공개 API를 쓴다)."""
+    return getattr(constraint, "_constraint", None) if _CP_FAST else None
+
+
+def fastpath_in_use(spec: EnvSpec, trial: Trial | None = None) -> bool:
+    """이 환경의 Episode가 정말 C 함수 길을 모두 쓰는가(진단: bench 「pymunk C 함수 바로 부르기」 줄, 자체 점검 「빠른 계산 길」).
+
+    _CP_FAST는 pymunk의 cp* 함수를 불러왔다는 것뿐이다. 포인터는 Episode마다 pymunk 내부 속성(_body·_space·_constraint)에서
+    따로 얻으므로, 그 이름이 바뀐 판이면 _CP_FAST가 참이어도 Episode가 (일부) 공개 API 길로 돌아간다(결과는 같고 느림). 처음 몸
+    Episode 하나를 만들어 두 스텝 돌린 뒤 모든 물체의 cpBody 포인터, cpSpace 포인터(레이 질의도 같은 속성을 읽는다), 모터가
+    있으면 모터 포인터를 본다. 학습·평가와 무관한 Episode라 결과에 영향이 없다."""
+    if not _CP_FAST:
+        return False
+    ep = Episode(spec, None, trial if trial is not None else Trial(0))
+    for _ in range(2):
+        ep.step([0.0] * len(spec.outputs))
+    return (bool(ep._raw) and all(r is not None for r in ep._raw.values()) and ep._raw_space is not None
+            and (not ep._motors or ep._motor_raw is not None))
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +710,8 @@ class Episode:
         self._u = u
 
         self._apply_actuators()
-        self._apply_forces()
+        if self._force_raw:  # 힘을 모으는 물체가 없으면 _apply_forces는 할 일이 없다
+            self._apply_forces()
         if self._aero:
             self._apply_aero()
         if self._kinematic:
@@ -700,10 +729,18 @@ class Episode:
         if self._cps:
             self._update_checkpoints()
         self._update_contacts()
-        self._refresh_values()
+        if self._value_getters:  # 첫 _refresh_values(만들 때) 뒤로는 읽을 값이 없으면 할 일이 없다
+            self._refresh_values()
         self._update_events()
-        self._accumulate_blocks()
-        self._check_termination()
+        for f in self._block_steps:  # 점수 블록 누적(v3.1 _accumulate_blocks)
+            f()
+        for end, st in self._end_states:  # 종료(v3.1 _check_termination): 종료 목록 순서로 처음 일어난 사건
+            if st.occurred:
+                self._done = True
+                self._end = end
+                return
+        if self.steps >= self.max_steps:  # 안전장치(timeout이 늘 목록에 있으므로 보통 오지 않는다)
+            self._done = True
 
     def result(self) -> EpisodeResult:
         blocks = self.block_values()
@@ -1639,15 +1676,17 @@ class Episode:
     def _apply_forces(self) -> None:
         """모은 추진기 힘(물체 좌표)과 바람 항력(세계 좌표, 무게중심)을 물체마다 한 번에 넣는다."""
         acc = self._acc
-        wx, wy = self.wind
-        drag = [(0.0, 0.0)] * len(acc)
-        for slot, k in self._drag_slots:
-            st = self._bstate(self._force_bodies[slot][0])
-            drag[slot] = (k * (wx - st[3]), k * (wy - st[4]))
+        drag = _NO_DRAG
+        if self._drag_slots:
+            wx, wy = self.wind
+            drag = [(0.0, 0.0)] * len(acc)
+            for slot, k in self._drag_slots:
+                st = self._bstate(self._force_bodies[slot][0])
+                drag[slot] = (k * (wx - st[3]), k * (wy - st[4]))
         for slot, (bid, body, raw) in enumerate(self._force_raw):
             a = acc[slot]
             fx, fy, tq = a
-            dx, dy = drag[slot]
+            dx, dy = drag[slot] if drag is not _NO_DRAG else (0.0, 0.0)
             if fx == 0.0 and fy == 0.0 and tq == 0.0 and dx == 0.0 and dy == 0.0:
                 continue
             ang = self._bstate(bid)[2]
@@ -1761,8 +1800,10 @@ class Episode:
         """cpSpace 포인터. 첫 스텝(공개 Space.step) 뒤에 채운다(_first_space_step)."""
         self._raw: dict[str, Any] = {bid: _body_c(b) for bid, b in self.bodies.items()}
         self._force_raw: list[tuple[str, pymunk.Body, Any]] = [(bid, b, self._raw[bid]) for bid, b in self._force_bodies]
-        self._agent_raw: list[Any] | None = [self._raw[b] for b in self._agent_ids] if self._fast else None
-        motor_raw = [getattr(mo.constraint, "_constraint", None) if self._fast else None for mo in self._motors]
+        # 포인터가 하나라도 없으면(pymunk 내부 이름이 바뀐 판) 경계 검사는 _bpos 길(같은 값)로(v6 통합: 자체 점검 T18이 찾음)
+        agent_raw = [self._raw[b] for b in self._agent_ids]
+        self._agent_raw: list[Any] | None = agent_raw if self._fast and all(r is not None for r in agent_raw) else None
+        motor_raw = [_constraint_c(mo.constraint) if self._fast else None for mo in self._motors]
         self._motor_raw: list[tuple[Any, int, float]] | None = (
             [(raw, mo.channel_index, mo.max_speed) for raw, mo in zip(motor_raw, self._motors, strict=True)]
             if all(raw is not None for raw in motor_raw) else None)
@@ -1790,7 +1831,7 @@ class Episode:
         space.step(self.dt)
         # pymunk 내부 이름이 바뀐 판이면(속성이 없으면) 공개 Space.step을 계속 쓴다.
         if self._fast and getattr(space, "threaded", True) is False and getattr(space, "_bodies_to_check", None) == set():
-            self._raw_space = getattr(space, "_space", None)
+            self._raw_space = _space_c(space)
 
     def _contact_channel(self, body: str, selectors: Sequence[str]) -> _ContactChannel:
         key = (body, tuple(selectors))
@@ -2222,15 +2263,6 @@ class Episode:
                 last = st.last_time
                 v[since_key] = t - last if last is not None else t
 
-    def _check_termination(self) -> None:
-        for end, st in self._end_states:
-            if st.occurred:
-                self._done = True
-                self._end = end
-                return
-        if self.steps >= self.max_steps:  # 안전장치(timeout이 늘 목록에 있으므로 보통 오지 않는다)
-            self._done = True
-
     # ------------------------------------------------------------------
     # 점수
     # ------------------------------------------------------------------
@@ -2299,10 +2331,6 @@ class Episode:
                         st.acc = float(fn(values))
                     steps.append(final)
         self._block_steps = steps
-
-    def _accumulate_blocks(self) -> None:
-        for f in self._block_steps:
-            f()
 
     def _block_value(self, st: _BlockState) -> float:
         b = st.block
