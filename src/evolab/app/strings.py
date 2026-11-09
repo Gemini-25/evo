@@ -644,8 +644,8 @@ BUNDLE_FILE_NAME: Final = "{run}_재현묶음.zip"
 VIDEO_HUD: Final = "{title} · {t:.1f}초"
 VIDEO_HUD_TIME: Final = "{t:.1f}초"
 VIDEO_NO_FRAMES: Final = "영상으로 만들 프레임이 없습니다."
-VIDEO_SAVE: Final = "영상 저장…"
-VIDEO_SAVE_TITLE: Final = "영상 저장 (GIF)"
+VIDEO_SAVE: Final = "내보내기…"                       # v3.1(설계 6절, D48): 원래 「영상 저장…」. 형식은 내보내기 대화 상자가 고른다
+VIDEO_SAVE_TITLE: Final = "내보내기"                  # v3.1: 원래 「영상 저장 (GIF)」(대화 상자·오류 상자 제목)
 VIDEO_FILTER: Final = "GIF 영상 (*.gif)"
 VIDEO_PROGRESS: Final = "영상 만드는 중…"
 VIDEO_CANCEL: Final = "취소"
@@ -1555,7 +1555,7 @@ RACE_SPEED_ITEM: Final = "{n:g}배"
 RACE_START: Final = "출발"
 RACE_PAUSE: Final = "일시 정지"
 RACE_RESTART: Final = "처음부터"
-RACE_SAVE_GIF: Final = "경주 영상 저장…"
+RACE_SAVE_GIF: Final = "내보내기…"                    # v3.1(설계 6절, D48): 원래 「경주 영상 저장…」
 RACE_GIF_NAME: Final = "경주_코스{n}_{stamp}.gif"
 RACE_PREPARING: Final = "경주 준비 중… ({done}/{total})"
 RACE_LANE_RUN: Final = "{method} · 시드 {seed}"
@@ -1791,7 +1791,8 @@ ED_STRUCT_EVOLVE_BY_PARAM_TIP: Final = "있음이 진화하는 몸 수치 '{id}'
 # - 설계의 새 ABOUT_TEXT(데이터·설정 폴더 자리 {data_dir}·{state_dir})는 ABOUT_TEXT_V3다. 통합(I 묶음)에서 main.py의 정보 창을
 #   이것으로 옮기고 옛 ABOUT_TEXT(데이터 폴더를 「문서\진화실험실」 글자로 박은 것)를 지웠다.
 # - 도움말 쪽은 v2·v2.1 뒤 화면에 맞췄다: 대시보드 타일 12개(「몸 구조」), 에디터 아래 탭 10개(「구조」), 내장 예제 6개(바퀴 고르는
-#   언덕차), 낱말 21개(「몸 구조」). 「설치와 제거」 쪽과 「기록과 내보내기」 쪽 「영상」 절은 설계의 v3.0판(zip, GIF)이다.
+#   언덕차), 낱말 21개(「몸 구조」). 「설치와 제거」 쪽과 「기록과 내보내기」 쪽 「영상」 절은 설계의 v3.0판(zip, GIF)이었고
+#   v3.1 0'단계에서 v3.1 글(설치 프로그램, MP4·GIF·폰 재생 파일)로 제자리에서 바꿨다(맨 끝 v3.1 머리말 참고).
 # ---------------------------------------------------------------------------
 ABOUT_TEXT_V3: Final = (
     "{name} {version}\n\n"
@@ -2119,7 +2120,7 @@ HELP_PAGES: Final = {
 
 ## 저장
 
-「{{RACE_SAVE_GIF}}」 단추로 경주를 GIF 영상으로 남깁니다.
+「{{RACE_SAVE_GIF}}」 단추로 경주를 영상으로 남깁니다.
 """),
 "records": ("기록과 내보내기", """# 기록과 내보내기
 
@@ -2142,7 +2143,11 @@ HELP_PAGES: Final = {
 
 ## 영상
 
-실험실의 「{{VIDEO_SAVE}}」 단추와 경주 창의 「{{RACE_SAVE_GIF}}」 단추로 지금 보는 재생을 GIF로 저장합니다.
+실험실과 경주 창의 「{{VIDEO_SAVE}}」 단추로 지금 보는 재생을 저장합니다.
+
+- **MP4**: 카카오톡·폰 앨범·발표 자료에 넣기 좋은 영상입니다. 기본은 화면 전체가 들어오는 고정 카메라입니다.
+- **GIF**: 어디서나 보이는 움직이는 그림입니다.
+- **폰 재생 파일(.html)**: 폰 브라우저에서 인터넷 없이 열리는 파일 하나입니다. 멈추고, 돌려 보고, 배속을 바꿀 수 있습니다.
 """),
 "examples": ("내장 예제", """# 내장 예제
 
@@ -2230,19 +2235,25 @@ OneDrive로 옮겨진 문서 폴더는 실행 기록이 많으면 동기화가 �
 """),
 "install": ("설치와 제거", """# 설치와 제거
 
-## 설치 없이 쓰기
+## 설치
 
-받은 zip 파일을 풀고 그 폴더의 evolab.exe를 두 번 누릅니다. 관리자 권한은 필요 없습니다.
-처음 열 때 “Windows의 PC 보호” 창이 뜰 수 있습니다. 이 프로그램은 아직 코드 서명이 없어서입니다. “추가 정보”를 누른 뒤 “실행”을 누르세요.
-zip을 풀기 전에 zip 파일 속성에서 “차단 해제”를 켜면 경고가 줄어듭니다.
+설치 파일을 실행합니다. 관리자 권한이 필요 없고 내 계정에만 설치됩니다.
+받은 설치 파일을 처음 열면 “Windows의 PC 보호” 창이 뜰 수 있습니다. 이 프로그램은 아직 코드 서명이 없어서입니다.
+“추가 정보”를 누른 뒤 “실행”을 누르면 설치됩니다.
 
 ## 업데이트
 
-새 zip을 풀어 그 폴더의 evolab.exe를 쓰면 됩니다. 환경 파일, 실행 기록, 설정은 데이터 폴더에 그대로 남습니다.
+새 설치 파일을 그대로 실행하면 같은 자리에 덮어 설치됩니다. 환경 파일, 실행 기록, 설정은 그대로 남습니다.
+프로그램이 켜져 있으면 닫으라고 알려 줍니다. 프로그램이 새 버전을 스스로 확인하지는 않습니다.
 
-## 지우기
+## 제거
 
-프로그램 폴더를 지우면 됩니다. 환경 파일과 실행 기록은 데이터 폴더에 남습니다. [데이터 폴더 열기](evolab://data)
+윈도우 설정 → 앱 → 설치된 앱에서 진화 실험실을 제거합니다. 환경 파일과 실행 기록은 **지우지 않습니다**.
+설정과 오류 기록을 지울지는 제거할 때 묻습니다. [데이터 폴더 열기](evolab://data)
+
+## 설치 없이 쓰기
+
+zip 판을 풀어 evolab.exe를 실행해도 됩니다. 기록 위치는 설치 판과 같습니다.
 """),
 }
 
@@ -2286,7 +2297,7 @@ HELP_TIPS: Final = {
     "lab.fast_interval": "고속 모드에서 몇 세대마다 챔피언을 재생할지입니다.",
     "lab.versus": "1세대에서 가장 잘한 개체와 지금 챔피언을 같은 조건에서 겹쳐 봅니다.",
     "lab.live": "다시 보기를 그만두고 지금 학습 중인 세대로 돌아갑니다.",
-    "lab.video": "지금 보는 재생을 GIF 영상으로 저장합니다.",
+    "lab.video": "지금 보는 재생을 영상(MP4·GIF)이나 폰 재생 파일로 저장합니다.",
     "compare.repeat": "지금 고른 설정을 시드만 바꿔 여러 번 돌립니다.",
     "compare.refresh": "실행 목록을 다시 읽습니다.",
     "compare.clear": "고른 실행을 모두 풉니다.",
@@ -2432,3 +2443,101 @@ ONB_STEP_WATCH_FAST: Final = ("지금 보이는 것이 1세대입니다. 아직 
                               "잠시 뒤 다음 단계로 넘어갑니다.")           # ④: 배속이 이미 4배 이상일 때(설계 D10)
 ONB_FAILED_NO_DETAIL: Final = "학습 프로세스를 띄우지 못했습니다"          # 실패 카드의 {reason}: 까닭 글이 오지 않았을 때
 HINT_LAB_IDLE_ANY: Final = "「{start}」을 누르면 개체 {pop}개가 「{env}」에서 동시에 연습을 시작합니다."  # 실험실 빈 상태(모든 환경)
+
+# ---------------------------------------------------------------------------
+# v3.1 나누기와 설치 (0' 묶음: v3 설계 6절의 「# v3.1」 줄, 명세 부록 A79~A89): 설치 프로그램, 휴대용 zip, 내보내기 대화 상자,
+# 폰 재생 파일, 명령줄 내보내기, 자체 점검 「내보내기」.
+# - VIDEO_SAVE·VIDEO_SAVE_TITLE·RACE_SAVE_GIF는 위 제자리에서 「내보내기…」·「내보내기」로 바꿨다(같은 이름을 두 번 쓰지 않음).
+# - HELP_PAGES의 「설치와 제거」 쪽(설치 프로그램 판), 「기록과 내보내기」 쪽 「영상」 절(MP4·GIF·폰 재생 파일), 「나란히 경주」 쪽
+#   「저장」 절, HELP_TIPS["lab.video"]도 제자리에서 v3.1 글로 바꿨다.
+# - 설계 6절에 없던 세 줄: PORTABLE_README_NAME(D44 「설치 없이 쓰기.txt」), EXP_SAVE·EXP_CLOSE(5.6의 [저장…] [닫기]).
+# - 뒤 묶음(G·M·P·F)이 문구를 더하면 이 블록 뒤에 자기 묶음 이름을 머리로 단 블록으로 붙인다.
+# ---------------------------------------------------------------------------
+# ---- 설치 프로그램 (packaging/make_installer.py가 [CustomMessages]로 옮김. %1·%2·%n은 Inno 자리) ----
+INST_PUBLISHER: Final = "진화 실험실"
+INST_TASKS_GROUP: Final = "바로 가기:"
+INST_TASK_DESKTOP: Final = "바탕 화면에 바로 가기 만들기"
+INST_RUN_NOW: Final = "진화 실험실 실행"
+INST_REPORT_SHORTCUT: Final = "진화 실험실 오류 보고 묶음 만들기"
+INST_NEWER_INSTALLED: Final = ("더 새로운 버전(%1)이 이미 설치되어 있습니다. 이 설치 파일은 %2입니다.%n%n"
+                               "그래도 예전 버전으로 바꿔 설치할까요? 새 버전에서 만든 환경 파일은 예전 버전에서 열리지 않을 수 있습니다.")
+INST_ASK_SETTINGS: Final = ("프로그램 설정과 오류 기록(창·그래프 배치, 데이터 폴더 위치, 로그)도 지울까요?%n%n위치: %1%n%n"
+                            "[아니요]를 누르면 남겨 두었다가 다시 설치할 때 그대로 씁니다.")
+INST_DATA_KEPT: Final = ("실험 기록은 지우지 않았습니다.%n%n환경 파일, 실행 기록, 직접 조종 기록은 데이터 폴더(기본: %1)에 "
+                         "그대로 있습니다. 필요 없으면 그 폴더를 직접 지우세요.")
+PORTABLE_README_NAME: Final = "설치 없이 쓰기.txt"          # 휴대용 zip 안 PORTABLE_README 파일 이름(설계 D44)
+PORTABLE_README: Final = (
+    "진화 실험실 {version} (설치 없이 쓰기)\r\n\r\n"
+    "이 폴더의 evolab.exe를 두 번 누르면 실행됩니다. 설치 판과 같은 데이터 폴더(문서\\진화실험실)를 씁니다.\r\n"
+    "zip을 풀기 전에 zip 파일의 속성에서 「차단 해제」를 켜면 실행할 때마다 나오는 경고가 줄어듭니다.\r\n"
+    "시작 메뉴 바로 가기와 제거가 필요하면 설치 파일(evolab-setup-{version}.exe)을 쓰세요.\r\n"
+)
+
+# ---- 내보내기 대화 상자 (app/export/dialog.py) ----
+EXP_WHAT: Final = "무엇을"
+EXP_WHAT_REPLAY: Final = "지금 보는 재생 ({label})"
+EXP_WHAT_RACE: Final = "이 경주 ({n}칸)"
+EXP_FORMAT: Final = "형식"
+EXP_FORMAT_MP4: Final = "영상 (MP4) — 카카오톡·폰 앨범·발표 자료"
+EXP_FORMAT_GIF: Final = "움직이는 그림 (GIF) — 문서·게시판"
+EXP_FORMAT_HTML: Final = "폰 재생 파일 (HTML) — 아주 작고, 인터넷 없이 폰 브라우저에서 열림"
+EXP_SIZE: Final = "크기"
+EXP_SIZE_SMALL: Final = "작게 (640×360)"
+EXP_SIZE_MEDIUM: Final = "보통 (1280×720)"
+EXP_CAMERA: Final = "카메라"
+EXP_CAMERA_FIXED: Final = "고정: 전체가 보이게"
+EXP_CAMERA_FOLLOW: Final = "따라가기: 관전 화면처럼"
+EXP_INFO_LENGTH: Final = "길이 {seconds:.0f}초 · {frames}프레임"
+EXP_INFO_MF: Final = "윈도우 영상 인코더로 만듭니다 (약 {mb:.0f}MB 예상)."
+EXP_INFO_BUILTIN: Final = "내장 영상 쓰기로 만듭니다. 압축하지 않은 영상이라 파일이 큽니다 (만들면서 크기를 보여 줍니다)."
+EXP_INFO_BUILTIN_TIP: Final = ("이 PC에서 윈도우 영상 인코더를 쓸 수 없습니다: {reason}. 윈도우 N·KN 판은 「미디어 기능 팩」을 "
+                               "설치하면 쓸 수 있습니다.")
+EXP_BIG_ASK: Final = ("파일이 {mb:.0f}MB쯤 될 것 같습니다. 카메라를 「{fixed}」 쪽으로 바꾸면 훨씬 작아집니다. 그대로 만들까요?")
+EXP_PROGRESS_FRAMES: Final = "만드는 중… {k}/{n}프레임 · 지금까지 {mb:.1f}MB"
+EXP_DONE: Final = "저장했습니다: {path}"
+EXP_OPEN_FOLDER: Final = "폴더 열기"
+EXP_FAILED: Final = "만들지 못했습니다: {reason}"
+EXP_MF_FALLBACK: Final = "윈도우 영상 인코더가 실패해 내장 영상 쓰기로 다시 만들었습니다 ({reason})."
+EXP_PROCESS_DIED: Final = "내보내기 프로그램이 갑자기 끝났습니다({meaning}). GIF로 저장해 보세요."
+EXP_FILTER_MP4: Final = "MP4 영상 (*.mp4)"
+EXP_FILTER_HTML: Final = "폰 재생 파일 (*.html)"
+EXP_BAD_SUFFIX: Final = "파일 이름은 .mp4, .gif, .html 중 하나로 끝나야 합니다: {name}"
+EXP_ENCODER_MF: Final = "윈도우 영상 인코더 ({name})"
+EXP_ENCODER_BUILTIN: Final = "내장 영상 쓰기"
+EXP_MF_OFF: Final = "꺼 둠"
+EXP_MF_NOT_WINDOWS: Final = "윈도우가 아님"
+EXP_SAVE: Final = "저장…"                                # 대화 상자 단추(설계 5.6)
+EXP_CLOSE: Final = "닫기"                                # 대화 상자 단추(설계 5.6)
+
+# ---- 폰 재생 파일 (app/export/phone.py → 재생기 안 JSON "text". 재생기 HTML 틀에는 한글이 없다) ----
+PHONE_TITLE: Final = "{env} · {label}"
+PHONE_TOO_BIG: Final = "재생이 너무 길거나 칸이 많아 폰 재생 파일로 만들 수 없습니다(프레임 {frames}개, 상한 {limit}개)."
+PHONE_HOW_TO_TITLE: Final = "폰으로 옮기는 법"
+PHONE_HOW_TO: Final = ("만든 파일 하나를 카카오톡 「나와의 채팅」, 메일, USB 등으로 폰에 옮긴 뒤 브라우저(Chrome, 삼성 인터넷, "
+                       "Safari)로 여세요. 인터넷 연결 없이 재생됩니다.\n\n"
+                       "메신저나 파일 앱의 미리 보기에서는 움직이지 않을 수 있습니다. 그럴 때는 「다른 앱으로 열기」에서 브라우저를 고르세요.")
+PHONE_HOW_TO_DONT_SHOW: Final = "다시 보지 않기"
+PHONE_TEXT: Final = {
+    "play": "재생", "pause": "멈춤", "restart": "처음부터", "speed": "{x}배", "seconds": "{t}초 / {total}초",
+    "camera_fit": "전체 보기", "camera_follow": "따라가기", "score": "점수 {score}", "rank": "{n}등",
+    "legend_hint": "눌러서 켜고 끄기", "rotate": "가로로 돌리면 크게 보입니다",
+    "newer": "더 새 판 진화 실험실에서 만든 파일입니다. 새 판으로 다시 내보내 주세요.",
+    "noscript": ("이 미리 보기에서는 움직이지 않습니다. 파일을 Chrome·Safari·삼성 인터넷 같은 브라우저로 여세요. "
+                 "아래 그림은 마지막 장면입니다."),
+    "footer": "진화 실험실 {version}에서 만든 재생 파일 · 인터넷 연결 없이 열립니다",
+}
+
+# ---- 명령줄 내보내기 (cli.py) ----
+CLI_HELP_EXPORT: Final = "실행의 챔피언 재생을 MP4·GIF·폰 재생 파일로 내보냅니다(창 없이)."
+CLI_HELP_EXPORT_FORMAT: Final = "형식: mp4, gif, html"
+CLI_HELP_EXPORT_GEN: Final = "몇 세대 챔피언 (기본: 마지막)"
+CLI_HELP_EXPORT_WHAT: Final = "champion(챔피언) 또는 versus(1세대 대표와 챔피언)"
+CLI_HELP_EXPORT_SIZE: Final = "MP4 크기: small(640×360), medium(1280×720)"
+CLI_HELP_EXPORT_CAMERA: Final = "fixed(고정, 기본) 또는 follow(따라가기)"
+CLI_HELP_EXPORT_ENCODER: Final = "MP4 인코더: auto(기본), mf(윈도우 영상 인코더), builtin(내장)"
+CLI_HELP_EXPORT_OUT: Final = "만들 파일 경로(확장자가 형식과 맞아야 함)"
+CLI_EXPORT_DONE: Final = "만들었습니다: {path} ({size}, {frames}프레임, {encoder})"
+CLI_HELP_VIDEO_PROBE: Final = "이 PC에서 쓸 MP4 인코더를 알려 줍니다."
+CLI_VIDEO_PROBE_LINE: Final = "MP4 인코더: {encoder} · 윈도우 영상 인코더: {mf}"
+SELFTEST_CHECK_EXPORT: Final = "내보내기 (내장 MP4·폰 재생 파일·윈도우 영상 인코더 확인)"
+SELFTEST_EXPORT_DETAIL: Final = "내장 MP4 {mp4} · 폰 재생 파일 {html} · 윈도우 영상 인코더: {mf}"

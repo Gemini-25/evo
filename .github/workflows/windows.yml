@@ -6,6 +6,13 @@
 #   tests   빠른 테스트 전체(W1: 윈도우 글꼴의 실험실 패널, qtbase_ko 번역, 윈도우 spawn의 faulthandler, 뮤텍스)
 #   package 자체 점검(uv run) → 처음 실행 안내 10세대(W3) → exe 묶기 → 한글 경로 → 두 exe 자체 점검(새 점검 넷 포함, 안내
 #           1세대 초가 기록에 남음) → 학습·판정·재현 → 오류 보고 묶음(evolab-cli.exe report) → exe 자식 세그폴트 기록(W2)
+#
+# v3.1(설계 4.20): package에 단계를 더하고 release job을 둔다.
+#   package exe 파일 버전(3.1.0.0) → 서명 없는 PE 목록 → 서명(비밀 값이 있을 때만, W11) → … v3.0 단계 … → 설치 파일 둘(이번 판,
+#           옛 2.99.0 --fast, W4) → 설치 연기 시험(W5) → 휴대용 zip·SHA256SUMS → MF ABI 표(W6) → MF 설치 시도(정보만, W8)
+#           → exe 내보내기(W7) → 폰 재생 파일을 헤드리스 Edge로(W9). 설치·내보내기 단계는 앞 단계가 실패해도 그 단계에 필요한 것이
+#           있으면 돈다(!cancelled + 앞 단계 결과): v3.0처럼 하나가 실패해도 나머지 배포본 확인은 끝까지 한다.
+#   release 태그 v*이고 tests·package가 모두 성공하면 설치 파일·휴대용 zip·SHA256SUMS.txt를 GitHub 릴리스에 올린다(W10).
 name: windows
 
 on:
@@ -56,10 +63,14 @@ jobs:
   package:
     runs-on: windows-latest
     # tests에 기대지 않는다(needs 없음). 자체 점검 둘(uv run, 안내 10세대 약 1분 반) + exe 묶기(약 1분 반) + exe 점검.
-    timeout-minutes: 60
+    # v3.1: 설치 파일 둘의 압축, 설치 연기 시험(설치된 두 exe 자체 점검 포함), 내보내기, MF 시도가 더해져 120분(어림, 단계마다 따로 상한).
+    timeout-minutes: 120
     env:
       UV_PYTHON_DOWNLOADS: never
       UV_LOCKED: "1"
+      # 서명 인증서가 저장소 비밀 값에 있는가(W11). 비밀 값 자체는 서명하는 단계의 env로만 넘긴다(다른 단계·자체 점검에 퍼지지 않게).
+      # 단계의 if에서는 secrets를 바로 볼 수 없어 job env에 참·거짓만 둔다.
+      SIGN_ENABLED: ${{ secrets.SIGN_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +83,20 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
+        id: deps
         run: uv sync
+
+      # 뒤 단계(exe 파일 버전, 설치 파일 이름, 연기 시험)가 쓰는 VER. 태그 v*로 돌 때는 태그와 프로그램 버전이 같아야 한다.
+      - name: Program version
+        shell: pwsh
+        run: |
+          $v = (uv run python -c "import evolab; print(evolab.__version__)" | Select-Object -Last 1).Trim()
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { Write-Host "::error::unexpected version '$v'"; exit 1 }
+          if ($env:GITHUB_REF -like "refs/tags/v*" -and $env:GITHUB_REF_NAME -ne "v$v") {
+            Write-Host "::error::tag $env:GITHUB_REF_NAME does not match the program version $v"; exit 1
+          }
+          "VER=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "version: $v"
 
       # 새 점검 넷(도움말 쪽, 기록 폴더와 오류 보고 묶음, Qt 한국어, 처음 실행 안내 1세대: 기준 60초)은 데이터·상태 폴더를
       # 임시 폴더로 바꿔 돈다(설계 D5). 안내 줄 「창 → 1세대 재생 n초, 누름 2번」이 설계 M1 값이다.
@@ -85,10 +109,44 @@ jobs:
         timeout-minutes: 15
         run: uv run evolab selftest --tour full --log tour-full.log
 
+      # v3.1: 앞의 uv 자체 점검·안내 10세대가 실패해도 exe 묶기와 그 뒤 배포본 점검(exe 자체 점검, 설치 파일, 내보내기)은 돈다
+      # (설계 D34의 뜻: 하나가 실패해도 배포본 확인은 끝까지). exe가 있어야 하는 단계는 모두 build 결과를 본다.
       - name: Build exe
+        id: build
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: uv run pyinstaller packaging/evolab.spec --noconfirm
 
+      # v3.1 D45: 두 exe의 파일 버전 정보(packaging/version_info.py)가 프로그램 버전 네 칸과 같다.
+      - name: Exe file version
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          foreach ($name in @("evolab.exe", "evolab-cli.exe")) {
+            $vi = (Get-Item -LiteralPath (Join-Path "dist\evolab" $name)).VersionInfo
+            $fixed = "{0}.{1}.{2}.{3}" -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
+            "{0}: file version {1}, product version {2}, original name {3}" -f $name, $fixed, $vi.ProductVersion, $vi.OriginalFilename
+            if ($fixed -ne "$env:VER.0") { Write-Host "::error::$name file version $fixed is not $env:VER.0"; exit 1 }
+            if ($vi.OriginalFilename -ne $name) { Write-Host "::error::$name has the version info of $($vi.OriginalFilename)"; exit 1 }
+          }
+
+      # 서명 문서(docs/signing.md)용 개수: 배포본 PE 가운데 Authenticode 서명이 없는 것(정보만).
+      - name: Unsigned PE list
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run python packaging/list_unsigned.py dist\evolab
+
+      # W11: 인증서 비밀 값(SIGN_CERT_BASE64)이 없으면 이 단계는 skipped로 남는다. 있으면 PyInstaller 뒤·ISCC 전에 우리 exe 2개와
+      # 서명 없는 PE를 모두 서명한다(한글 경로 사본·artifact·설치 파일·휴대용 zip이 모두 서명된 파일을 담는다).
+      - name: Sign (only when a certificate is configured)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.SIGN_ENABLED == 'true' }}
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+          SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL }}
+        run: ./packaging/installer/sign.ps1 -Dist dist\evolab
+
       - name: Copy exe folder to a Korean path
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
@@ -96,6 +154,7 @@ jobs:
           Copy-Item -Recurse dist\evolab $dest
 
       - name: Self-test console exe (evolab-cli.exe)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 15
         shell: pwsh
         run: |
@@ -104,6 +163,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Train, judge and reproduce with the console exe (Korean path)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
@@ -122,6 +182,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Self-test windowed exe (evolab.exe, no stdout)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
@@ -202,6 +263,7 @@ jobs:
       # W2: 같은 exe로 spawn한 자식이 일부러 세그폴트하면 진입점의 faulthandler가 faults.log에 치명적 오류와 함수 이름을 남겨야
       # 한다(설계 D28). 자체 점검 「기록 폴더 쓰기와 오류 보고 묶음」이 EVOLAB_SELFTEST_CRASH=1일 때만 이 시험을 한다.
       - name: Native crash is logged by the exe (spawned child segfault)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         env:
           EVOLAB_SELFTEST_CRASH: "1"
@@ -215,9 +277,226 @@ jobs:
           }
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
           name: evolab-windows
           path: dist/evolab
+          retention-days: 30
+
+      # W4: 설치 파일 둘(이번 판 lzma2/ultra64, 업그레이드 시험용 옛 2.99.0 lzma2/fast). 러너 이미지의 Inno Setup(6.7.1, 7이면 7)을
+      # 쓰고, 없으면 choco로 깐다(설계 7.4 되돌릴 지점 6). 공식 Korean.isl(6.5.0+)이 컴파일러에 없으면 저장소의
+      # packaging/installer/Korean.isl(공식 판을 라이선스와 함께 둔 경우)을 쓰고, 그것도 없으면 실패한다. 크기 기준 60MB(10^6 바이트).
+      - name: Build installers (current and old 2.99.0)
+        id: installers
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 25
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+          SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL }}
+        run: |
+          function Find-Iscc {
+            $candidates = @(
+              (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+              (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+              (Join-Path $env:ProgramFiles "Inno Setup 7\ISCC.exe"),
+              (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 7\ISCC.exe")
+            )
+            foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { return $c } }
+            $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            return $null
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            Write-Host "::warning::Inno Setup is not on the runner image: installing it with choco (rollback 6)"
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) { Write-Host "::error::ISCC.exe not found, even after choco install innosetup"; exit 1 }
+          "ISCC: $iscc ($((Get-Item -LiteralPath $iscc).VersionInfo.ProductVersion))"
+          $messages = @()
+          $official = Join-Path (Split-Path $iscc) "Languages\Korean.isl"
+          if (-not (Test-Path -LiteralPath $official)) {
+            if (Test-Path -LiteralPath "packaging\installer\Korean.isl") {
+              Write-Host "::warning::$official is missing: using packaging\installer\Korean.isl (rollback 6)"
+              $messages = @("--messages-file", "packaging\installer\Korean.isl")
+            } else {
+              Write-Host "::error::$official is missing and packaging\installer\Korean.isl is not in the repository (rollback 6)"
+              exit 1
+            }
+          }
+          # 서명할 때는 Inno가 설치 파일·제거 프로그램마다 sign.ps1 -Path <파일>을 부른다($q = 따옴표, $f = 따옴표를 친 파일 이름).
+          $sign = @()
+          $signTool = @()
+          if ($env:SIGN_ENABLED -eq "true") {
+            $signScript = (Resolve-Path "packaging\installer\sign.ps1").Path
+            $sign = @("--sign")
+            $signTool = @('/Sevolabsign=pwsh -NoProfile -ExecutionPolicy Bypass -File $q' + $signScript + '$q -Path $f')
+          }
+          New-Item -ItemType Directory -Force build\installer | Out-Null
+          uv run python packaging/make_installer.py --dist dist\evolab --out build\installer\evolab.iss --names-out build\installer\names.json @messages @sign
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          & $iscc /Qp @signTool build\installer\evolab.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::ISCC failed ($LASTEXITCODE)"; exit 1 }
+          "iscc lzma2/ultra64: {0:N0} s" -f $sw.Elapsed.TotalSeconds
+          uv run python packaging/make_installer.py --dist dist\evolab --out build\installer\old.iss --version-override 2.99.0 --fast @messages
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          & $iscc /Qp build\installer\old.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::ISCC failed for the old 2.99.0 build ($LASTEXITCODE)"; exit 1 }
+          "iscc lzma2/fast (old 2.99.0): {0:N0} s" -f $sw.Elapsed.TotalSeconds
+          Get-ChildItem build\installer\Output\*.exe | ForEach-Object { "{0}: {1:N0} bytes ({2:N1} MB)" -f $_.Name, $_.Length, ($_.Length / 1e6) }
+          $setup = Get-Item -LiteralPath "build\installer\Output\evolab-setup-$env:VER.exe"
+          if ($setup.Length -gt 60000000) { Write-Host "::error::the installer is larger than 60 MB (design W4)"; exit 1 }
+
+      # W5: 옛 판 설치 → 덮어 설치 → 설치된 두 exe 자체 점검 → 내려 설치 거절 → 실행 중 조용한 제거 → 제거(설계 D47). 단계마다 시간.
+      # 설치 기록은 evolab-setup artifact의 installer-logs에 남는다. 실행 중 조용한 제거가 기대와 다르면(Inno가 조용한 모드에서
+      # AppMutex를 어떻게 다루는지는 윈도우에서만 확인) 설계 7.4 되돌릴 지점 7: -RunningUninstall을 lenient(파일만 남으면 됨)나
+      # skip(사람이 P4에서 봄)으로 바꾼다.
+      - name: Installer smoke test
+        id: smoke
+        if: ${{ !cancelled() && steps.installers.outcome == 'success' }}
+        timeout-minutes: 45
+        shell: pwsh
+        run: >-
+          ./packaging/installer_smoke.ps1
+          -Setup "build\installer\Output\evolab-setup-$env:VER.exe"
+          -OldSetup "build\installer\Output\evolab-setup-2.99.0.exe"
+          -Version $env:VER
+          -Names "build\installer\names.json"
+          -LogDir "build\release\installer-logs"
+          -RunningUninstall strict
+
+      # D44: 휴대용 zip(안에 「설치 없이 쓰기.txt」)과 SHA256SUMS.txt, 릴리스 글. 설치 파일을 만들지 못했어도 zip과 체크섬은 만든다
+      # (되돌릴 지점 6의 「zip·체크섬만 냄」).
+      - name: Portable zip and checksums
+        id: release_files
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $setup = "build\installer\Output\evolab-setup-$env:VER.exe"
+          $argv = @("--dist", "dist\evolab", "--out", "build\release", "--version", $env:VER)
+          if (Test-Path -LiteralPath $setup) {
+            $argv += @("--setup", $setup)
+          } else {
+            Write-Host "::warning::no installer: the release files are the portable zip and its checksum only (rollback 6)"
+          }
+          uv run python packaging/installer/release_files.py @argv
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Content build\release\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.release_files.outcome == 'success' }}
+        with:
+          name: evolab-setup
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 30
+
+      # W6: Media Foundation vtable 번호·GUID 표(src/evolab/app/export/mf_win.py)를 러너의 SDK 헤더로 컴파일한 C 프로그램 출력과 비교.
+      # vcvars64.bat를 부르는 명령은 따옴표가 겹쳐 PowerShell에서 바로 넘기기 어려워 임시 .cmd 파일로 돌린다.
+      - name: Media Foundation ABI table (SDK headers)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { Write-Host "::error::no Visual Studio with the C++ tools on the runner"; exit 1 }
+          New-Item -ItemType Directory -Force build | Out-Null
+          $bat = Join-Path $env:RUNNER_TEMP "mf_abi_build.cmd"
+          @(
+            "@echo off",
+            "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul || exit /b 1",
+            "cl /nologo /W3 packaging\ci\mf_abi.c /Febuild\mf_abi.exe /Fobuild\mf_abi.obj mfuuid.lib mfplat.lib mfreadwrite.lib ole32.lib || exit /b 1",
+            "build\mf_abi.exe > build\mf_abi.json || exit /b 1"
+          ) | Set-Content -Encoding ascii -LiteralPath $bat
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::building or running packaging\ci\mf_abi.c failed"; exit 1 }
+          Get-Content build\mf_abi.json
+          # tests/test_mf_abi.py는 EVOLAB_MF_ABI(또는 conftest가 등록했을 때만 --mf-abi)로 받은 JSON과 표를 비교한다.
+          $env:EVOLAB_MF_ABI = (Resolve-Path "build\mf_abi.json").Path
+          uv run pytest -q tests/test_mf_abi.py
+
+      # W8(정보만): 러너(윈도우 서버)에는 Media Foundation이 기본으로 없다. 기능 설치를 시도하고 video-probe 결과를 기록한다.
+      - name: Try Media Foundation on the runner (information only)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          Install-WindowsFeature Server-Media-Foundation | Format-List
+          uv run evolab video-probe
+
+      # W7: 앞 단계의 학습 실행으로 exe 내보내기 넷(한글 경로) → 내장 MP4를 테스트 복호기로 확인. 결과는 evolab-exports artifact로
+      # 올려 사람이 폰에서 열어 본다(P5·P6). 명령마다 걸린 시간과 크기를 찍는다.
+      - name: Exports with the console exe (Korean path)
+        id: exports
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $cli = Join-Path $dest "evolab\evolab-cli.exe"
+          $runs = Join-Path $dest "실행 기록"
+          if (-not (Test-Path -LiteralPath $cli) -or -not (Test-Path -LiteralPath $runs)) {
+            Write-Host "::error::no console exe or run folder in the Korean path (an earlier step failed)"; exit 1
+          }
+          $run = (Get-ChildItem -LiteralPath $runs -Directory | Select-Object -First 1).FullName
+          $out = Join-Path $dest "내보내기"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          function Invoke-Export([string]$Name, [string[]]$Options) {
+            $file = Join-Path $out $Name
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            & $cli export $run @Options --out $file
+            $code = $LASTEXITCODE
+            $size = if (Test-Path -LiteralPath $file) { (Get-Item -LiteralPath $file).Length } else { 0 }
+            "{0}: exit code {1}, {2:N1} s, {3:N0} bytes" -f $Name, $code, $sw.Elapsed.TotalSeconds, $size
+            if ($code -ne 0) { exit 1 }
+          }
+          Invoke-Export "챔피언.mp4" @("--format", "mp4", "--encoder", "builtin")
+          Invoke-Export "1세대와 지금.mp4" @("--format", "mp4", "--what", "versus", "--size", "small")
+          Invoke-Export "챔피언.html" @("--format", "html")
+          Invoke-Export "챔피언.gif" @("--format", "gif")
+          & $cli video-probe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          uv run python tests\h264_subset_decoder.py (Join-Path $out "챔피언.mp4")
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # W9: 폰 재생 파일을 헤드리스 Edge로 열어 재생기가 떴는지(캔버스가 있고 스크립트 없을 때의 끝 장면 그림 id="poster"가 숨음).
+      - name: Phone file opens in headless Edge
+        if: ${{ !cancelled() && steps.exports.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트\내보내기\챔피언.html"
+          $edge = @(
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
+            (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $edge) { Write-Host "::error::Microsoft Edge not found"; exit 1 }
+          $edgeProfile = Join-Path $env:RUNNER_TEMP "edge-profile"
+          $url = ([Uri]$file).AbsoluteUri
+          $dom = (& $edge --headless=new --disable-gpu --no-first-run "--user-data-dir=$edgeProfile" --virtual-time-budget=3000 --dump-dom $url) -join "`n"
+          if ($dom -notmatch '<canvas') { Write-Host "::error::no <canvas> in the page Edge rendered"; exit 1 }
+          $poster = [regex]::Match($dom, '<[^>]*\bid="poster"[^>]*>')
+          if (-not $poster.Success) { Write-Host "::error::no element with id=poster"; exit 1 }
+          if ($poster.Value -notmatch '\shidden(\s|=|/|>)') {
+            $head = $poster.Value.Substring(0, [Math]::Min(200, $poster.Value.Length))
+            Write-Host "::error::the end-scene picture is still visible after the player started: $head"; exit 1
+          }
+          "phone file: canvas present, poster hidden ({0:N0} characters of DOM)" -f $dom.Length
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.exports.outcome != 'skipped' }}
+        with:
+          name: evolab-exports
+          path: ${{ runner.temp }}/진화 실험실 테스트/내보내기/
+          if-no-files-found: warn
           retention-days: 30
 
       # 상태 폴더의 기록(errors.jsonl: 명령줄의 잡히지 않은 예외와 traceback, faults.log, 창 exe의 stderr.log, 자체 점검이
@@ -245,5 +524,48 @@ jobs:
             ${{ runner.temp }}/진화 실험실 테스트/*.log
             ${{ runner.temp }}/진화 실험실 테스트/오류 보고.zip
             ${{ runner.temp }}/진화 실험실 테스트/state-logs/
+            build/installer/*.iss
+            build/installer/names.json
+            build/mf_abi.json
           if-no-files-found: warn
           retention-days: 30
+
+  # W10: 태그 v*(예: v3.1.0)를 올리면 tests·package가 모두 성공한 뒤 설치 파일·휴대용 zip·SHA256SUMS.txt를 GitHub 릴리스에 올린다.
+  # 제목·본문은 release_files.py가 strings.py에서 만든 release-title.txt·release-notes.md(설치 안내 + 체크섬). 같은 태그로 다시
+  # 돌면 파일만 바꿔 올린다. 받을 곳(저장소 공개 여부)은 열린 질문 Q2: 기본은 이 릴리스와 Actions artifact.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tests, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: evolab-setup
+          path: release
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          setup="release/evolab-setup-${version}.exe"
+          portable="release/evolab-${version}-portable.zip"
+          for f in "$portable" release/SHA256SUMS.txt release/release-notes.md release/release-title.txt; do
+            if [ ! -f "$f" ]; then echo "::error::missing $f (the tag $TAG must match the program version)"; exit 1; fi
+          done
+          (cd release && sha256sum -c SHA256SUMS.txt)
+          files=("$portable" release/SHA256SUMS.txt)
+          # package가 성공했는데 설치 파일이 없는 것은 설치 단계를 일부러 뺀 때뿐이다(되돌릴 지점 6: zip·체크섬만 냄).
+          if [ -f "$setup" ]; then files=("$setup" "${files[@]}"); else echo "::warning::no installer in this release (rollback 6)"; fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$(head -n 1 release/release-title.txt)" --notes-file release/release-notes.md
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
