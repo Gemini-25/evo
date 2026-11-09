@@ -166,6 +166,21 @@ def test_template_is_ascii_without_hangul_and_holds_each_placeholder() -> None:
         assert word not in text, word
 
 
+def test_w9_waits_for_edge_and_reads_the_player_from_its_dom() -> None:
+    """W9(윈도우 CI 「Phone file opens in headless Edge」)는 msedge.exe를 `& $edge ...`로 부르면 안 된다: 창(GUI) 프로그램이라
+    PowerShell은 제 파이프라인 끝에서는 출력을 변수에 받아도 기다리지도 stdout을 읽지도 않는다(v3.1 첫 CI가 0.4초 만에 빈 글로
+    「no <canvas>」). Start-Process로 stdout을 파일에 받고 브라우저가 끝나기를 기다린 뒤, 그 DOM에서 스크립트가 만든 캔버스·
+    hidden이 풀린 id="player"·hidden이 붙은 id="poster"를 본다(틀에는 셋 다 반대: 위 시험). 윈도우가 없는 곳에서 지키는 글 검사."""
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows.yml").read_text(encoding="utf-8")
+    step = text.split("- name: Phone file opens in headless Edge\n", 1)[1].split("\n      - ", 1)[0]
+    code = "\n".join(line for line in step.splitlines() if not line.lstrip().startswith("#"))
+    assert "& $edge" not in code
+    for needle in ("Start-Process -FilePath $edge", "-RedirectStandardOutput", ".WaitForExit(", "--headless=new",
+                   "--dump-dom", ".AbsoluteUri", r"'<canvas\b'", r"""'<[^>]*\bid="player"[^>]*>'""",
+                   r"""'<[^>]*\bid="poster"[^>]*>'""", r"'\shidden(\s|=|/|>)'"):
+        assert needle in code, needle
+
+
 def test_phone_file_does_not_depend_on_template_line_endings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """CRLF 틀(속성 없이 core.autocrlf=true로 꺼낸 소스, 그 체크아웃으로 만든 exe 배포본이 싣는 틀)로 만들어도 폰 파일은 LF
     틀로 만든 것과 바이트가 같다(줄바꿈은 LF만): template_text가 글 모드로 읽어 줄바꿈을 LF로 바꾼다. 그래서 윈도우 exe가 만든

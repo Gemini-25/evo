@@ -507,29 +507,77 @@ jobs:
           "SHA-256: exe $exeHash, source $srcHash"
           if ($exeHash -ne $srcHash) { Write-Host "::error::the exe MP4 differs from the source MP4 of the same run"; exit 1 }
 
-      # W9: 폰 재생 파일을 헤드리스 Edge로 열어 재생기가 떴는지(캔버스가 있고 스크립트 없을 때의 끝 장면 그림 id="poster"가 숨음).
+      # W9: 폰 재생 파일을 헤드리스 Edge로 열어 재생기가 떴는지: 오프라인 file://에서 인라인 스크립트가 돌아 캔버스를 만들고
+      # id="player"를 보이고 스크립트 없을 때의 끝 장면 그림 id="poster"를 숨겼는지(재생기는 이것을 첫 애니메이션 프레임 전에,
+      # 스크립트가 도는 그 자리에서 한다). msedge.exe는 창(GUI) 프로그램이라 PowerShell은 `& $edge ...`가 제 파이프라인의 끝이면
+      # 출력을 변수에 받더라도 기다리지도 stdout을 읽지도 않는다(NativeCommandProcessor: _isRunningInBackground = isWindowsApplication).
+      # v3.1 첫 CI는 그래서 0.4초 만에 빈 글을 받아 「no <canvas>」로 멈췄고 Edge의 stderr는 그 뒤에 찍혔다. 그래서 Start-Process로
+      # stdout·stderr를 파일로 받고 브라우저 프로세스가 끝나기를 기다린다. DOM과 stderr는 「W9 Edge *.log」(evolab-selftest-logs),
+      # 폰 화면 크기(390x844) 스크린숏은 내보내기 폴더(evolab-exports)에 남는다(스크린숏은 정보용: 판정은 DOM으로만).
       - name: Phone file opens in headless Edge
         if: ${{ !cancelled() && steps.exports.outcome == 'success' }}
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $file = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트\내보내기\챔피언.html"
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $file = Join-Path $dest "내보내기\챔피언.html"
+          if (-not (Test-Path -LiteralPath $file)) { Write-Host "::error::no phone file $file (the export step did not write it)"; exit 1 }
           $edge = @(
             (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
             (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
           ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
           if (-not $edge) { Write-Host "::error::Microsoft Edge not found"; exit 1 }
-          $edgeProfile = Join-Path $env:RUNNER_TEMP "edge-profile"
+          "Edge {0}: {1}" -f (Get-Item -LiteralPath $edge).VersionInfo.ProductVersion, $edge
           $url = ([Uri]$file).AbsoluteUri
-          $dom = (& $edge --headless=new --disable-gpu --no-first-run "--user-data-dir=$edgeProfile" --virtual-time-budget=3000 --dump-dom $url) -join "`n"
-          if ($dom -notmatch '<canvas') { Write-Host "::error::no <canvas> in the page Edge rendered"; exit 1 }
-          $poster = [regex]::Match($dom, '<[^>]*\bid="poster"[^>]*>')
-          if (-not $poster.Success) { Write-Host "::error::no element with id=poster"; exit 1 }
-          if ($poster.Value -notmatch '\shidden(\s|=|/|>)') {
-            $head = $poster.Value.Substring(0, [Math]::Min(200, $poster.Value.Length))
-            Write-Host "::error::the end-scene picture is still visible after the player started: $head"; exit 1
+          function Read-Shared([string]$Path) {
+            # Edge의 자식 프로세스가 아직 파일을 열어 두었어도 읽는다(쓰기 공유)
+            if (-not (Test-Path -LiteralPath $Path)) { return "" }
+            $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try { return [IO.StreamReader]::new($fs, [Text.UTF8Encoding]::new($false)).ReadToEnd() } finally { $fs.Dispose() }
           }
-          "phone file: canvas present, poster hidden ({0:N0} characters of DOM)" -f $dom.Length
+          function Invoke-Edge([string]$Name, [string[]]$More) {
+            # Start-Process는 인수를 따옴표 없이 잇는다: 경로는 위 창 exe 단계처럼 따옴표로 감싼다(주소는 %로 바뀌어 빈칸이 없다)
+            $edgeProfile = Join-Path $env:RUNNER_TEMP "w9-edge-$Name"
+            $argv = @("--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+                      "`"--user-data-dir=$edgeProfile`"", "--virtual-time-budget=3000") + $More + @($url)
+            $out = Join-Path $dest "W9 Edge $Name.log"
+            $err = Join-Path $dest "W9 Edge $Name stderr.log"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $p = Start-Process -FilePath $edge -ArgumentList $argv -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            $null = $p.Handle
+            $done = $p.WaitForExit(90000)
+            if (-not $done) { try { $p.Kill($true) } catch { } }
+            $code = if ($done) { $p.ExitCode } else { "none (killed after 90 s)" }
+            Write-Host ("Edge {0}: exit code {1}, {2:N1} s" -f $Name, $code, $sw.Elapsed.TotalSeconds)
+            return @{ Out = $out; Err = $err }
+          }
+          $run = Invoke-Edge "DOM" @("--dump-dom")
+          $dom = Read-Shared $run.Out
+          # msedge.exe가 브라우저를 다른 프로세스에 넘기고 먼저 끝나도 DOM이 끝까지 쓰이도록 잠깐 더 기다린다(보통은 바로 지나감)
+          $deadline = [DateTime]::UtcNow.AddSeconds(15)
+          while ($dom -notmatch '</html>\s*$' -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250; $dom = Read-Shared $run.Out }
+          $shot = Join-Path $env:RUNNER_TEMP "w9-edge-screenshot.png"
+          Remove-Item -LiteralPath $shot -Force -ErrorAction SilentlyContinue
+          $null = Invoke-Edge "screenshot" @("--window-size=390,844", "`"--screenshot=$shot`"")
+          try { Copy-Item -ErrorAction Stop -LiteralPath $shot -Destination (Join-Path $dest "내보내기\W9 Edge 390x844.png") }
+          catch { Write-Host "::warning::no Edge screenshot (information only): $_" }
+          function Stop-W9([string]$Message) {
+            Write-Host "::error::$Message"
+            Write-Host ("--- first 40 lines of the DOM Edge wrote ({0:N0} characters; long lines cut at 200) ---" -f $dom.Length)
+            $dom -split "`n" | Select-Object -First 40 | ForEach-Object { Write-Host ($_.Substring(0, [Math]::Min(200, $_.Length))) }
+            Write-Host "--- last 20 lines of Edge stderr ---"
+            (Read-Shared $run.Err) -split "`n" | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+            exit 1
+          }
+          if ($dom -notmatch '<canvas\b') { Stop-W9 "no <canvas> in the page Edge rendered (the player script did not run)" }
+          $player = [regex]::Match($dom, '<[^>]*\bid="player"[^>]*>')
+          if (-not $player.Success -or $player.Value -match '\shidden(\s|=|/|>)') { Stop-W9 "the player is missing or still hidden: $($player.Value)" }
+          $poster = [regex]::Match($dom, '<[^>]*\bid="poster"[^>]*>')
+          if (-not $poster.Success) { Stop-W9 "no element with id=poster" }
+          if ($poster.Value -notmatch '\shidden(\s|=|/|>)') {
+            Stop-W9 ("the end-scene picture is still visible after the player started: " + $poster.Value.Substring(0, [Math]::Min(200, $poster.Value.Length)))
+          }
+          "phone file: canvas present, player shown, poster hidden ({0:N0} characters of DOM)" -f $dom.Length
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.exports.outcome != 'skipped' }}

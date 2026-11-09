@@ -1,9 +1,0 @@
-# tests/oracle 출처표 (v6 설계 3.2·7.3·D41). tests/test_oracle_sane.py(T0)가 이 표로 오라클 파일을 확인한다.
-# 한 줄에 하나: 오라클 파일, 원본 경로, 원본 git blob, 원본 sha256, 오라클 파일 sha256 (공백으로 나눔).
-# 오라클 파일 = 첫 줄 출처 주석 + 원본 바이트. evaluate_v31.py만 Episode import 한 줄을 바꿨다:
-#   - from evolab.world.physics2d.episode import Episode, EpisodeBuildError, EpisodeResult, Trial
-#   + from tests.oracle.episode_v31 import Episode, EpisodeBuildError, EpisodeResult, Trial
-# 오라클은 v6.0·v6.1 개발 동안의 검사 도구다. v4 0단계에서 이 폴더째 지운다(D41).
-commit a96e3bd82be97960f365dcab1f39aa33e19cb2f5
-episode_v31.py src/evolab/world/physics2d/episode.py 34f373d4614865872f4e76900e2138294d2c874e 6b824529e08e938265fdacd3da040fe51f24c162ec39e1d7b7f2e2d9628082ba 91401e65760f775f96fc148b10ee4d8a04bf12a9b492a90be370289cd829203a
-evaluate_v31.py src/evolab/engine/evaluate.py 3d639fbb5b0ce076afc07c0ab757b843d260a972 198305dbddd19e2e9ca7423afb25315c28c26b843f107f7a249b9dd2f1ba9ce2 19b97a08f6527954b5f421c2dca59745037b31bd149f605c68bcee51f77f4175
