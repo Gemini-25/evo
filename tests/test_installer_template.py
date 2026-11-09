@@ -638,6 +638,40 @@ def test_smoke_script_covers_every_design_step() -> None:
     assert "Log('Downgrade refused.');" in _render()
 
 
+def test_smoke_script_reads_shortcuts_with_the_unicode_shell_reader() -> None:
+    """a96e3bd 윈도우 CI W5: WScript.Shell의 CreateShortcut은 .lnk 경로를 시스템 ANSI 코드 페이지로 바꿔, 영어 윈도우(1252)에서
+    한글 이름의 바로 가기를 열지 못하고 오류 없이 빈 새 바로 가기를 돌려줬다(있는 바로 가기 셋의 대상·인수가 빈 글로 읽혀 실패 넷).
+    확인 값은 유니코드 셸 자동화(Shell.Application → FolderItem.GetLink)로 읽고 대상·인수·작업 폴더를 모두 본다.
+    WScript.Shell은 정보 줄(같은 파일을 다르게 읽으면 찍기)에만 남는다. pwsh가 없는 곳에서도 도는 글 검사다."""
+    text = (PACKAGING / "installer_smoke.ps1").read_bytes().decode("utf-8-sig")
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def function_body(name: str) -> str:
+        start = code.index(f"function {name}(")
+        return code[start:code.index("\n}\n", start)]
+
+    assert "$script:shellApp = New-Object -ComObject Shell.Application" in code
+    reader = function_body("Read-Shortcut")
+    for needle in ("$script:shellApp.Namespace(", ".ParseName(", "$item.IsLink", "$item.GetLink",
+                   "$link.Path", "$link.Arguments", "$link.WorkingDirectory", "$why = ", "Error = $why }"):
+        assert needle in reader, needle
+    check = function_body("Test-Shortcut")
+    assert "CreateShortcut" not in check and "$lnk = Read-Shortcut $Path" in check
+    for needle in ("-PathType Leaf", "if ($lnk.Error)", "Test-SamePath $lnk.Target $AppExe",
+                   "$lnk.Arguments -ceq $Arguments", "Test-SamePath $lnk.WorkingDirectory $AppDir"):
+        assert needle in check, needle
+    # 대상·작업 폴더 비교는 예외 없이 거짓(빈 글·잘못된 경로)이나 대소문자를 무시한 같은 전체 경로
+    same = function_body("Test-SamePath")
+    assert "if (-not $A -or -not $B) { return $false }" in same and "OrdinalIgnoreCase" in same and "catch" in same
+    # WScript.Shell의 CreateShortcut은 정보 줄 하나에만(확인 값에 쓰지 않는다)
+    assert code.count("CreateShortcut(") == 1
+    info = function_body("Show-WshShortcutView")
+    assert "CreateShortcut(" in info and "Check " not in info and "information only" in info
+    # 바로 가기 셋 모두 같은 확인을 거친다: 시작 메뉴 둘(오류 보고는 report --open), 바탕 화면 하나
+    for call in ('Test-Shortcut $StartLnk "" ', 'Test-Shortcut $ReportLnk "report --open" ', 'Test-Shortcut $DeskLnk "" '):
+        assert call in code, call
+
+
 def test_packaging_scripts_keep_korean_text_in_strings_py() -> None:
     """test_rules.py와 같은 규칙을 이 묶음의 packaging 스크립트에도: 문서 문자열·주석 말고 한글 문자열 리터럴이 없다."""
     import ast

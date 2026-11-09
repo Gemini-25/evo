@@ -150,6 +150,8 @@ def _html_checks(text: str, *, names_hold_at: bool = False) -> None:
 def test_template_is_ascii_without_hangul_and_holds_each_placeholder() -> None:
     raw = P.TEMPLATE_PATH.read_bytes()
     assert all(b < 128 for b in raw), "phone_player.html must be ASCII only (words come from PHONE_TEXT)"
+    # 저장소의 틀은 LF다. core.autocrlf=true인 윈도우 체크아웃(윈도우 CI 러너)도 .gitattributes(text eol=lf)로 LF로 꺼낸다
+    assert b"\r" not in raw, "phone_player.html was checked out with CRLF: .gitattributes must keep it eol=lf"
     text = raw.decode("ascii")
     found = re.findall(r"@@([A-Z]+)@@", text)
     assert sorted(set(found)) == sorted(P.PLACEHOLDERS)
@@ -162,6 +164,49 @@ def test_template_is_ascii_without_hangul_and_holds_each_placeholder() -> None:
     assert text.index("<noscript>") < text.index('<img id="poster"')  # 안내 「아래 그림은 마지막 장면」
     for word in ("http:", "https:", "<link", "fetch", "XMLHttpRequest", "import", "eval(", "new Function"):
         assert word not in text, word
+
+
+def test_phone_file_does_not_depend_on_template_line_endings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CRLF 틀(속성 없이 core.autocrlf=true로 꺼낸 소스, 그 체크아웃으로 만든 exe 배포본이 싣는 틀)로 만들어도 폰 파일은 LF
+    틀로 만든 것과 바이트가 같다(줄바꿈은 LF만): template_text가 글 모드로 읽어 줄바꿈을 LF로 바꾼다. 그래서 윈도우 exe가 만든
+    폰 파일과 리눅스에서 만든 폰 파일은 같은 작업이면 같은 바이트다."""
+    job = _single("lander")
+    want = P.phone_html(job)
+    assert "\r" not in want
+    crlf = tmp_path / "phone_player.html"
+    crlf.write_bytes(P.TEMPLATE_PATH.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(P, "TEMPLATE_PATH", crlf)
+    P.template_text.cache_clear()
+    try:
+        assert crlf.read_bytes().count(b"\r\n") == crlf.read_bytes().count(b"\n") > 100
+        assert "\r" not in P.template_text()
+        assert P.phone_html(job) == want
+        out = P.write_phone_html(tmp_path / "폰.html", job, None)
+        assert out.read_bytes() == want.encode("utf-8")
+    finally:
+        P.template_text.cache_clear()  # 다음 시험은 진짜 틀을 다시 읽는다
+
+
+def test_gitattributes_keeps_shipped_byte_checked_text_files_lf() -> None:
+    """폰 재생기 틀과 내장 환경은 배포본(PyInstaller datas)에 그대로 실리고 테스트가 파일 바이트로 확인한다(위 틀 시험,
+    tests/test_oracle_sane.py의 env_sha256). 리눅스 체크아웃은 속성이 없어도 LF라 바이트 시험으로는 빠진 속성을 못 잡으므로
+    git이 이 파일들에 text eol=lf를 준다는 것을 직접 본다(git check-attr는 읽기만 한다). git 체크아웃이 아니면 건너뛴다."""
+    git = shutil.which("git")
+    root = Path(__file__).resolve().parents[1]
+    if git is None:
+        pytest.skip("git 없음")
+    inside = subprocess.run([git, "-C", str(root), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True,
+                            check=False)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        pytest.skip("git 체크아웃이 아님")
+    envs = sorted(p.relative_to(root).as_posix() for p in (root / "environments").glob("*.evoenv"))
+    files = ["src/evolab/app/export/assets/phone_player.html", *envs]
+    assert envs and all((root / f).is_file() for f in files), files
+    out = subprocess.run([git, "-C", str(root), "check-attr", "text", "eol", "--", *files], capture_output=True,
+                         text=True, check=True).stdout
+    got = {tuple(line.rsplit(": ", 2)) for line in out.splitlines()}
+    want = {(f, attr, value) for f in files for attr, value in (("text", "set"), ("eol", "lf"))}
+    assert got == want, out
 
 
 def test_colors_match_spectator_canvas() -> None:

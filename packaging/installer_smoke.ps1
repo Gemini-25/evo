@@ -6,7 +6,7 @@
 # 순서(D47):
 #   1 옛 판(같은 배포본을 2.99.0으로 묶은 것) 조용히 설치 → 옛 _internal에 표시 파일, 데이터 폴더·설정 폴더에 사용자 자료 심기
 #   2 이번 판 덮어 설치 → 제거 정보가 HKCU에만 하나·DisplayVersion = 이번 판, 설치 폴더가 %LOCALAPPDATA%\Programs 아래,
-#     표시 파일 없음(옛 _internal을 지움), 자료·설정 그대로, 시작 메뉴 둘·바탕 화면 바로 가기와 대상·인수, 두 exe 파일 버전
+#     표시 파일 없음(옛 _internal을 지움), 자료·설정 그대로, 시작 메뉴 둘·바탕 화면 바로 가기와 대상·인수·작업 폴더, 두 exe 파일 버전
 #   3 설치된 두 exe 자체 점검 + 오류 보고 묶음 명령(시작 메뉴 바로 가기와 같은 명령)
 #   4 옛 판으로 내려 설치 → 거절(종료 코드 ≠ 0), 버전 그대로
 #   5 프로그램을 띄운 채 조용히 제거 → 뮤텍스(AppMutex) 때문에 제거하지 않음(파일·제거 정보 남음)
@@ -199,26 +199,105 @@ function Get-FileVersion([string]$Path) {
   return "{0}.{1}.{2}.{3}" -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
 }
 
+# 두 경로가 같은 곳인가(대소문자·끝의 \ 무시). 빈 글이나 잘못된 경로는 다르다고 본다(예외로 시험 전체를 멈추지 않는다).
+function Test-SamePath([string]$A, [string]$B) {
+  if (-not $A -or -not $B) { return $false }
+  try {
+    $fa = [IO.Path]::GetFullPath($A).TrimEnd('\')
+    $fb = [IO.Path]::GetFullPath($B).TrimEnd('\')
+    return [string]::Equals($fa, $fb, [StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+# 바로 가기(.lnk)의 대상·인수·작업 폴더를 읽는다. WScript.Shell의 CreateShortcut(WshShortcut)은 쓰지 않는다: .lnk 경로를 시스템
+# ANSI 코드 페이지로 바꿔 다루므로 영어 윈도우(코드 페이지 1252, CI 러너)에서는 한글이 '?'가 되어 파일을 열지 못하고, 그래도
+# 오류 없이 빈 새 바로 가기를 돌려준다(CreateShortcut은 없는 파일이면 새로 만들 바로 가기를 준다). 그래서 a96e3bd 윈도우 CI W5에서
+# 있는 바로 가기 셋의 대상·인수가 모두 빈 글로 읽혔다. 셸 자동화(Shell.Application → FolderItem.GetLink = ShellLinkObject,
+# 유니코드 IShellLinkW 위)는 경로와 값을 유니코드(BSTR) 그대로 다룬다. 못 읽으면 Error에 까닭을 담는다(빈 값으로 꾸미지 않는다).
+function Read-Shortcut([string]$Path) {
+  $target = ""
+  $arguments = ""
+  $workingDir = ""
+  $why = ""
+  try {
+    $folder = $script:shellApp.Namespace([IO.Path]::GetDirectoryName($Path))
+    if ($null -eq $folder) {
+      $why = "Shell.Application cannot open the folder"
+    } else {
+      $item = $folder.ParseName([IO.Path]::GetFileName($Path))
+      if ($null -eq $item) {
+        $why = "Shell.Application does not find the file in its folder"
+      } elseif (-not $item.IsLink) {
+        $why = "the shell does not see a shortcut in the file"
+      } else {
+        $link = $item.GetLink
+        $target = [string]$link.Path
+        $arguments = [string]$link.Arguments
+        $workingDir = [string]$link.WorkingDirectory
+      }
+    }
+  } catch {
+    $why = "Shell.Application failed: $($_.Exception.Message)"
+  }
+  return [pscustomobject]@{ Target = $target; Arguments = $arguments; WorkingDirectory = $workingDir; Error = $why }
+}
+
+# 정보만(확인 줄이 아니다): WScript.Shell이 같은 파일에서 다른 값을 읽으면 그 값과 WshShortcut이 본 파일 이름(FullName)을 찍는다.
+# 위 까닭의 증거다(영어 윈도우에서는 FullName의 한글이 '?'). 한국어 윈도우(코드 페이지 949)처럼 같은 값이면 아무것도 찍지 않는다.
+function Show-WshShortcutView([string]$Path, $Read) {
+  if ($null -eq $script:wshShell) { return }
+  try {
+    $wsh = $script:wshShell.CreateShortcut($Path)
+    $wshTarget = [string]$wsh.TargetPath
+    $wshArguments = [string]$wsh.Arguments
+    if ($wshTarget -cne $Read.Target -or $wshArguments -cne $Read.Arguments) {
+      Write-Host "         (information only) WScript.Shell opens '$($wsh.FullName)' and reads target '$wshTarget', arguments '$wshArguments' (ANSI code page $AnsiCodePage)"
+    }
+  } catch {
+    Write-Host "         (information only) WScript.Shell cannot read the shortcut: $($_.Exception.Message)"
+  }
+}
+
 function Test-Shortcut([string]$Path, [string]$Arguments, [string]$What) {
-  $exists = Test-Path -LiteralPath $Path
+  $exists = Test-Path -LiteralPath $Path -PathType Leaf
   Check $exists "$What exists"
-  if (-not $exists) { return }
-  $lnk = $script:shell.CreateShortcut($Path)
-  $target = [string]$lnk.TargetPath
-  $sameTarget = $target -and ([IO.Path]::GetFullPath($target) -eq [IO.Path]::GetFullPath($AppExe))
-  Check $sameTarget "$What target is evolab.exe ($target)"
-  Check ([string]$lnk.Arguments -eq $Arguments) "$What arguments are '$Arguments' ('$($lnk.Arguments)')"
+  if (-not $exists) { Write-Host "         looked for: $Path"; return }
+  $lnk = Read-Shortcut $Path
+  if ($lnk.Error) {
+    Check $false "$What can be read ($($lnk.Error))"
+    Write-Host ("         file: {0} ({1} bytes)" -f $Path, (Get-Item -LiteralPath $Path).Length)
+    return
+  }
+  $okTarget = Test-SamePath $lnk.Target $AppExe
+  $okArguments = $lnk.Arguments -ceq $Arguments
+  $okDir = Test-SamePath $lnk.WorkingDirectory $AppDir
+  Check $okTarget "$What target is evolab.exe ('$($lnk.Target)')"
+  Check $okArguments "$What arguments are '$Arguments' ('$($lnk.Arguments)')"
+  Check $okDir "$What working folder is the program folder ('$($lnk.WorkingDirectory)')"
+  if (-not ($okTarget -and $okArguments -and $okDir)) {
+    Write-Host "         file: $Path"
+    Write-Host "         expected target: $AppExe"
+  }
+  Show-WshShortcutView $Path $lnk
 }
 
 Write-Host "setup:      $Setup ($([Math]::Round((Get-Item -LiteralPath $Setup).Length / 1e6, 1)) MB)"
 Write-Host "old setup:  $OldSetup ($($n.old_test_version))"
 Write-Host "version:    $Version"
 Write-Host "app folder: $AppDir"
+# 시스템 ANSI 코드 페이지(정보: 영어 윈도우 1252, 한국어 윈도우 949). 한글 경로를 이 코드 페이지로 바꾸는 옛 API는 '?'를 읽는다.
+$AnsiCodePage = "unknown"
+try { $AnsiCodePage = [string](Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage" -Name ACP).ACP } catch { }
+Write-Host "ANSI code page: $AnsiCodePage"
 if ((Test-Path -LiteralPath $UninstKey) -or (Test-Path -LiteralPath $AppDir)) {
   Write-Host "error: the program is already installed on this machine: the smoke test needs a clean first install"
   exit 1
 }
-$script:shell = New-Object -ComObject WScript.Shell
+$script:shellApp = New-Object -ComObject Shell.Application
+$script:wshShell = $null
+try { $script:wshShell = New-Object -ComObject WScript.Shell } catch { Write-Host "  (WScript.Shell is not available: information lines skipped)" }
 New-Item -ItemType Directory -Force $Sandbox | Out-Null
 $gui = $null
 
