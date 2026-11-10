@@ -308,7 +308,8 @@ RUNS_CHAMPION_BROKEN: Final = "챔피언 파일을 읽을 수 없습니다: {pat
 # ---- 학습 엔진 (engine/) ----
 POOL_TASK_FAILED: Final = "평가 중 오류가 났습니다. 환경 파일을 확인하세요.\n{detail}"
 POOL_WORKER_DIED: Final = "평가 워커가 거듭 비정상 종료했습니다(종료 코드 {code})."
-METHOD_NAMES: Final = {"cmaes": "CMA-ES", "ga": "유전 알고리즘", "sa": "담금질"}
+METHOD_NAMES: Final = {"cmaes": "CMA-ES", "ga": "유전 알고리즘", "sa": "담금질",
+                       "grow": "CMA-ES · 자라는 뇌"}  # v6.1: 작게 시작해 자라는 뇌(CMA-ES만, learners/grow.py)
 TRAIN_STOP_REASONS: Final = {
     "max_generations": "최대 세대",
     "max_evaluations": "최대 시험 횟수",
@@ -391,6 +392,7 @@ DASH_TILE_TITLES: Final = {
     "actions": "행동 분포",
     "body": "몸 수치 추이",
     "structure": "몸 구조",  # v2.1
+    "brainsize": "뇌 크기",  # v6.1 (app/lab/grow_tile.py, 「보는 재미」 쪽 「뇌 들여다보기」 바로 뒤)
 }
 DASH_AXIS_LABEL: Final = "가로축"
 DASH_AXIS_NAMES: Final = {"generation": "세대", "evaluations": "누적 시험 횟수", "elapsed": "경과 시간(초)"}
@@ -1873,9 +1875,9 @@ HELPW_LINK_BLOCKED: Final = "이 도움말은 인터넷 주소를 열지 않습�
 WHATS_THIS_HINT: Final = "알고 싶은 곳을 누르세요 (그만하려면 Esc)."
 WHATS_THIS_NONE: Final = "이 부분에는 따로 설명이 없습니다. 「{page}」 도움말을 여세요."
 WHATS_THIS_MORE: Final = "도움말에서 더 보기"
-HELP_GLOSSARY_TERMS: Final = ("세대", "개체", "집단", "유전자", "몸 수치", "몸 구조", "뇌", "시험", "시드", "세대 대표", "챔피언",
-                              "검증", "관전", "고속", "CMA-ES", "유전 알고리즘", "담금질", "체크포인트", "관찰 기록",
-                              "재현 묶음", "누적 시험 횟수")
+HELP_GLOSSARY_TERMS: Final = ("세대", "개체", "집단", "유전자", "몸 수치", "몸 구조", "뇌", "뉴런", "시험", "시드", "세대 대표",
+                              "챔피언", "검증", "관전", "고속", "CMA-ES", "유전 알고리즘", "담금질", "체크포인트", "관찰 기록",
+                              "재현 묶음", "누적 시험 횟수")  # v6.1: 「뉴런」
 
 # 도움말 쪽: id → (제목, Markdown). 「…」 안에는 {{상수}}·{{사전.키}} 자리만 쓴다(테스트). 쪽 순서 = 목록 순서.
 HELP_PAGES: Final = {
@@ -1950,6 +1952,16 @@ HELP_PAGES: Final = {
 칸 위에 마우스를 올리면 설명이 나옵니다. 처음에는 기본값 그대로 두는 것이 좋습니다.
 같은 설정이라도 실행 시드에 따라 빠르기가 다릅니다. 점수가 오래 그대로면 시드만 바꿔 새로 시작해 보세요.
 「{{LAB_STABILITY_GROUP}}」 묶음의 자동 재시작은 선택 기능입니다. 시험해 보니 평균 성공률을 높이지 못해 기본으로 꺼 두었습니다.
+
+## 자라는 뇌
+
+「{{LAB_BRAIN}}」 줄에서 「{{LAB_BRAIN_GROW}}」 항목을 고르면 뇌가 은닉층마다 「{{LAB_GROW_START}}」 칸의 수만큼 뉴런으로 시작해서
+「{{LAB_GROW_EVERY}}」 칸의 세대마다 두 배로 늘어납니다. 이 줄은 학습 방법이 CMA-ES일 때만 보입니다.
+늘어날 때 새 뉴런의 출력 쪽 연결은 0에서 시작하므로 그때까지 배운 행동은 그대로이고, 그다음 세대부터 새 뉴런을 쓰는 법을 배웁니다.
+「{{DASH_TILE_TITLES.brain}}」 타일에서 옅은 점선 원이 채워지는 모습을, 「{{DASH_TILE_TITLES.brainsize}}」 타일에서 뉴런과 연결 수가 계단처럼
+느는 모습을 봅니다. 에디터 「{{EDP_TAB_BRAIN}}」 탭의 은닉층 크기가 다 자란 크기입니다.
+내장 예제로 시험해 보니 같은 학습 시험 수에서 「{{LAB_BRAIN_FIXED}}」 방식과 비슷하거나 조금 느렸습니다. 두 가지를 비교 화면에서 나란히
+돌려 보면 그 환경에 맞는 쪽을 알 수 있습니다. 자라는 뇌 실행은 v6.1 이상에서만 이어 할 수 있습니다.
 """),
 "dashboard": ("그래프 읽기", """# 그래프 읽기
 
@@ -1988,6 +2000,10 @@ HELP_PAGES: Final = {
 ## {{DASH_TILE_TITLES.brain}}
 
 신경망 연결과 재생 중 뉴런 값입니다. 뇌가 없는 환경(글라이더 등)에서는 비어 있습니다.
+
+## {{DASH_TILE_TITLES.brainsize}}
+
+세대마다 은닉 뉴런 수(계단)와 연결 수(점선)를 그립니다. 세로 점선은 뇌가 자란 세대입니다. 「{{LAB_BRAIN_FIXED}}」 실행에서는 크기만 알려 줍니다.
 
 ## {{DASH_TILE_TITLES.density}}
 
@@ -2227,6 +2243,7 @@ OneDrive로 옮겨진 문서 폴더는 실행 기록이 많으면 동기화가 �
 - **몸 수치**: 바퀴 크기, 다리 길이처럼 진화하는 몸의 값.
 - **몸 구조**: 몸에 어떤 부품이 달렸는지(바퀴 몇 개, 어느 자리). 부품이 생기고 없어지는 것도 진화할 수 있습니다.
 - **뇌**: 센서 값을 받아 추진기·모터 출력을 내는 작은 신경망.
+- **뉴런**: 신경망의 계산 단위 하나. 들어오는 값에 연결 세기를 곱해 더한 뒤 보통 -1..1로 눌러 내보냅니다.
 - **시험**: 개체 하나를 시작 조건 하나로 끝까지 돌리는 것. 개체마다 몇 번 시험해 평균을 냅니다.
 - **누적 시험 횟수**: 지금까지 한 시험의 수. 학습 방법끼리 비교하는 기준입니다.
 - **시드**: 난수의 출발점. 같은 PC·같은 버전에서 같은 시드면 같은 결과가 나옵니다.
@@ -2613,3 +2630,86 @@ SELFTEST_FASTPATH_DIFF: Final = "빠른 계산 길과 보통 길의 결과가 �
 # v6.0 P 묶음 (관전 방식): 「관전 방식」 칸(lab.pace_combo)의 풍선. 연결표 키 lab.pace(app/help/anchors.py)와 함께 더한다.
 # ---------------------------------------------------------------------------
 HELP_TIPS["lab.pace"] = LAB_PACE_TIP
+
+# ---------------------------------------------------------------------------
+# v6.1 자라는 뇌 (0'단계 묶음: v6 설계 6절의 「# v6.1」 줄). 학습 방법 "grow"(CMA-ES만, 선택 기능이고 새 실행의
+# 기본은 「크기 고정」), 실험실 「뇌」 줄, 뇌 그림의 꺼진 자리·새 뉴런, 「뇌 크기」 타일, 명령줄, 자체 점검, 에디터 안내 한 줄.
+# 위 제자리에서 바꾼 것(같은 이름을 두 번 쓰지 않음):
+# - METHOD_NAMES["grow"], DASH_TILE_TITLES["brainsize"](「보는 재미」 쪽 타일 id는 C 묶음이 app/lab/dashboard.py에 더한다).
+# - HELP_GLOSSARY_TERMS에 「뉴런」(설계는 사전 항목으로 적었지만 지금은 낱말 묶음 + 「낱말 풀이」 쪽 줄이라 둘 다 더함). 설계 글
+#   「-1..1로 눌러」를 「보통 -1..1로 눌러」로: 은닉층을 ReLU로 고를 수 있다(에디터 「뇌 설정」).
+# - HELP_PAGES 「실험실」 쪽 끝 「자라는 뇌」 절, 「그래프 읽기」 쪽 「뇌 크기」 절(「뇌 들여다보기」 절 바로 뒤, 타일 순서와 같게).
+#   설계 글에서 자리 바로 뒤의 조사(「…」에서·를·마다·와·의)를 줄·항목·칸·타일·탭·방식으로 바꿨다(v3 D19: 자리 뒤에 조사를 붙이지
+#   않음. 「크기 고정」와처럼 받침과 어긋남). 「처음 뉴런 수」 칸과 「CMA-ES일 때만 보임」(설계 D32·D36)을 한 문장씩 더했다.
+# 설계 글과 다른 것: TRAIN_GROW_NO_IPOP의 「정체하면 개체 수를 늘려 재시작」은 지금 화면에 없는 이름이라 실험실 칸(LAB_IPOP)·
+# 명령줄(--ipop)과 같은 말로 바꿨다. FRAME_*는 policy/frame.py의 FrameError 글(6절 밖, 0'단계가 함께 더함).
+# HELP_TIPS 세 키(lab.brain·lab.grow_start·lab.grow_every)의 연결표 키는 C 묶음이 app/help/anchors.py에 더한다(그 전까지
+# test_v3_strings·test_help_anchors의 「HELP_TIPS 키 ⊆ 연결표」와 타일 id 검사가 실패한다).
+# ---------------------------------------------------------------------------
+# ---- 실험실 「뇌」 (app/lab/view.py) ----
+LAB_BRAIN: Final = "뇌"
+LAB_BRAIN_FIXED: Final = "크기 고정"
+LAB_BRAIN_GROW: Final = "작게 시작해 자라기"
+LAB_BRAIN_TIP: Final = (
+    "크기 고정: 에디터 「뇌 설정」에서 정한 크기의 뇌로 처음부터 학습합니다.\n"
+    "작게 시작해 자라기: 은닉층마다 뉴런 몇 개로 시작해서, 정해진 세대마다 뉴런을 두 배로 늘립니다. 새 뉴런은 출력 쪽 연결이 0으로 "
+    "태어나므로 늘어나는 순간에는 지금까지 배운 행동이 그대로입니다. 「뇌 설정」에서 정한 크기까지 자랍니다. 자라는 모습을 보는 "
+    "방법이며, 크기 고정보다 더 잘 배운다는 뜻은 아닙니다.")
+LAB_BRAIN_GROW_NO_HIDDEN: Final = "이 환경의 뇌에는 은닉층이 없어서 자랄 수 없습니다. 에디터 「뇌 설정」에서 은닉층을 더하면 고를 수 있습니다."
+LAB_BRAIN_GROW_NO_BRAIN: Final = "이 환경은 뇌 없이 몸만 진화해서 고를 것이 없습니다."
+LAB_GROW_START: Final = "처음 뉴런 수"
+LAB_GROW_START_TIP: Final = "은닉층마다 처음에 켜 둘 뉴런 수입니다. 「뇌 설정」의 은닉층 크기보다 클 수 없습니다."
+LAB_GROW_EVERY: Final = "자라는 간격(세대)"
+LAB_GROW_EVERY_TIP: Final = "이만큼 세대가 지날 때마다 은닉층마다 뉴런을 두 배로 늘립니다. 「뇌 설정」에서 정한 크기에 닿으면 멈춥니다."
+LAB_GROW_HINT: Final = "{path}개, {gen}세대쯤에 다 자랍니다."  # {path}: 「2 → 4 → 8 → 16」(가장 작은 은닉층 기준)
+LAB_GROW_HINT_ALREADY: Final = "처음부터 다 자란 크기라 자라지 않습니다."
+LAB_GROW_HINT_HONEST: Final = "같은 학습 시험 수에서 크기 고정보다 더 잘 배운다는 뜻은 아닙니다. 뇌가 자라는 모습을 볼 때 고르세요."
+LAB_STATUS_GROWN: Final = "{gen}세대: 뇌가 자랐습니다 — 뉴런 {old} → {new}개, 연결 {old_links:,} → {new_links:,}개"
+
+# ---- 학습기·명령줄 (engine/trainer.py, cli.py, engine/commands.py) ----
+TRAIN_GROW_NO_HIDDEN: Final = ("이 환경의 뇌에는 은닉층이 없어서 「자라는 뇌」로 학습할 수 없습니다. 크기 고정으로 학습하거나 "
+                               "에디터 「뇌 설정」에서 은닉층을 더하세요.")
+TRAIN_GROW_NO_IPOP: Final = ("자라는 뇌는 IPOP(pycma 종료 조건이 차면 개체 수를 2배로 늘려 다시 시작)과 함께 쓸 수 없습니다. "
+                             "둘 중 하나만 고르세요.")
+TRAIN_GROW_SUMMARY: Final = "자라는 뇌: 뉴런 {start}개 → {full}개, {every}세대마다 두 배"
+CLI_HELP_GROW_START: Final = "자라는 뇌(--method grow)의 은닉층마다 처음 뉴런 수(기본 2)"
+CLI_HELP_GROW_EVERY: Final = "자라는 뇌가 뉴런을 두 배로 늘리는 세대 간격(기본 10)"
+CLI_TRAIN_GROWN: Final = "{gen}세대: 뇌가 자랐습니다(뉴런 {old} → {new}개)"
+
+# ---- 대시보드 (app/lab/dashboard.py, grow_tile.py, brain_view.py) ----
+DASH_MARK_GROW: Final = "{gen}세대 끝: 뇌가 자람(뉴런 {old} → {new}개)"
+DASH_TREND_GROW: Final = "뇌가 자란 세대"
+GROW_TILE_NEURONS: Final = "은닉 뉴런 수"
+GROW_TILE_LINKS: Final = "연결 수"
+GROW_TILE_EVENT: Final = "자란 세대"
+GROW_TILE_AXIS_NEURONS: Final = "뉴런"
+GROW_TILE_AXIS_LINKS: Final = "연결"
+GROW_TILE_FIXED: Final = ("이 실행의 뇌는 크기가 정해져 있습니다: 뉴런 {neurons}개, 연결 {links:,}개.\n"
+                          "실험실 「뇌」에서 「작게 시작해 자라기」를 고르면 뇌가 자라는 모습을 볼 수 있습니다.")
+GROW_TILE_TIP: Final = "{x}: 뉴런 {neurons}/{total}개, 연결 {links:,}개"
+BRAIN_SIZE_LABEL: Final = " · 뉴런 {n}/{total} · 연결 {links:,}"
+BRAIN_GROW_NOTE: Final = "옅은 점선 원은 아직 생기지 않은 뉴런 자리입니다. 정해진 세대마다 두 배로 채워집니다."
+BRAIN_NODE_NEW: Final = "최근 {gen}세대 안에 새로 생긴 뉴런"
+BRAIN_NODE_EMPTY: Final = "아직 생기지 않은 뉴런 자리"
+
+# ---- 자체 점검 (selftest.py) ----
+SELFTEST_CHECK_GROW: Final = "자라는 뇌 (자라기 직전·직후 뇌가 같은 결과를 내는지, 짧은 학습 두 번이 같은지)"
+SELFTEST_GROW_SAME: Final = "자라는 뇌가 자라기 전과 같은 결과를 내고, 두 번 돌린 학습이 같습니다."
+SELFTEST_GROW_DIFF: Final = "자라는 뇌 점검이 실패했습니다: {detail}"
+
+# ---- 에디터 「뇌 설정」 탭 (app/editor/tabs.py) ----
+EDP_BRAIN_GROW_NOTE: Final = ("실험실에서 「작게 시작해 자라기」를 고르면 이 크기가 뇌가 다 자란 크기입니다. "
+                              "크게 잡아도 처음에는 작게 시작합니다.")
+
+# ---- 뇌 틀 (policy/frame.py의 FrameError, 6절 밖) ----
+FRAME_NO_BRAIN: Final = "이 환경은 뇌 없이 몸만 진화해서 자라는 뇌의 틀을 만들 수 없습니다."
+FRAME_NO_HIDDEN: Final = "이 환경의 뇌에는 은닉층이 없어서(입력이 바로 출력으로 이어짐) 자라는 뇌의 틀을 만들 수 없습니다."
+FRAME_BAD_COUNTS: Final = ("켜진 뉴런 수가 잘못되었습니다: {counts}. 은닉층 {layers}개마다 정수 하나씩, 1 이상 그 층 크기 이하여야 "
+                           "합니다(은닉층 크기 {sizes}).")
+FRAME_BAD_NEURON: Final = "뉴런 자리가 잘못되었습니다: 은닉층 {layer}의 {j}번째 뉴런(은닉층 크기 {sizes})."
+FRAME_GENOME_SHAPE: Final = "유전자 모양이 {shape}인데 이 뇌 틀에는 숫자 {dim}개짜리 한 줄이 필요합니다."
+
+# ---- 풍선 도움말 (app/help/tooltips.py). 연결표 키는 C 묶음이 app/help/anchors.py에 더한다 ----
+HELP_TIPS["lab.brain"] = LAB_BRAIN_TIP
+HELP_TIPS["lab.grow_start"] = LAB_GROW_START_TIP
+HELP_TIPS["lab.grow_every"] = LAB_GROW_EVERY_TIP
