@@ -38,7 +38,6 @@ from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import (
     GROW_COLUMNS,
     GROW_KEYS,
-    LEARNER_COLUMNS,
     SWITCH_RESTART_CHAMPION,
     SWITCH_RESTART_FRESH,
     TrainConfig,
@@ -143,10 +142,10 @@ def genomes_of(store: RunStore) -> dict[str, bytes]:
     return out
 
 
-def canon(obj: Any, seen: set[int] | None = None) -> Any:
+def canon(obj: Any, seen: dict[int, Any] | None = None) -> Any:
     """체크포인트를 비교할 수 있는 값으로(tests/test_pace.py와 같은 규칙): 배열은 (dtype, 모양, 바이트), 실수는 repr, 객체는
     (클래스, 속성). 벽시계 값(학습 상태의 "elapsed", pycma 피클 안의 "timer" 속성)은 뺀다. 피클 바이트는 풀어서 비교한다."""
-    seen = set() if seen is None else seen
+    seen = {} if seen is None else seen
     if isinstance(obj, np.ndarray):
         return ("nd", obj.dtype.str, obj.shape, obj.tobytes())
     if isinstance(obj, float):
@@ -162,7 +161,8 @@ def canon(obj: Any, seen: set[int] | None = None) -> Any:
         return obj
     if id(obj) in seen:
         return "<cycle>"
-    seen.add(id(obj))
+    seen[id(obj)] = obj  # 비교가 끝날 때까지 살려 둔다: 풀어 낸 피클 같은 임시 값이 사라진 뒤 그 id를 새 값이 다시 받으면
+    # 처음 보는 값이 「<cycle>」로 잘못 보인다(v6.1 통합: 부하가 있을 때 T40 체크포인트 비교가 그렇게 한 번 실패)
     if isinstance(obj, dict):
         return ("d", sorted((repr(k), canon(v, seen)) for k, v in obj.items()
                             if k != "elapsed" and "timer" not in str(k)))
@@ -307,6 +307,12 @@ def test_initial_mean_fills_incoming_weights_and_keeps_the_output_function() -> 
     b = bigger.best()
     assert b[frame.active_coords((2,))].tobytes() == champ[frame.active_coords((2,))].tobytes()
     assert np.all(b[frame.neuron_in(0, 3, (4,))] != 0.0) and np.all(b[frame.neuron_out(0, 3, (4,))] == 0.0)
+    # 들어오는 가중치만 0이고 나가는 가중치가 있는 뉴런(편향만으로 출력에 닿음)은 채우지 않는다: 처음 함수가 그대로
+    odd = champ.copy()
+    odd[frame.neuron_in(0, 1, (2,))] = 0.0
+    odd[frame.bias(0, 1)] = 0.7
+    kept = GrowingCMAES(odd, LAYOUT, CMAESConfig(popsize=8, seed=9), GrowConfig(start=2))
+    assert kept.counts == (2,) and kept.best().tobytes() == odd.tobytes()
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +389,28 @@ def test_fixed_interval_doubling_stops_at_the_frame() -> None:
         if lr2.last_growth is not None:
             path2.append(lr2.counts)
     assert path2 == [(2, 2), (4, 4), (6, 5)]
+
+
+def test_growth_schedule_matches_the_learner() -> None:
+    """화면 안내 줄용 일정(growth_schedule)이 실제 학습 방법이 자라는 세대·크기와 같다."""
+    from evolab.learners.grow import growth_schedule
+
+    assert growth_schedule((16,), 2, 10) == [(0, (2,)), (10, (4,)), (20, (8,)), (30, (16,))]
+    assert growth_schedule((16,), 16, 10) == [(0, (16,))] and growth_schedule((16,), 99, 3) == [(0, (16,))]
+    assert growth_schedule((12,), 2, 3) == [(0, (2,)), (3, (4,)), (6, (8,)), (9, (12,))]
+    assert growth_schedule((6, 5), 2, 2) == [(0, (2, 2)), (2, (4, 4)), (4, (6, 5))]
+    assert growth_schedule((7,), 3, 1) == [(0, (3,)), (1, (6,)), (2, (7,))]
+    for sizes, start, every in (((16,), 2, 4), ((6, 5), 1, 2), ((9,), 3, 1)):
+        lr = learner(layout_of(brain_text(list(sizes))), start=start, every=every)
+        seen = [(0, lr.counts)]
+        for g in range(1, 40):
+            generation(lr)
+            if lr.last_growth is not None:
+                seen.append((g, lr.counts))
+        assert seen == growth_schedule(sizes, start, every)
+    for bad in ((0, 1), (1, 0), (True, 1)):
+        with pytest.raises(ValueError):
+            growth_schedule((16,), *bad)
 
 
 def test_start_is_clipped_to_the_frame_and_never_grows() -> None:
@@ -937,7 +965,7 @@ def test_restart_and_qualify_runs_resume_identically(tmp_path: Path) -> None:
     config = small(max_generations=12, checkpoint_every=1, grow_every=2, qualify_entrants=2, qualify_trials=36,
                    restart_patience=24, restart_from="alternate")
     store = keep_all_store(tmp_path / "ref")
-    t, rows = train(LANDER_TEXT, config, store)
+    _t, rows = train(LANDER_TEXT, config, store)
     ref = strip(store.read_stats())
     assert [int(r["learner"]) for r in rows[:6]] == [0, 0, 0, 1, 1, 1]  # 출전자 둘
     assert [int(r["brain_neurons"]) for r in rows[:6]] == [2, 2, 4, 2, 2, 4]  # 출전자마다 처음부터 자람
@@ -1010,7 +1038,7 @@ def test_fixed_size_runs_are_byte_identical_to_v60(tmp_path: Path, env: str, ove
 def grow_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     """v6.1이 만든 작은 착륙선 자라는 실행(6세대, 2·4·6세대 끝에 자람, 체크포인트 2·4·6)과 그 재현 묶음."""
     base = tmp_path_factory.mktemp("grow_run")
-    config = TrainConfig.for_new_run(LANDER_SPEC, **{**dataclasses.asdict(small(grow_every=2, max_generations=6))})
+    config = TrainConfig.for_new_run(LANDER_SPEC, **dataclasses.asdict(small(grow_every=2, max_generations=6)))
     store = create_run(base / "runs", LANDER_TEXT, LANDER_SPEC, config, 0)
     t, rows = train(LANDER_TEXT, config, store)
     store.append_event("stop", t.state.generation, reason="max_generations")
@@ -1109,10 +1137,10 @@ def test_session_growth_messages_and_pace_do_not_change_results(qtbot: Any, tmp_
     for mode, over in (("skip", {"pace": PACE_SKIP}), ("every", {"pace": PACE_EVERY}), ("fast", {"spectate": False})):
         client = TrainingClient()
         msgs: list[tuple[str, dict[str, Any]]] = []
-        client.started.connect(lambda m: msgs.append(("started", m)))
-        client.generation.connect(lambda m: msgs.append(("generation", m)))
-        client.state_changed.connect(lambda m: msgs.append(("state", m)))
-        client.failed.connect(lambda text, fatal: msgs.append(("failed", {"message": text})))
+        client.started.connect(lambda m, out=msgs: out.append(("started", m)))
+        client.generation.connect(lambda m, out=msgs: out.append(("generation", m)))
+        client.state_changed.connect(lambda m, out=msgs: out.append(("state", m)))
+        client.failed.connect(lambda text, fatal, out=msgs: out.append(("failed", {"message": text})))
         if mode == "every":  # 가짜 화면: 세대마다 0.3초 늦게 다 봤다고 알린다
             client.generation.connect(lambda m, c=client: QTimer.singleShot(
                 300, lambda g=int(m["generation"]): c.send({"type": "played", "generation": g})))
@@ -1120,8 +1148,8 @@ def test_session_growth_messages_and_pace_do_not_change_results(qtbot: Any, tmp_
                                 "spectate": True, "config": config, **over})
         client.start(req)
         try:
-            qtbot.waitUntil(lambda: any(k == "state" and m["state"] == "finished" for k, m in msgs)
-                            or any(k == "failed" for k, _ in msgs), timeout=240000)
+            qtbot.waitUntil(lambda out=msgs: any(k == "state" and m["state"] == "finished" for k, m in out)
+                            or any(k == "failed" for k, _ in out), timeout=240000)
             assert not [m for k, m in msgs if k == "failed"]
             gens = [m for k, m in msgs if k == "generation"]
             assert [int(m["generation"]) for m in gens] == [1, 2, 3, 4, 5]

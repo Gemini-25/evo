@@ -801,7 +801,7 @@ class LabView(QWidget):
         self.brain_combo.currentIndexChanged.connect(lambda _i: self._update_brain_rows())
         self.brain_combo.activated.connect(lambda _i: self._save_brain_settings())
         for spin in (self.grow_start, self.grow_every):
-            spin.valueChanged.connect(lambda _v: (self._update_grow_hint(), self._save_brain_settings()))
+            spin.valueChanged.connect(self._grow_field_changed)
         form.addRow(S.LAB_SEED, self.seed)
         self._method_rows: dict[str, list[QWidget]] = {"cmaes": [self.brain_combo], "ga": [], "sa": []}
 
@@ -1157,10 +1157,7 @@ class LabView(QWidget):
         try:
             if blocked is not None and self.brain_combo.currentData() == BRAIN_GROW:
                 self.brain_combo.setCurrentIndex(self.brain_combo.findData(BRAIN_FIXED))
-            lay = self.layout
-            top = min(lay.brain.hidden) if lay is not None and lay.brain.hidden else GROW_START_MAX
-            if self.grow_start.maximum() != top:
-                self.grow_start.setMaximum(top)
+            self._set_grow_start_max()
         finally:
             self._brain_quiet = quiet
         cmaes = str(self.method.currentData()) == "cmaes"
@@ -1170,23 +1167,30 @@ class LabView(QWidget):
         self._set_row_visible(self.ipop, cmaes and not grow)  # 자라는 뇌는 IPOP과 함께 쓸 수 없다(설계 D33)
         self._update_grow_hint()
 
+    def _set_grow_start_max(self) -> None:
+        """「처음 뉴런 수」 칸의 최댓값 = 지금 환경의 가장 작은 은닉층(환경이 없거나 은닉층이 없으면 GROW_START_MAX)."""
+        lay = self.layout
+        top = min(lay.brain.hidden) if lay is not None and lay.brain.hidden else GROW_START_MAX
+        if self.grow_start.maximum() != top:
+            self.grow_start.setMaximum(top)
+
     def grow_hint_text(self) -> str:
         """안내 첫 줄: 고른 처음 뉴런 수·간격과 지금 환경으로 「2 → 4 → 8 → 16개, 30세대쯤에 다 자랍니다.」. 뉴런 수는 은닉층
-        합이고 층마다 두 배(틀에서 멈춤, learners/grow.py와 같은 규칙). 처음부터 다 자란 크기면 LAB_GROW_HINT_ALREADY. 환경이
+        합이고 층마다 두 배(틀에서 멈춤, learners/grow.growth_schedule). 처음부터 다 자란 크기면 LAB_GROW_HINT_ALREADY. 환경이
         없거나 은닉층이 없으면 빈 글."""
+        from evolab.learners.grow import growth_schedule  # 학습 방법의 일정 그대로(창을 열 때 불러오지 않게 여기서)
+
         lay = self.layout
         if lay is None or not lay.brain.hidden or lay.brain.n_out == 0:
             return ""
-        sizes = lay.brain.hidden
-        counts = [min(self.grow_start.value(), n) for n in sizes]
-        path = [sum(counts)]
-        while any(c < n for c, n in zip(counts, sizes, strict=True)):
-            counts = [min(n, 2 * c) for c, n in zip(counts, sizes, strict=True)]
-            path.append(sum(counts))
-        steps = len(path) - 1
-        if steps == 0:
+        plan = growth_schedule(lay.brain.hidden, self.grow_start.value(), self.grow_every.value())
+        if len(plan) == 1:
             return S.LAB_GROW_HINT_ALREADY
-        return S.LAB_GROW_HINT.format(path=" \u2192 ".join(str(n) for n in path), gen=steps * self.grow_every.value())
+        return S.LAB_GROW_HINT.format(path=" \u2192 ".join(str(sum(counts)) for _gen, counts in plan), gen=plan[-1][0])
+
+    def _grow_field_changed(self, _value: int) -> None:
+        self._update_grow_hint()
+        self._save_brain_settings()
 
     def _update_grow_hint(self) -> None:
         text = self.grow_hint_text()
@@ -1228,9 +1232,8 @@ class LabView(QWidget):
             ("qualify_entrants", self.qualify_entrants, _same), ("qualify_trials", self.qualify_trials, _same),
         )}
         grow = self.brain_grows()
-        if grow:
+        if grow:  # v6.1: 자라는 뇌 칸은 그 실행에만(크기 고정 실행의 설정은 v6.0과 같은 값, 설계 D31)
             method = GROW_METHOD
-        if hasattr(base, "grow_start"):  # v6.1 TrainConfig(자라는 뇌 칸). to_dict()는 method가 grow일 때만 쓴다(설계 D31)
             fields["grow_start"] = self._form_value("grow_start", self.grow_start, _same)
             fields["grow_every"] = self._form_value("grow_every", self.grow_every, _same)
         c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked() and not grow, **fields,
@@ -1273,6 +1276,7 @@ class LabView(QWidget):
             self.brain_combo.blockSignals(True)
             self.brain_combo.setCurrentIndex(self.brain_combo.findData(BRAIN_GROW if grow else BRAIN_FIXED))
             self.brain_combo.blockSignals(False)
+            self._set_grow_start_max()  # 이 실행 환경의 최댓값을 먼저(앞 환경의 최댓값으로 값이 잘리지 않게)
             setv(self.grow_start, "grow_start", GROW_START_DEFAULT)
             setv(self.grow_every, "grow_every", GROW_EVERY_DEFAULT)
         finally:

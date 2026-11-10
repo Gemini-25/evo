@@ -400,7 +400,8 @@ def test_repeat_dialog_methods_and_plan(qtbot: Any, tmp_path: Path, monkeypatch:
     qtbot.addWidget(dlg)
     layout = layout_for(load_env(LANDER))
     expected = []
-    for m in ("cmaes", "ga", "sa"):
+    assert repeat_mod.METHODS == ("cmaes", "ga", "sa", "grow")  # v6.1: 「CMA-ES · 자라는 뇌」가 끝에(v6 설계 4.20)
+    for m in repeat_mod.METHODS:
         try:
             make_learner(TrainConfig(method=m, popsize=64 if m == "ga" else 32), layout)
             expected.append(m)
@@ -436,7 +437,7 @@ def test_repeat_dialog_methods_and_plan(qtbot: Any, tmp_path: Path, monkeypatch:
         return real(config, lay)
 
     monkeypatch.setattr(repeat_mod, "make_learner", fake)
-    assert available_methods(layout) == ["cmaes"]
+    assert available_methods(layout) == ["cmaes", "grow"]  # 자라는 뇌(v6.1)는 가짜가 막지 않는 방법
     # 읽을 수 없는 환경 파일
     broken = tmp_path / "망가짐.evoenv"
     broken.write_text("{", encoding="utf-8")

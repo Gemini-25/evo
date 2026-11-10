@@ -198,11 +198,6 @@ class CMAES:
         """마지막 ask() 후보의 유전자별 표준편차 평균(stats()["diversity"]와 같음, 고윳값 계산 없이)."""
         return self._diversity
 
-    @property
-    def mean_step(self) -> float:
-        """마지막 tell()에서 추천해가 움직인 거리(stats()["mean_step"]와 같음)."""
-        return self._mean_step
-
     def coordinate_stds(self) -> np.ndarray:
         """좌표별 표준편차(pycma es.stds, sigma × 대각 디코딩 × √C 대각)의 float64 사본 (차원,). 자라는 뇌가 자랄 때 새 안쪽
         CMA-ES의 처음 폭으로 쓰고(v6 설계 D27), 「탐색 폭」 통계는 그 중앙값이다(D34). 상태를 바꾸지 않는다."""

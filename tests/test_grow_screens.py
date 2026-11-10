@@ -11,7 +11,8 @@
 - T53 갱신 비용(넉넉한 상한, 실제 값은 측정 M12로 보고).
 - 학습 프로세스와 함께: 진짜 짧은 자라는 실행(학습 먼저 L 묶음)에서 상태 글·타일·뇌 그림.
 
-학습 프로세스 없는 시험은 통계 줄·세대 메시지를 v6 설계 7.3 계약 그대로 가짜로 만든다.
+학습 프로세스 없는 시험은 통계 줄·세대 메시지를 v6 설계 7.3 계약 그대로 가짜로 만든다. 가짜 통계 줄(grow_rows)이 진짜
+학습기(Trainer)의 열과 같고 대시보드가 둘을 같게 그리는지는 tests/test_v61_integration.py가 본다.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from evolab.app.lab.grow_tile import GrowTile, frame_totals
 from evolab.app.lab.view import BRAIN_FIXED, BRAIN_GROW, GROW_METHOD, LabView
 from evolab.app.lab.watch_types import BrainSource, WatchMeta
 from evolab.engine.trainer import TrainConfig
+from evolab.policy.brain import unpack
 from evolab.policy.frame import BrainFrame
 from evolab.policy.genome import layout_for
 from evolab.runs.store import RunStore
@@ -209,6 +211,12 @@ def test_form_makes_a_grow_config_and_opened_runs_fill_the_row(lab: LabView) -> 
     assert again.method == "grow" and (again.grow_start, again.grow_every) == (3, 12)
     lab._form_from_config(fixed.to_dict())
     assert lab.brain_combo.currentData() == BRAIN_FIXED and lab.config_from_form().method == "cmaes"
+    # 앞 환경의 「처음 뉴런 수」 최댓값(가장 작은 은닉층 4)이 연 실행의 값(8)을 자르지 않는다
+    assert lab.use_env_text(with_brain("lander", hidden=[8, 4]), "test", None)
+    assert lab.grow_start.maximum() == 4
+    lab.layout = layout_for(compile_env(env_text("lander")))  # 착륙선 실행을 연 것처럼(_adopt_run_now가 layout을 먼저 정함)
+    lab._form_from_config({**fixed.to_dict(), "method": "grow", "ipop": False, "grow_start": 8, "grow_every": 10})
+    assert lab.grow_start.maximum() == 16 and lab.grow_start.value() == 8 and lab.config_from_form().grow_start == 8
     lab._form_from_config({**fixed.to_dict(), "method": "ga"})
     assert lab.method.currentData() == "ga" and not lab.brain_combo.isVisibleTo(lab)
 
@@ -304,10 +312,9 @@ def test_brain_view_draws_empty_slots_without_edges_and_the_size_title(qtbot: Qt
     assert v.active is not None and [m.tolist() for m in v.active] == [[True] * 4 + [False] * 12]
     assert v.empty_slots == 12 and v.node_state(1, 3) == "on" and v.node_state(1, 4) == "empty"
     # 꺼진 자리에는 연결선이 없다(가중치가 정확히 0이라 select_edges가 뺀다)
-    into, _c, _l = v._selected[0][0], v._selected[0][1], v._selected[0][2]
-    cols = v._selected[0][1]
-    rows_out = v._selected[1][0]
-    assert len(into) and set(cols.tolist()) <= {0, 1, 2, 3} and set(rows_out.tolist()) <= {0, 1, 2, 3}
+    _rows_in, cols_in, _levels = v._selected[0]  # 입력 → 은닉: 받는 뉴런(열)
+    rows_out, _cols, _levels = v._selected[1]  # 은닉 → 출력: 보내는 뉴런(행)
+    assert set(cols_in.tolist()) == {0, 1, 2, 3} and set(rows_out.tolist()) == {0, 1, 2, 3}
     assert v.edges_drawn == 4 * 9 + 4 * 3
     label = S.BRAIN_SIZE_LABEL.format(n=4, total=16, links=frame.links([4]))
     assert tile.size_label == label and tile.title_text.endswith(label) and tile.title_text.startswith(
@@ -402,9 +409,9 @@ def test_fixed_size_and_old_runs_draw_exactly_as_before(qtbot: QtBot, tmp_path: 
     dash10.flush()
     t10 = dash10.tile("brain")
     assert t10.source_kind == "champion" and t10.brain.active is None and t10.size_label == ""
-    champ = store.load_champion(4, "champion")["genome"]
-    want = [B.select_edges(w) for w in [x[0] for x in __import__("evolab.policy.brain", fromlist=["unpack"]).unpack(
-        meta10.layout.brain, meta10.layout.brain_params(np.asarray(champ, np.float64)[None, :])[0]).weights]]
+    champ = np.asarray(store.load_champion(4, "champion")["genome"], np.float64)
+    net = unpack(meta10.layout.brain, meta10.layout.brain_params(champ[None, :])[0])
+    want = [B.select_edges(w[0]) for w in net.weights]
     for (r1, c1, l1), (r2, c2, l2) in zip(t10.brain._selected, want, strict=True):
         assert r1.tobytes() == r2.tobytes() and c1.tobytes() == c2.tobytes() and l1.tobytes() == l2.tobytes()
     assert t10.title_text == S.BRAIN_TITLE_CHAMPION.format(gen=4)
@@ -446,7 +453,7 @@ def test_history_reads_grow_columns_and_gives_nothing_for_fixed_runs() -> None:
 
 
 def test_grow_tile_steps_marks_click_and_empty_states(qtbot: QtBot, tmp_path: Path) -> None:
-    _spec, lay, meta, frame = lander()
+    _spec, _lay, meta, frame = lander()
     rows = grow_rows(frame, 40)
     dash = fun_dashboard(qtbot, tmp_path, rows, meta)
     assert dash.tile_order("fun")[:3] == ["genemap", "brain", "brainsize"]  # 「뇌 들여다보기」 바로 뒤(설계 4.19)
@@ -522,7 +529,8 @@ def test_score_trend_grow_marks_tips_legend_and_a_restart_in_the_same_generation
     xs, tips, labels, kinds = dash.mark_positions(True)
     assert xs.tolist() == [10.0, 20.0, 20.0] and labels[:2] == [S.DASH_MARK_LABELS["grow"]] * 2
     assert tips[0] == S.DASH_MARK_GROW.format(gen=10, old=2, new=4)
-    assert tips[1] == S.DASH_MARK_GROW.format(gen=20, old=4, new=2)  # 다음 줄 크기(재시작으로 처음 크기)
+    # 같은 세대에 재시작했으면 다음 줄은 새 학습 방법의 처음 크기(2)라 쓰지 않고 자란 크기 어림(두 배)
+    assert tips[1] == S.DASH_MARK_GROW.format(gen=20, old=4, new=8)
     assert D.mark_style("grow") == "grow" and kinds[2] == "restart"
     pen = D.mark_pen(dash.theme, "grow")
     assert pen.color().name() == QColor(dash.theme.series[3]).name()
@@ -615,8 +623,7 @@ def test_method_name_in_records_compare_race_and_repeat(qtbot: QtBot, tmp_path: 
     flat.write_text(with_brain("lander", hidden=[]), encoding="utf-8")
     assert dlg.set_env_file(flat)
     assert "grow" not in dlg.methods() and name not in dlg.method_note.text()
-    sa_ok = R.can_grow(layout_for(compile_env(env_text("lander")))) and not R.can_grow(None)
-    assert sa_ok
+    assert R.can_grow(layout_for(compile_env(env_text("lander")))) and not R.can_grow(None)
 
 
 # ---------------------------------------------------------------------------

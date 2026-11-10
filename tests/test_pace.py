@@ -204,11 +204,11 @@ def _npz(path: Path) -> dict[str, tuple[str, tuple[int, ...], bytes]]:
         return {k: (str(z[k].dtype), tuple(z[k].shape), z[k].tobytes()) for k in z.files}
 
 
-def _canon(obj: Any, seen: set[int] | None = None) -> Any:
+def _canon(obj: Any, seen: dict[int, Any] | None = None) -> Any:
     """체크포인트를 비교할 수 있는 값으로: 배열은 (dtype, 모양, 바이트), 실수는 repr, 객체는 (클래스, 속성). 벽시계 값은 뺀다:
     학습 상태의 경과 시간("elapsed")과 pycma 학습기 피클 안의 타이머(이름에 "timer"가 든 속성: 만든 시각·누적 시간). 둘은 같은
     설정을 두 번 돌려도 다르고(같은 방식끼리도) 학습에 쓰이지 않는다. 피클 바이트 값은 풀어서 비교한다."""
-    seen = set() if seen is None else seen
+    seen = {} if seen is None else seen
     if isinstance(obj, np.ndarray):
         return ("nd", obj.dtype.str, obj.shape, obj.tobytes())
     if isinstance(obj, float):
@@ -224,7 +224,8 @@ def _canon(obj: Any, seen: set[int] | None = None) -> Any:
         return obj
     if id(obj) in seen:
         return "<cycle>"
-    seen.add(id(obj))
+    seen[id(obj)] = obj  # 비교가 끝날 때까지 살려 둔다: 풀어 낸 피클 같은 임시 값이 사라진 뒤 그 id를 새 값이 다시 받으면
+    # 처음 보는 값이 「<cycle>」로 잘못 보인다(v6.1 통합: 부하가 있을 때 T40 체크포인트 비교가 그렇게 한 번 실패)
     if isinstance(obj, dict):
         return ("d", sorted((repr(k), _canon(v, seen)) for k, v in obj.items()
                             if k != "elapsed" and "timer" not in str(k)))

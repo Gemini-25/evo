@@ -5,9 +5,9 @@
 기록은 지금 코드 그대로 틀 전체를 계산하고, 자람은 이 학습 방법 안의 일이다.
 
 - 만들 때: 은닉층마다 켜진 뉴런 수 counts = max(x0의 counts_of, min(start, 틀 크기)). 처음 상태(뇌 0)면 min(start, 틀), 챔피언에서 다시
-  시작하면 챔피언의 켜진 수부터(D33). 평균 = x0의 켜진 좌표(몸 유전자는 [-1, 1]로 자름). 켜진 뉴런 가운데 들어오는 가중치가 모두
-  0인 뉴런(처음 상태면 전부)은 들어오는 가중치를 init_in × 표준 정규로 채운다(나가는 가중치는 x0 그대로라 처음 상태면 0: 처음 함수는
-  그대로). 안쪽 CMA-ES는 학습 방법 시드로 만든다.
+  시작하면 챔피언의 켜진 수부터(D33). 평균 = x0의 켜진 좌표(몸 유전자는 [-1, 1]로 자름). 켜진 뉴런 가운데 들어오는·나가는 가중치가
+  모두 0인 뉴런(처음 상태면 전부, 챔피언에서면 start가 챔피언보다 클 때 더해진 뉴런)은 들어오는 가중치를 init_in × 표준 정규로
+  채운다(층 순서, 뉴런 번호 순서. 나가는 가중치가 0이라 처음 함수는 그대로). 안쪽 CMA-ES는 학습 방법 시드로 만든다.
 - ask(): 안쪽 ask()(켜진 좌표 차원)를 np.zeros((P, D))의 켜진 좌표에 넣어 돌려준다(사본, tell 전에 다시 부르면 같은 후보).
 - tell(): 마지막 ask()와 같은 후보인지 보고(check_tell) 안쪽 tell(켜진 좌표, 점수) → 평균 = np.zeros 위에 안쪽 best() →
   since += 1 → since ≥ every이고 어느 층이든 틀보다 작으면 자람(D29: 정해진 간격, 막힘 기준 없음).
@@ -84,6 +84,23 @@ class GrowConfig:
             raise ValueError(S.LEARNER_ERR_GROW_INIT.format(value=self.init_in))
 
 
+def growth_schedule(sizes: Sequence[int], start: int, every: int) -> list[tuple[int, tuple[int, ...]]]:
+    """처음 상태에서 시작한 학습 방법이 자라는 일정: [(학습 방법 세대, 그 세대 끝 뒤 은닉층마다 켜진 수), ...]. 첫 줄은
+    (0, 처음 크기)이고 다 자란 크기(sizes)에서 끝난다(처음부터 다 자랐으면 한 줄). GrowingCMAES의 규칙(층마다 min(틀, 2 × 지금),
+    every 세대마다) 그대로라 화면 안내 줄(실험실 LAB_GROW_HINT)이 같은 값을 쓴다. 자동 재시작은 셈하지 않는다."""
+    if not is_int(start) or start < 1:
+        raise ValueError(S.LEARNER_ERR_GROW_START.format(value=start))
+    if not is_int(every) or every < 1:
+        raise ValueError(S.LEARNER_ERR_GROW_EVERY.format(value=every))
+    full = tuple(int(s) for s in sizes)
+    counts = tuple(min(start, s) for s in full)
+    out = [(0, counts)]
+    while counts != full:
+        counts = tuple(min(s, 2 * c) for c, s in zip(counts, full, strict=True))
+        out.append((out[-1][0] + every, counts))
+    return out
+
+
 def grow_seed(learner_seed: int, k: int) -> int:
     """k번째 자람(1부터)의 안쪽 CMA-ES 시드(32비트)."""
     return seeds.derive(learner_seed, GROW_SEED_WORD, k) & _SEED_MASK
@@ -119,7 +136,9 @@ class GrowingCMAES:
         for layer, n in enumerate(counts):
             for j in range(n):
                 idx = frame.neuron_in(layer, j, counts)
-                if idx.size and not np.any(mean[idx] != 0.0):  # 들어오는 가중치가 모두 0인 켜진 뉴런(처음 상태면 전부)
+                # 들어오는 가중치도 나가는 가중치도 모두 0인 켜진 뉴런만(처음 상태면 전부): 나가는 쪽이 0이라 채워도 함수는 그대로
+                if (idx.size and not np.any(mean[idx] != 0.0)
+                        and not np.any(mean[frame.neuron_out(layer, j, counts)] != 0.0)):
                     mean[idx] = grow.init_in * self._rng.standard_normal(idx.size)
         self._counts = counts
         self._active = active

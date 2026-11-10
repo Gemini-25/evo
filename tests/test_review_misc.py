@@ -194,7 +194,8 @@ _COMMANDS = ("'train', 'bench', 'judge', 'play', 'bundle', 'reproduce', 'csv', '
     (["train", "--bogus"], _T["unrecognized arguments: %s"] % "--bogus"),
     (["judge", "run", "더", "있음"], _T["unrecognized arguments: %s"] % "더 있음"),
     (["train", "x.evoenv", "--method", "xx"], _argument("--method", _T[
-        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "xx", "choices": "'cmaes', 'ga', 'sa'"})),
+        "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "xx",
+                                                     "choices": "'cmaes', 'ga', 'sa', 'grow'"})),  # v6.1: grow
     (["nosuchcmd"], _argument(S.RV2_CLI_COMMAND_METAVAR, _T[
         "invalid choice: %(value)r (choose from %(choices)s)"] % {"value": "nosuchcmd", "choices": _COMMANDS})),
     (["없는명령"], _argument(S.RV2_CLI_COMMAND_METAVAR, _T[

@@ -378,7 +378,7 @@ def test_t75_waiting_and_no_environment_states(qtbot: QtBot, tmp_path: Path) -> 
 def test_t75_tile_is_last_on_the_fun_page_and_old_layouts_get_it(qtbot: QtBot, tmp_path: Path) -> None:
     assert D.FUN_TILE_IDS[-1] == "structure" and D.PAGE_OF["structure"] == "fun"
     assert D.tile_class("structure") is ST.StructureTile and "structure" not in D.TILE_IDS
-    # v1.2가 저장한 「보는 재미」 쪽 배치(다섯 타일): 새 타일은 그 뒤에 붙는다
+    # v1.2가 저장한 「보는 재미」 쪽 배치(다섯 타일): 새 타일(v6.1 「뇌 크기」, v2.1 「몸 구조」)은 FUN_TILE_IDS 순서로 그 뒤에 붙는다
     s = QSettings(str(tmp_path / "v12.ini"), QSettings.Format.IniFormat)
     s.beginGroup("dashboard")
     s.setValue("order", ",".join([*D.TILE_IDS, "body", "genemap", "brain", "density", "actions"]))
@@ -386,7 +386,7 @@ def test_t75_tile_is_last_on_the_fun_page_and_old_layouts_get_it(qtbot: QtBot, t
     s.endGroup()
     s.sync()
     dash = make_dashboard(qtbot, tmp_path, "v12.ini")
-    assert dash.tile_order("fun") == ["body", "genemap", "brain", "density", "actions", "structure"]
+    assert dash.tile_order("fun") == ["body", "genemap", "brain", "density", "actions", "brainsize", "structure"]
     t = dash.tile("structure")
     assert t.title.text() == S.DASH_TILE_TITLES["structure"] and t.title.toolTip() == S.DASH_TILE_HELP["structure"]
     assert dash.is_tile_visible("structure") and t.isVisibleTo(dash)

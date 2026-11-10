@@ -1701,8 +1701,9 @@ class Dashboard(QWidget):
 
     def _note_growth(self, i: int, values: Mapping[str, float], learner: float) -> None:
         """v6.1 자라는 뇌: i번째 줄의 grow·brain_neurons 열. grow = 1이면 「뇌가 자람」 세로선(그 세대 끝)을 더하고, 앞 세로선의
-        새 크기는 이 줄의 brain_neurons(그 세대 후보를 만든 크기)로 채운다. 열이 없는 줄(크기 고정·옛 실행)은 NaN이라 아무것도
-        하지 않는다."""
+        새 크기는 이 줄의 brain_neurons(그 세대 후보를 만든 크기)로 채운다. 자란 세대에 학습 방법도 바뀌었으면(switch > 0: 자동
+        재시작·예선) 다음 줄은 새 학습 방법의 처음 크기라 채우지 않고 어림(_grown_size)으로 둔다. 열이 없는 줄(크기 고정·옛 실행)은
+        NaN이라 아무것도 하지 않는다."""
         neurons = values.get("brain_neurons", _NAN)
         k = self._grow_pending
         if k is not None and math.isfinite(neurons):
@@ -1717,7 +1718,8 @@ class Dashboard(QWidget):
         self.auto_marks.append((gen, GROW_MARK_KIND, info))
         self._auto_rows.append(i)
         self._auto_tips.append(self._auto_tip(gen, GROW_MARK_KIND, info))
-        self._grow_pending = len(self.auto_marks) - 1
+        switch = values.get("switch", _NAN)
+        self._grow_pending = len(self.auto_marks) - 1 if not (math.isfinite(switch) and switch > 0) else None
         self.grow_marks += 1
 
     def _grown_size(self, old: float) -> float:

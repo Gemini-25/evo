@@ -451,10 +451,12 @@ def test_selftest_check_lists() -> None:
     names = [n for n, _ in selftest.selftest_checks(2, check_gui=True)]
     assert names[-5:] == [S.SELFTEST_CHECK_HELP, S.SELFTEST_CHECK_LOGS, S.SELFTEST_CHECK_GUI, S.SELFTEST_CHECK_QT_KO,
                           S.SELFTEST_CHECK_TOUR]
-    # v3.1: 「내보내기」 점검(설계 D59), v6.0: 「빠른 계산 길」 점검(v6 설계 D19, 창 없이 도는 점검)
-    assert set(NEW_CHECKS) <= set(names) and len(names) == 13
+    # v3.1: 「내보내기」 점검(설계 D59), v6.0: 「빠른 계산 길」 점검(v6 설계 D19), v6.1: 「자라는 뇌」 점검(v6 설계 8.4 W2).
+    # v6.0·v6.1 점검은 창 없이 돈다
+    assert set(NEW_CHECKS) <= set(names) and len(names) == 14
     no_gui = [n for n, _ in selftest.selftest_checks(2, check_gui=False)]
-    assert no_gui == names[:10] and S.SELFTEST_CHECK_LOGS in no_gui and S.SELFTEST_CHECK_HELP in no_gui
+    assert no_gui == names[:11] and S.SELFTEST_CHECK_LOGS in no_gui and S.SELFTEST_CHECK_HELP in no_gui
+    assert S.SELFTEST_CHECK_GROW in no_gui and S.SELFTEST_CHECK_FASTPATH in no_gui
     full = [n for n, _ in selftest.selftest_checks(2, check_gui=True, tour="full")]
     assert full[-1] == S.SELFTEST_CHECK_TOUR_FULL.format(goal=tour.TOUR_GOAL)
     with pytest.raises(ValueError):

@@ -89,8 +89,8 @@ class GrowTile(_WatchTile):
         # 그린 자료(테스트·마우스가 읽는다)
         self.series: hs.GrowSeries | None = None
         """지금 그린 계열(자라는 뇌 실행이 아니면 None)."""
-        self.x = np.zeros(0)
-        """계열 줄마다 가로축 값."""
+        self.xs = np.zeros(0)
+        """계열 줄마다 가로축 값(QWidget.x()를 가리지 않게 xs)."""
         self.gens = np.zeros(0)
         """계열 줄마다 세대."""
         self.total = 0
@@ -140,12 +140,12 @@ class GrowTile(_WatchTile):
             finite = series.links[np.isfinite(series.links)]
             self.full_links = int(finite.max()) if finite.size else 0
         self.series = series
-        self.x = self.x_values()[series.rows]
+        self.xs = self.x_values()[series.rows]
         self.gens = d.col("generation")[series.rows]
         top = float(max(1, self.total))
         hi = float(max(1, self.full_links))
-        self.neurons_curve.setData(self.x, series.neurons)
-        self.links_curve.setData(self.x, series.links * (top / hi))  # 오른쪽 눈금(0..hi)과 왼쪽 눈금(0..top)이 같은 높이
+        self.neurons_curve.setData(self.xs, series.neurons)
+        self.links_curve.setData(self.xs, series.links * (top / hi))  # 오른쪽 눈금(0..hi)과 왼쪽 눈금(0..top)이 같은 높이
         self.keep_y(self.plot, 0.0, top)
         want = (-Y_PAD * hi, hi * (1.0 + Y_PAD))  # 뉴런 그래프(fix_y의 padding 0.05)와 같은 여유
         if want != self._links_range:
@@ -158,7 +158,7 @@ class GrowTile(_WatchTile):
 
     def _empty(self, text: str) -> None:
         self.series = None
-        self.x = np.zeros(0)
+        self.xs = np.zeros(0)
         self.gens = np.zeros(0)
         self.neurons_curve.setData([], [])
         self.links_curve.setData([], [])
@@ -190,7 +190,7 @@ class GrowTile(_WatchTile):
 
     def nearest(self, xv: float) -> int | None:
         """가로축 값 xv에 가장 가까운 계열 줄의 번호(계열 안 번호). 계열이 없으면 None."""
-        x = self.x
+        x = self.xs
         if self.series is None or not len(x) or not np.isfinite(x).any():
             return None
         return int(np.nanargmin(np.abs(x - xv)))
@@ -209,7 +209,7 @@ class GrowTile(_WatchTile):
             self.unhover()
             return
         for line in self._cross:
-            line.setPos(float(self.x[i]))
+            line.setPos(float(self.xs[i]))
             line.show()
         self._hover_text = self.tip_text(i)
         self.update_legend()

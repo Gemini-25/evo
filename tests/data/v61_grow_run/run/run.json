@@ -1,0 +1,108 @@
+{
+  "program": "evolab",
+  "version": "6.1.0",
+  "created": "2026-11-10T06:33:43",
+  "env_name": "달 착륙선",
+  "method": "grow",
+  "config": {
+    "method": "grow",
+    "run_seed": 11,
+    "popsize": 8,
+    "sigma0": 0.5,
+    "trials": 2,
+    "aggregate": null,
+    "diagonal_threshold": 100,
+    "ipop": false,
+    "validate_every": 16,
+    "validation_seeds": 20,
+    "validation_candidates": 3,
+    "checkpoint_every": 10,
+    "max_generations": 6,
+    "max_evaluations": null,
+    "max_time": null,
+    "target_score": null,
+    "stagnation_generations": null,
+    "ga_elites": 2,
+    "ga_tournament": 3,
+    "ga_crossover": 0.7,
+    "ga_mutation_rate": 0.1,
+    "ga_mutation_sigma": 0.1,
+    "ga_sigma_decay": 1.0,
+    "ga_structure_flip": 0.0,
+    "sa_neighbors": 8,
+    "sa_step": 0.1,
+    "sa_initial_temperature": null,
+    "sa_cooling": 0.995,
+    "sa_structure_flip": 0.0,
+    "restart_patience": null,
+    "restart_from": "fresh",
+    "qualify_entrants": 1,
+    "qualify_trials": 12000,
+    "grow_start": 2,
+    "grow_every": 3
+  },
+  "seed_scheme": 2,
+  "layout": {
+    "format": 1,
+    "body": [],
+    "brain": {
+      "n_in": 9,
+      "hidden": [
+        16
+      ],
+      "n_out": 3,
+      "activation": "tanh"
+    },
+    "output_ranges": [
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ],
+    "inputs": [
+      "pad_rel.x",
+      "pad_rel.y",
+      "st.vx",
+      "st.vy",
+      "st.angle",
+      "st.omega",
+      "c_l",
+      "c_r",
+      "fuel"
+    ],
+    "outputs": [
+      "main",
+      "side_l",
+      "side_r"
+    ]
+  },
+  "layout_signature": "6fb7c9d3d92b4dc08113eb75f54523911f998fafa7903503c35071ff19f4dbc7",
+  "platform": {
+    "python": "3.12.3",
+    "numpy": "2.5.4",
+    "pymunk": "7.3.1",
+    "cma": "4.5.0",
+    "os": "Linux-6.18.44-fc-v338-x86_64-with-glibc2.39",
+    "cpu": "x86_64",
+    "physical_cores": 4,
+    "workers": 0,
+    "frozen": false
+  },
+  "store_format": 1,
+  "env_versions": [
+    {
+      "id": "v000",
+      "sha256": "3514f9de1d9d71eb3b41f51c1f95f5a81ce5ede2607b9617393672653053a84c",
+      "from_generation": 0
+    }
+  ],
+  "protected_checkpoints": []
+}

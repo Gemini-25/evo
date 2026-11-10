@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "name": "달 착륙선",
+  "description": "흔들리는 시작 조건에서 연료를 아끼며 패드 위에 똑바로 내려앉는 조종법을 배운다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [0.0, -1.62],
+    "wind": ["=r.wind", 0.0],
+    "dt": 0.016666666666666666,
+    "max_time": 30.0,
+    "bounds": [-70.0, -20.0, 70.0, 70.0],
+    "contact_debounce": 0.1
+  },
+  "params": [
+    {"id": "leg_len", "label": "다리 길이", "value": 1.2, "evolve": false, "min": 0.6, "max": 2.0},
+    {"id": "leg_spread", "label": "다리 벌림 각도", "value": 0.45, "evolve": false, "min": 0.1, "max": 0.9},
+    {"id": "side_h", "label": "측면 추진기 높이", "value": 0.2, "evolve": false, "min": -0.4, "max": 0.4}
+  ],
+  "randomize": [
+    {"id": "terrain_seed", "label": "지형 시드", "dist": "int", "low": 0, "high": 1000000000},
+    {"id": "pad_x", "label": "패드 위치", "dist": "uniform", "low": -40.0, "high": 40.0},
+    {"id": "pad_w", "label": "패드 폭", "dist": "uniform", "low": 6.0, "high": 9.0},
+    {"id": "dx", "label": "시작 x (패드 기준)", "dist": "uniform", "low": -15.0, "high": 15.0},
+    {"id": "h", "label": "시작 높이 (패드 기준)", "dist": "uniform", "low": 15.0, "high": 25.0},
+    {"id": "vx0", "label": "초기 수평 속도", "dist": "uniform", "low": -2.0, "high": 2.0},
+    {"id": "vy0", "label": "초기 수직 속도", "dist": "uniform", "low": -3.0, "high": 0.0},
+    {"id": "a0", "label": "초기 각도", "dist": "uniform", "low": -0.3, "high": 0.3},
+    {"id": "wind", "label": "수평 바람", "dist": "uniform", "low": -2.0, "high": 2.0}
+  ],
+  "generators": [
+    {
+      "kind": "heightmap",
+      "id": "terrain",
+      "label": "지형",
+      "seed": "=r.terrain_seed",
+      "x_range": [-70.0, 70.0],
+      "segment": 1.0,
+      "base_y": 0.0,
+      "amplitude": 6.0,
+      "roughness": 0.5,
+      "pad": {"x": "=r.pad_x", "width": "=r.pad_w", "region_height": 3.0},
+      "friction": 0.9
+    }
+  ],
+  "agent": {
+    "spawn": {
+      "x": "=gen.terrain.pad.x + r.dx",
+      "y": "=gen.terrain.pad.y + r.h",
+      "angle": "=r.a0",
+      "vx": "=r.vx0",
+      "vy": "=r.vy0"
+    }
+  },
+  "bodies": [
+    {
+      "id": "hull", "label": "본체", "owner": "agent",
+      "shapes": [{"kind": "box", "w": 2.0, "h": 1.0}],
+      "material": {"density": 50.0, "friction": 0.6},
+      "tags": ["hull"], "drag": 5.0
+    },
+    {
+      "id": "leg_l", "label": "왼다리", "owner": "agent", "place_by": "j_leg_l",
+      "shapes": [
+        {"kind": "box", "w": 0.15, "h": "=p.leg_len"},
+        {"kind": "circle", "r": 0.12, "offset": [0.0, "=-p.leg_len / 2"]}
+      ],
+      "material": {"density": 20.0, "friction": 1.0},
+      "tags": ["leg"]
+    },
+    {
+      "id": "leg_r", "label": "오른다리", "owner": "agent", "place_by": "j_leg_r",
+      "shapes": [
+        {"kind": "box", "w": 0.15, "h": "=p.leg_len"},
+        {"kind": "circle", "r": 0.12, "offset": [0.0, "=-p.leg_len / 2"]}
+      ],
+      "material": {"density": 20.0, "friction": 1.0},
+      "tags": ["leg"]
+    }
+  ],
+  "joints": [
+    {
+      "id": "j_leg_l", "label": "왼다리 관절", "kind": "rot_spring", "a": "hull", "b": "leg_l",
+      "anchor_a": [-0.8, -0.5], "anchor_b": [0.0, "=p.leg_len / 2"],
+      "rest_angle": "=-p.leg_spread", "stiffness": 600.0, "damping": 200.0,
+      "limit": ["=-p.leg_spread - 0.35", "=-p.leg_spread + 0.35"]
+    },
+    {
+      "id": "j_leg_r", "label": "오른다리 관절", "kind": "rot_spring", "a": "hull", "b": "leg_r",
+      "anchor_a": [0.8, -0.5], "anchor_b": [0.0, "=p.leg_len / 2"],
+      "rest_angle": "=p.leg_spread", "stiffness": 600.0, "damping": 200.0,
+      "limit": ["=p.leg_spread - 0.35", "=p.leg_spread + 0.35"]
+    }
+  ],
+  "actuators": [
+    {"kind": "fuel_tank", "id": "tank", "label": "연료 탱크", "capacity": 100.0},
+    {
+      "kind": "thruster", "id": "main", "label": "주 추진기", "body": "hull",
+      "at": [0.0, -0.5], "dir": "=pi / 2", "max_force": 350.0,
+      "tank": "tank", "fuel_per_s": 5.0, "keys": ["Up", "W"]
+    },
+    {
+      "kind": "thruster", "id": "side_l", "label": "왼쪽 측면 추진기 (오른쪽으로 밂)", "body": "hull",
+      "at": [-1.0, "=p.side_h"], "dir": 0.0, "max_force": 40.0,
+      "tank": "tank", "fuel_per_s": 0.5, "keys": ["Right", "D"]
+    },
+    {
+      "kind": "thruster", "id": "side_r", "label": "오른쪽 측면 추진기 (왼쪽으로 밂)", "body": "hull",
+      "at": [1.0, "=p.side_h"], "dir": "=pi", "max_force": 40.0,
+      "tank": "tank", "fuel_per_s": 0.5, "keys": ["Left", "A"]
+    }
+  ],
+  "sensors": [
+    {"kind": "target", "id": "pad_rel", "label": "패드 기준 상대 위치", "body": "hull", "target": "terrain.pad", "frame": "world", "scale": 20.0},
+    {"kind": "body_state", "id": "st", "label": "몸 상태", "body": "hull", "fields": ["vx", "vy", "angle", "omega"],
+     "frame": "world", "scale": {"vx": 10.0, "vy": 10.0, "angle": 3.141592653589793, "omega": 2.0}},
+    {"kind": "contact", "id": "c_l", "label": "왼다리 접촉", "body": "leg_l", "with": ["tag.terrain"]},
+    {"kind": "contact", "id": "c_r", "label": "오른다리 접촉", "body": "leg_r", "with": ["tag.terrain"]},
+    {"kind": "fuel", "id": "fuel", "label": "남은 연료 비율", "tank": "tank"}
+  ],
+  "events": [
+    {"id": "landed", "label": "패드 위 착지", "when": "contact(leg_l, tag.pad) and contact(leg_r, tag.pad) and hull.speed < 0.5", "hold": 1.0},
+    {"id": "crash", "label": "충돌", "when": "contact(hull, tag.terrain) or ((contact(leg_l, tag.terrain) or contact(leg_r, tag.terrain)) and hull.speed > 2.0)"},
+    {"id": "off_pad", "label": "패드 밖 착지", "when": "contact(leg_l, tag.terrain) and contact(leg_r, tag.terrain) and hull.speed < 0.5 and not (contact(leg_l, tag.pad) and contact(leg_r, tag.pad))", "hold": 1.0}
+  ],
+  "termination": [
+    {"event": "landed", "outcome": "success", "label": "성공"},
+    {"event": "crash", "outcome": "failure", "label": "충돌"},
+    {"event": "off_pad", "outcome": "failure", "label": "패드 밖 착지"},
+    {"event": "out_of_bounds", "outcome": "failure", "label": "이탈"},
+    {"event": "timeout", "outcome": "neutral", "label": "시간 초과"}
+  ],
+  "scoring": {
+    "blocks": [
+      {"kind": "event", "id": "s_success", "label": "성공", "event": "landed", "weight": 100.0},
+      {"kind": "event", "id": "s_crash", "label": "충돌", "event": "crash", "weight": -100.0},
+      {"kind": "distance_to", "id": "s_dist", "label": "패드까지 거리", "body": "hull", "target": "terrain.pad", "agg": "final", "weight": -10.0},
+      {"kind": "final_speed", "id": "s_speed", "label": "종료 속도", "body": "hull", "weight": -5.0},
+      {"kind": "tilt", "id": "s_tilt", "label": "기울기", "body": "hull", "agg": "final", "weight": -20.0},
+      {"kind": "fuel_used", "id": "s_fuel", "label": "연료 사용", "tank": "tank", "weight": -20.0}
+    ]
+  },
+  "brain": {"inputs": "all", "hidden": [16], "activation": "tanh", "outputs": "all"},
+  "evaluation": {"trials": 5, "aggregate": "mean"}
+}
