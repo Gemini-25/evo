@@ -20,16 +20,20 @@ v6.0 런타임 가속(v6 설계 4.1~4.6·4.8, D6~D14): 결과는 v3.1과 비트 
 같은 인수로 바로 부름(물체 상태 읽기, 힘·토크·속도·모터 쓰기 = _setup_c_paths, 둘째 스텝부터 cpSpaceStep = _first_space_step),
 같은 식을 같은 순서로 계산하되 스텝마다 하던 문자열 비교·사전 찾기·객체 만들기를 만들 때 한 번으로(값 읽기·몸 상태 센서
 특수화, 사건 한 루프 _fire_plan, 접촉 맞음 기억, 공기역학 _aero_fast, 레이 필터 한 번 쓰기, 꼬리표 frozenset 공유), 행동을
-목록으로 받는 step_values. 초월 함수는 math만 쓴다(numpy는 끝 비트가 다르다). 규칙: Episode는 만든 뒤 공간에 물체·모양·관절을
-더하거나 빼지 않고 접촉 콜백은 공간을 바꾸지 않는다(cpSpaceStep을 바로 부르는 전제). 그런 코드가 생기면(예: v5 대전의 물체
-추가) 그 Episode는 _raw_space를 None으로 되돌려 공개 Space.step을 쓴다. _CP_FAST가 거짓이면(pymunk 내부가 바뀐 판, 만들 때
-정함) 모든 곳이 공개 API 길을 지난다(같은 결과).
+목록으로 받는 step_values. 세계 만들기(v6.0 M1 고침): 지형 선분의 마찰과 레이 필터를 공개 속성이 부르는 C 함수로 바로 쓰고
+(필터 범주는 모양 정보마다 한 번 셈), 언덕길·높이 지도 꼭짓점(순수 함수 결과)을 인자 비트를 키로 몇 벌만 담아 둔다
+(_cached_terrain: 같은 시험의 개체들이 같은 지형을 다시 만들지 않음). 모양을 만들고 공간에 더하는 순서는 그대로다.
+초월 함수는 math만 쓴다(numpy는 끝 비트가 다르다). 규칙: Episode는 만든 뒤 공간에 물체·모양·관절을 더하거나 빼지 않고
+접촉 콜백은 공간을 바꾸지 않는다(cpSpaceStep을 바로 부르는 전제). 그런 코드가 생기면(예: v5 대전의 물체 추가) 그 Episode는
+_raw_space를 None으로 되돌려 공개 Space.step을 쓴다. _CP_FAST가 거짓이면(pymunk 내부가 바뀐 판, 만들 때 정함) 모든 곳이 공개
+API 길을 지난다(같은 결과).
 """
 
 from __future__ import annotations
 
 import math
 import operator
+import struct
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -211,6 +215,9 @@ try:
     _CP_SET_TORQUE: Any = _CP_LIB.cpBodySetTorque
     _CP_MOTOR_SET_RATE: Any = _CP_LIB.cpSimpleMotorSetRate
     _CP_SPACE_STEP: Any = _CP_LIB.cpSpaceStep
+    _CP_SET_FRICTION: Any = _CP_LIB.cpShapeSetFriction
+    _CP_GET_FILTER: Any = _CP_LIB.cpShapeGetFilter
+    _CP_SET_FILTER: Any = _CP_LIB.cpShapeSetFilter
     _CP_FAST = True
 except (ImportError, AttributeError):  # pragma: no cover - pymunk 내부가 바뀐 판
     _CP_FAST = False
@@ -246,6 +253,11 @@ def _constraint_c(constraint: pymunk.Constraint) -> Any:
     return getattr(constraint, "_constraint", None) if _CP_FAST else None
 
 
+def _shape_c(shape: pymunk.Shape) -> Any:
+    """모양의 cpShape 포인터(만들 때 마찰·필터를 C 함수로 바로 쓸 것, v6.0 M1 고침). 쓸 수 없으면 None(공개 API를 쓴다)."""
+    return getattr(shape, "_shape", None) if _CP_FAST else None
+
+
 def fastpath_in_use(spec: EnvSpec, trial: Trial | None = None) -> bool:
     """이 환경의 Episode가 정말 C 함수 길을 모두 쓰는가(진단: bench 「pymunk C 함수 바로 부르기」 줄, 자체 점검 「빠른 계산 길」).
 
@@ -278,6 +290,24 @@ def _cached_track(key: tuple[Any, ...], make: Callable[[], Any]) -> Any:
             _TRACK_CACHE.clear()
         t = make()
         _TRACK_CACHE[key] = t
+    return t
+
+
+_TERRAIN_CACHE: dict[bytes, Any] = {}
+"""만든 지형 꼭짓점(v6.0 M1 고침: 언덕길·높이 지도 생성기의 순수 함수 결과). 키는 생성기 종류와 모든 인자의 비트(struct: 0.0과
+-0.0, NaN 비트까지 가른다)라 같은 키면 생성기가 같은 꼭짓점을 돌려준다. 값은 고칠 수 없는 튜플(파이썬 float, ndarray.tolist()와
+같은 값)이다. 같은 시험의 개체들(평가 창·워커 묶음은 시험마다 개체 수만큼 같은 세계를 만든다)이 지형을 다시 만들지 않는다.
+메모리가 늘지 않게 TERRAIN_CACHE_SIZE개가 차면 비운다(언덕길 441점 한 벌이 약 25KB)."""
+TERRAIN_CACHE_SIZE = 8
+
+
+def _cached_terrain(key: bytes, make: Callable[[], Any]) -> Any:
+    t = _TERRAIN_CACHE.get(key)
+    if t is None:
+        t = make()  # 생성기 오류(ValueError)는 담지 않는다(부를 때마다 같은 오류)
+        if len(_TERRAIN_CACHE) >= TERRAIN_CACHE_SIZE:
+            _TERRAIN_CACHE.clear()
+        _TERRAIN_CACHE[key] = t
     return t
 
 
@@ -890,15 +920,17 @@ class Episode:
         # 같은 (물체, 꼬리표)의 모양은 (id, frozenset) 하나를 함께 쓴다(v6 D13b: 읽기만 함, Episode 안에서만 나눔).
         infos: dict[tuple[str, ...], tuple[str, frozenset[str]]] = {}
         tagsets = self._tagsets
+        shape_info = self._shape_info
+        same = tuple(tags) if per_shape_tags is None else None
         for k, s in enumerate(pyshapes):
-            t = tuple(per_shape_tags[k] if per_shape_tags is not None else tags)
+            t = same if same is not None else tuple(per_shape_tags[k])  # type: ignore[index]
             info = infos.get(t)
             if info is None:
                 fs = tagsets.get(t)
                 if fs is None:
                     fs = tagsets[t] = frozenset(t)
                 info = infos[t] = (body_id, fs)
-            self._shape_info[s] = info
+            shape_info[s] = info
         if body.body_type == pymunk.Body.STATIC and len(pyshapes) > SHUFFLE_ABOVE:
             # Chipmunk의 경계 상자 트리는 한 줄로 늘어선 선분을 차례로 넣으면 한쪽으로 쏠려 넣기가 제곱 시간이 된다
             # (2만 개: 차례로 4.4초, 섞으면 0.04초). 늘 같은 순서로 섞어 결정성은 그대로다.
@@ -973,27 +1005,46 @@ class Episode:
         from evolab.generators.terrain import generate_hills
 
         num = lambda v: self._num(v, "generator")  # noqa: E731
-        try:
-            xs, ys = generate_hills(
-                int(num(g.seed)) & 0x7FFFFFFFFFFFFFFF, x_min=num(g.x_range[0]), x_max=num(g.x_range[1]),
-                segment=g.segment, base_y=num(g.base_y), amplitude=max(0.0, num(g.amplitude)),
-                growth=max(0.0, num(g.growth)), roughness=min(1.0, max(0.0, num(g.roughness))),
-                slope=num(g.slope), flat_start=max(0.0, num(g.flat_start)),
-            )
+        try:  # 인자 계산도 v3.1처럼 이 try 안(만들기 단계 수식의 ValueError도 같은 EpisodeBuildError)
+            seed = int(num(g.seed)) & 0x7FFFFFFFFFFFFFFF
+            kw = {"x_min": num(g.x_range[0]), "x_max": num(g.x_range[1]), "segment": g.segment,
+                  "base_y": num(g.base_y), "amplitude": max(0.0, num(g.amplitude)), "growth": max(0.0, num(g.growth)),
+                  "roughness": min(1.0, max(0.0, num(g.roughness))), "slope": num(g.slope),
+                  "flat_start": max(0.0, num(g.flat_start))}
+
+            def make() -> tuple[tuple[float, ...], tuple[float, ...]]:
+                xs, ys = generate_hills(seed, **kw)
+                return tuple(xs.tolist()), tuple(ys.tolist())
+
+            xs, ys = _cached_terrain(struct.pack("<5sq9d", b"hills", seed, *kw.values()), make)
         except ValueError as exc:
             raise EpisodeBuildError(f"generators.{g.id}: {exc}") from None
         body = pymunk.Body(body_type=pymunk.Body.STATIC)
         friction = _clamp(num(g.friction), 0.0, 1e3)
         shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
-        for i in range(len(xs) - 1):
-            a = (float(xs[i]), float(ys[i]))
-            b = (float(xs[i + 1]), float(ys[i + 1]))
-            seg = pymunk.Segment(body, a, b, g.radius)
-            seg.friction = friction
-            shapes.append((seg, ShapeGeom("segment", [a, b], g.radius)))
+        self._segments(body, list(zip(xs, ys, strict=True)), False, g.radius, friction, shapes)
         self._add_body(g.id, body, shapes, ["terrain"], "world")
         self.gen_values[f"gen.{g.id}.x_min"] = float(xs[0])
         self.gen_values[f"gen.{g.id}.x_max"] = float(xs[-1])
+
+    def _segments(self, body: pymunk.Body, pts: list[geo.Point], closed: bool, radius: float, friction: float,
+                  shapes: list[tuple[pymunk.Shape, ShapeGeom]]) -> None:
+        """pts를 잇는 선분 모양(closed면 마지막 점에서 첫 점으로도)을 차례로 만들어 shapes에 더한다.
+
+        v3.1과 같은 공개 API 생성자(pymunk.Segment)를 같은 순서로 부르고, 마찰은 공개 속성 쓰기가 부르는 C 함수
+        (cpShapeSetFriction)를 같은 값으로 바로 부른다(v6.0 M1 고침: 지형 모양 수백 개를 만드는 동안 속성 쓰기 한 겹이 세계
+        만들기의 큰 몫이었다). 이웃 선분은 같은 점 튜플을 함께 쓴다(값이 같고 고칠 수 없다)."""
+        seg_new = pymunk.Segment
+        n = len(pts)
+        for i in range(n if closed else n - 1):
+            a, b = pts[i], pts[i + 1 if i + 1 < n else 0]
+            seg = seg_new(body, a, b, radius)
+            raw = _shape_c(seg)
+            if raw is not None:
+                _CP_SET_FRICTION(raw, friction)
+            else:
+                seg.friction = friction
+            shapes.append((seg, ShapeGeom("segment", [a, b], radius)))
 
     def _choose_track(self, g: m.TrackGen) -> Any:
         from evolab.generators import track as tg
@@ -1025,13 +1076,7 @@ class Episode:
         friction = _clamp(self._num(g.friction, "generator"), 0.0, 1e3)
         shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
         for poly in (track.inner, track.outer):
-            pts = [(float(x), float(y)) for x, y in poly]
-            n = len(pts)
-            for i in range(n):
-                a, b = pts[i], pts[(i + 1) % n]
-                seg = pymunk.Segment(body, a, b, g.wall_radius)
-                seg.friction = friction
-                shapes.append((seg, ShapeGeom("segment", [a, b], g.wall_radius)))
+            self._segments(body, [(float(x), float(y)) for x, y in poly], True, g.wall_radius, friction, shapes)
         self._add_body(f"{g.id}.walls", body, shapes, ["wall"], "world")
         x, y, heading = track.start
         self.gen_values.update({
@@ -1047,39 +1092,36 @@ class Episode:
         pad_x = pad_w = None
         if g.pad is not None:
             pad_x, pad_w = num(g.pad.x), num(g.pad.width)
-        try:
-            hm = generate_heightmap(
-                int(num(g.seed)) & 0x7FFFFFFFFFFFFFFF,
-                x_min=x_min,
-                x_max=x_max,
-                segment=g.segment,
-                base_y=num(g.base_y),
-                amplitude=max(0.0, num(g.amplitude)),
-                roughness=min(1.0, max(0.0, num(g.roughness))),
-                pad_x=pad_x,
-                pad_width=pad_w,
-            )
+        try:  # 인자 계산도 v3.1처럼 이 try 안
+            seed = int(num(g.seed)) & 0x7FFFFFFFFFFFFFFF
+            kw = {"x_min": x_min, "x_max": x_max, "segment": g.segment, "base_y": num(g.base_y),
+                  "amplitude": max(0.0, num(g.amplitude)), "roughness": min(1.0, max(0.0, num(g.roughness))),
+                  "pad_x": pad_x, "pad_width": pad_w}
+
+            def make() -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, float, float] | None]:
+                hm = generate_heightmap(seed, **kw)
+                return tuple(hm.xs.tolist()), tuple(hm.ys.tolist()), hm.pad
+
+            key = struct.pack("<5sq6d?2d", b"hmap", seed, x_min, x_max, g.segment, kw["base_y"], kw["amplitude"],
+                              kw["roughness"], pad_x is not None, 0.0 if pad_x is None else pad_x,
+                              0.0 if pad_w is None else pad_w)
+            xs, ys, hpad = _cached_terrain(key, make)
         except ValueError as exc:
             raise EpisodeBuildError(f"generators.{g.id}: {exc}") from None
         body = pymunk.Body(body_type=pymunk.Body.STATIC)
         friction = _clamp(num(g.friction), 0.0, 1e3)
         shapes: list[tuple[pymunk.Shape, ShapeGeom]] = []
-        tags: list[list[str]] = []
-        xs, ys = hm.xs, hm.ys
-        for i in range(len(xs) - 1):
-            a = (float(xs[i]), float(ys[i]))
-            b = (float(xs[i + 1]), float(ys[i + 1]))
-            seg = pymunk.Segment(body, a, b, g.radius)
-            seg.friction = friction
-            on_pad = hm.pad is not None and hm.pad[0] - 1e-9 <= a[0] and b[0] <= hm.pad[1] + 1e-9
-            shapes.append((seg, ShapeGeom("segment", [a, b], g.radius)))
-            tags.append(["terrain", "pad"] if on_pad else ["terrain"])
-        self._add_body(g.id, body, shapes, ["terrain", "pad"] if hm.pad else ["terrain"], "world", tags)
+        self._segments(body, list(zip(xs, ys, strict=True)), False, g.radius, friction, shapes)
+        on_pad, off_pad = ["terrain", "pad"], ["terrain"]
+        tags: list[list[str]] = [
+            on_pad if hpad is not None and hpad[0] - 1e-9 <= geom.points[0][0] and geom.points[1][0] <= hpad[1] + 1e-9
+            else off_pad for _, geom in shapes]
+        self._add_body(g.id, body, shapes, ["terrain", "pad"] if hpad else ["terrain"], "world", tags)
         self._geoms[-1].tags = ["terrain"]
         self.gen_values[f"gen.{g.id}.x_min"] = float(xs[0])
         self.gen_values[f"gen.{g.id}.x_max"] = float(xs[-1])
-        if hm.pad is not None and g.pad is not None:
-            left, right, y = hm.pad
+        if hpad is not None and g.pad is not None:
+            left, right, y = hpad
             self.gen_values.update({
                 f"gen.{g.id}.pad.x": (left + right) / 2.0,
                 f"gen.{g.id}.pad.y": y,
@@ -2047,13 +2089,24 @@ class Episode:
             bits[k] = bit
         plan = list(bits.items())
         matches = self._matches
-        for shape in self._shape_info:
-            cats = 1
-            for k, bit in plan:
-                if matches(shape, k):
-                    cats |= bit
-            f = shape.filter
-            shape.filter = pymunk.ShapeFilter(group=f.group, categories=cats, mask=f.mask)
+        # 맞음은 모양의 (물체 id, 꼬리표) 정보만의 함수이고 같은 정보는 한 객체를 나눠 쓰므로(_add_body) 정보마다 한 번 센다.
+        # 필터 읽기·쓰기는 공개 속성이 부르는 C 함수(cpShapeGetFilter·cpShapeSetFilter)를 같은 값으로 바로 부른다(v6.0 M1 고침).
+        by_info: dict[int, int] = {}
+        for shape, info in self._shape_info.items():
+            cats = by_info.get(id(info))
+            if cats is None:
+                cats = 1
+                for k, bit in plan:
+                    if matches(shape, k):
+                        cats |= bit
+                by_info[id(info)] = cats
+            raw = _shape_c(shape)
+            if raw is not None:
+                f = _CP_GET_FILTER(raw)
+                _CP_SET_FILTER(raw, (f.group, cats, f.mask))
+            else:
+                f = shape.filter
+                shape.filter = pymunk.ShapeFilter(group=f.group, categories=cats, mask=f.mask)
 
     def _rays_fn(self, s: m.Rays) -> tuple[list[str], list[float], Callable[[], tuple[float, ...]]]:
         n = s.count
