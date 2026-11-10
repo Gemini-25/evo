@@ -11,6 +11,12 @@
     그 재생 전체에서 그 층 |값|의 최댓값(최소 RELU_MIN_SCALE). 추적이 없으면 뉴런은 회색.
 - BrainTile: 대시보드 「보는 재미」 쪽 타일. dashboard.brain_source(BrainSource)를 그리고, 없으면 보는 세대까지의
   마지막 챔피언을 멈춘 그림으로 그린다. 실험실이 재생 시각을 Dashboard.show_time → show_time(t)으로 넘긴다.
+- v6.1 자라는 뇌(v6 설계 4.18·5.3, D37): set_network(..., active=, fresh=). active(은닉층마다 켜진 뉴런 bool)가 None이면 지금
+  그림 그대로(크기 고정·옛 실행, 바이트까지 같음). 꺼진 자리는 그 층 반지름의 옅은 점선 원(채움·값 색 없음, 연결선은 가중치가
+  0이라 select_edges가 이미 뺌), fresh(최근 FRESH_GENERATIONS세대 안에 켜진 뉴런)는 범주 색 3의 2px 테두리. 자리는 틀(다 자란
+  크기) 그대로라 세대를 넘겨 보면 같은 자리가 채워진다. BrainTile은 자라는 뇌 실행(Dashboard.brain_grows: 통계에 brain_neurons
+  열)에서만 유전자로 켜짐을 판단한다(policy.frame.BrainFrame.active_neurons): 크기 고정 실행은 GA의 첫 개체가 처음 유전자(뇌 0)라
+  유전자만 보면 모든 뉴런이 꺼져 보인다. 꺼진 자리가 있으면 제목 끝에 BRAIN_SIZE_LABEL, 아래 줄에 BRAIN_GROW_NOTE.
 
 학습 결과와 무관한 화면 전용 코드다(유전자를 읽기만 한다).
 """
@@ -31,6 +37,7 @@ from evolab.app.lab.dashboard import Dashboard, Theme, _blend, _escape
 from evolab.app.lab.history import GUI_PRIORITY
 from evolab.app.lab.watch_tiles import _WatchTile
 from evolab.policy.brain import BrainLayout, unpack
+from evolab.policy.frame import BrainFrame, FrameError
 from evolab.world.physics2d.episode import OBS_CLIP
 
 if TYPE_CHECKING:
@@ -53,6 +60,14 @@ PAD = 6
 NODE_RADIUS = (1.5, 8.0)
 """뉴런 원 반지름의 최소·최대(화면 픽셀)."""
 ELLIPSIS = "…"
+FRESH_GENERATIONS = 5
+"""v6.1: 보는 세대 g와 g − FRESH_GENERATIONS세대 대표의 켜짐이 다르면 「새로 켜진 뉴런」 고리(설계 7.3)."""
+EMPTY_ALPHA = 150
+"""꺼진 자리 점선 원의 진하기(0..255, muted 색)."""
+FRESH_WIDTH = 2.0
+"""새로 켜진 뉴런 고리 굵기(화면 픽셀)."""
+ACTIVE_CACHE = 256
+"""BrainTile이 기억하는 세대별 켜짐(g − FRESH_GENERATIONS 세대 대표) 수."""
 
 
 def short_name(name: str, limit: int = NAME_CHARS) -> str:
@@ -85,6 +100,24 @@ def select_edges(weights: np.ndarray, cap: int = EDGE_CAP) -> tuple[np.ndarray, 
     rows, cols = np.divmod(order, w.shape[1])
     keep = mag > 0.0
     return rows[keep], cols[keep], levels[keep]
+
+
+def _masks(masks: Sequence[np.ndarray] | None, hidden: tuple[int, ...], what: str) -> tuple[np.ndarray, ...] | None:
+    """은닉층마다 (그 층 크기,) bool 사본(읽기 전용). None은 None. 층 수·크기가 다르면 ValueError."""
+    if masks is None:
+        return None
+    out = tuple(np.array(m, dtype=bool).reshape(-1) for m in masks)
+    if len(out) != len(hidden) or any(m.shape != (n,) for m, n in zip(out, hidden, strict=False)):
+        raise ValueError(f"{what} masks do not match the hidden layers {hidden}")
+    for m in out:
+        m.flags.writeable = False
+    return out
+
+
+def _same_masks(a: tuple[np.ndarray, ...] | None, b: tuple[np.ndarray, ...] | None) -> bool:
+    if a is None or b is None:
+        return a is b
+    return len(a) == len(b) and all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))
 
 
 def edge_strength(level: int) -> float:
@@ -174,6 +207,10 @@ class BrainView(QWidget):
         self.biases: list[np.ndarray] = []
         self.inputs: list[tuple[str, str]] = []
         self.outputs: list[tuple[str, str]] = []
+        self.active: tuple[np.ndarray, ...] | None = None
+        """v6.1: 은닉층마다 켜진 뉴런(bool). None이면 모두 켜진 지금 그림."""
+        self.fresh: tuple[np.ndarray, ...] | None = None
+        """v6.1: 은닉층마다 최근 FRESH_GENERATIONS세대 안에 켜진 뉴런(bool, 고리). None이면 고리 없음."""
         self._net_key: tuple[Any, ...] | None = None
         self._selected: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         self.edges_total = 0
@@ -224,11 +261,20 @@ class BrainView(QWidget):
             self.update()
 
     def set_network(self, brain: BrainLayout, params: np.ndarray, inputs: Sequence[tuple[str, str]],
-                    outputs: Sequence[tuple[str, str]], theme: Theme | None = None) -> None:
+                    outputs: Sequence[tuple[str, str]], theme: Theme | None = None, *,
+                    active: Sequence[np.ndarray] | None = None, fresh: Sequence[np.ndarray] | None = None) -> None:
         """신경망 하나: 구조와 뇌 파라미터 (n_params,)(layout.brain_params의 한 행), 입력·출력 (이름, 풍선 글).
-        구조·파라미터·이름이 같으면 아무것도 하지 않는다(연결선 층을 다시 그리지 않는다)."""
+        구조·파라미터·이름이 같으면 아무것도 하지 않는다(연결선 층을 다시 그리지 않는다).
+
+        v6.1: active·fresh는 은닉층마다 (그 층 크기,) bool(켜진 뉴런, 최근에 켜진 뉴런). None이면 지금 그림 그대로(바이트까지).
+        뉴런 원만 바뀌므로 연결선 층은 다시 그리지 않는다. 층 수·크기가 다르면 ValueError."""
         if theme is not None:
             self.set_theme(theme)
+        act = _masks(active, brain.hidden, "active")
+        ring = _masks(fresh, brain.hidden, "fresh")
+        if not (_same_masks(act, self.active) and _same_masks(ring, self.fresh)):
+            self.active, self.fresh = act, ring
+            self.update()
         flat = np.ascontiguousarray(np.asarray(params, dtype=np.float64).reshape(-1))
         ins = [(str(a), str(b)) for a, b in inputs]
         outs = [(str(a), str(b)) for a, b in outputs]
@@ -253,6 +299,7 @@ class BrainView(QWidget):
 
     def clear_network(self) -> None:
         self.brain = None
+        self.active = self.fresh = None
         self.weights, self.biases = [], []
         self._net_key = None
         self._selected = []
@@ -266,6 +313,31 @@ class BrainView(QWidget):
     @property
     def has_network(self) -> bool:
         return self.brain is not None
+
+    @property
+    def empty_slots(self) -> int:
+        """v6.1: 꺼진(점선 원) 은닉 뉴런 자리 수."""
+        return 0 if self.active is None else int(sum(int((~m).sum()) for m in self.active))
+
+    @property
+    def fresh_count(self) -> int:
+        """v6.1: 새로 켜진 뉴런 고리 수(꺼진 자리에는 그리지 않음)."""
+        if self.fresh is None:
+            return 0
+        if self.active is None:
+            return int(sum(int(m.sum()) for m in self.fresh))
+        return int(sum(int((f & a).sum()) for f, a in zip(self.fresh, self.active, strict=True)))
+
+    def node_state(self, layer: int, j: int) -> str:
+        """v6.1: 뉴런 하나의 그림 상태(층 번호는 입력 0): "on"(보통), "empty"(꺼진 자리), "fresh"(새로 켜짐 고리)."""
+        hidden = layer - 1
+        if self.brain is None or not 0 <= hidden < len(self.brain.hidden):
+            return "on"
+        if self.active is not None and not bool(self.active[hidden][j]):
+            return "empty"
+        if self.fresh is not None and bool(self.fresh[hidden][j]):
+            return "fresh"
+        return "on"
 
     def set_trace(self, observations: np.ndarray | None, activations: Sequence[np.ndarray] | None,
                   dt: float) -> None:
@@ -550,11 +622,30 @@ class BrainView(QWidget):
         outline.setWidthF(1.0)
         p.setPen(outline)
         surface = QBrush(QColor(t.surface))
+        empty_pen = ring_pen = None
+        if self.active is not None or self.fresh is not None:  # v6.1: 꺼진 자리·새 뉴런(없으면 지금 그림 그대로)
+            faint = QColor(t.muted)
+            faint.setAlpha(EMPTY_ALPHA)
+            empty_pen = QPen(faint)
+            empty_pen.setWidthF(1.0)
+            empty_pen.setStyle(Qt.PenStyle.CustomDashLine)
+            empty_pen.setDashPattern([2.0, 2.0])
+            ring_pen = QPen(QColor(t.series[3]))
+            ring_pen.setWidthF(FRESH_WIDTH)
+        last = len(self._pos) - 1
         for k, centers in enumerate(self._pos):
             r = self._radius[k]
             vals = levels[k] if levels is not None else None
+            act = self.active[k - 1] if self.active is not None and 0 < k < last else None
+            ring = self.fresh[k - 1] if self.fresh is not None and 0 < k < last else None
             for j in range(len(centers)):
                 c = QPointF(float(centers[j, 0]), float(centers[j, 1]))
+                if act is not None and not act[j]:
+                    p.setPen(empty_pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(c, r, r)
+                    p.setPen(outline)
+                    continue
                 p.setBrush(surface)
                 p.drawEllipse(c, r, r)
                 if vals is None:
@@ -565,6 +656,11 @@ class BrainView(QWidget):
                     col.setAlpha(round(255 * min(1.0, abs(v))) if math.isfinite(v) else 0)
                     p.setBrush(col)
                 p.drawEllipse(c, r, r)
+                if ring is not None and ring[j]:
+                    p.setPen(ring_pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(c, r, r)
+                    p.setPen(outline)
 
     # -- 풍선 도움말 -----------------------------------------------------------
     def node_at(self, x: float, y: float) -> tuple[int, int] | None:
@@ -594,7 +690,13 @@ class BrainView(QWidget):
         if layer == last:
             name, label = self.outputs[j] if j < len(self.outputs) else (str(j), "")
             return S.BRAIN_NODE_OUTPUT_TIP.format(name=name, label=label, value=_value_text(value), bias=bias)
-        return S.BRAIN_NODE_HIDDEN_TIP.format(k=layer, j=j + 1, value=_value_text(value), bias=bias)
+        tip = S.BRAIN_NODE_HIDDEN_TIP.format(k=layer, j=j + 1, value=_value_text(value), bias=bias)
+        state = self.node_state(layer, j)  # v6.1: 꺼진 자리·새로 켜진 뉴런은 끝에 한 줄
+        if state == "empty":
+            return f"{tip}\n{S.BRAIN_NODE_EMPTY}"
+        if state == "fresh":
+            return f"{tip}\n{S.BRAIN_NODE_NEW.format(gen=FRESH_GENERATIONS)}"
+        return tip
 
     def event(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip and isinstance(event, QHelpEvent):
@@ -628,14 +730,22 @@ class BrainTile(_WatchTile):
         self.source_kind: str | None = None
         """지금 그리는 원천: "playing" | "live" | "champion" | "rep"(챔피언이 없어 보는 세대 대표) | None(빈 상태)."""
         self.source_generation: int | None = None
+        self.size_label = ""
+        """v6.1: 제목 끝 BRAIN_SIZE_LABEL(꺼진 자리가 있을 때만, 없으면 빈 글)."""
+        self._frame: tuple[Any, BrainFrame | None] | None = None
+        """(유전자 배치, 틀 또는 None(은닉층·뇌 없음)): 이름표가 바뀔 때만 다시 만든다."""
+        self._active_cache: dict[int, tuple[np.ndarray, ...]] = {}
+        """세대 → 그 세대 대표의 켜진 뉴런(새로 켜진 뉴런 고리, 세대를 넘겨 봐도 파일을 다시 읽지 않게)."""
         self.show_message(S.BRAIN_EMPTY, [])
 
     # -- 대시보드 갈고리 --------------------------------------------------------
     def meta_changed(self) -> None:
         self.brain.clear_network()
+        self._frame = None
+        self._active_cache.clear()
 
     def history_reset(self) -> None:
-        pass
+        self._active_cache.clear()
 
     def sync_marks(self) -> None:
         pass
@@ -681,9 +791,12 @@ class BrainTile(_WatchTile):
                 kind, rep = "rep", None
         lay = meta.layout
         try:
-            params = lay.brain_params(np.asarray(genome, dtype=np.float64)[None, :])[0]
-            self.brain.set_network(lay.brain, params, list(meta.inputs), list(meta.outputs), self.theme)
-        except ValueError:
+            g64 = np.asarray(genome, dtype=np.float64)
+            active, fresh, self.size_label = self._growth_marks(lay, g64, gen)
+            params = lay.brain_params(g64[None, :])[0]
+            self.brain.set_network(lay.brain, params, list(meta.inputs), list(meta.outputs), self.theme,
+                                   active=active, fresh=fresh)
+        except ValueError:  # FrameError 포함
             self._empty()
             return
         traced = rep is not None and rep.observations is not None and rep.activations is not None
@@ -713,14 +826,78 @@ class BrainTile(_WatchTile):
             notes.append(S.BRAIN_RELU_NOTE)
         if self.brain.capped:
             notes.append(S.BRAIN_EDGES_CAPPED.format(total=self.brain.edges_total, per=EDGE_CAP))
+        if self.size_label:  # v6.1: 꺼진 자리(점선 원)가 있을 때만
+            notes.append(S.BRAIN_GROW_NOTE)
         self._set_title_time(self.dash.play_time, force=True)
         self.stack.setCurrentWidget(self.brain)
         self.set_notes(notes)
+
+    # -- v6.1 자라는 뇌 -------------------------------------------------------
+    def frame_for(self, layout: Any) -> BrainFrame | None:
+        """이 유전자 배치의 뇌 틀(은닉층이 없거나 뇌 없는 환경이면 None). 배치가 바뀔 때만 다시 만든다."""
+        if self._frame is None or self._frame[0] is not layout:
+            try:
+                frame: BrainFrame | None = BrainFrame(layout)
+            except FrameError:
+                frame = None
+            self._frame = (layout, frame)
+            self._active_cache.clear()
+        return self._frame[1]
+
+    def active_at(self, generation: int) -> tuple[np.ndarray, ...] | None:
+        """그 세대 대표의 켜진 뉴런(은닉층마다 bool). 화면 기록의 float16 대표(관찰·세대 대표 점, 파일을 읽지 않음), 없으면
+        dash.rep_genome(화면 메모리 또는 세대 대표 파일). 둘 다 없으면 None. 켜짐은 0인지만 보므로 float16으로도 같다(켜진
+        좌표가 float16에서 0이 되려면 |값| < 6e-8이어야 한다)."""
+        meta = self._meta()
+        if meta is None or generation < 1:
+            return None
+        frame = self.frame_for(meta.layout)
+        if frame is None:
+            return None
+        hit = self._active_cache.get(int(generation))
+        if hit is not None:
+            return hit
+        entry = self.history.entry(int(generation))
+        genome: np.ndarray | None = None
+        if entry is not None and entry.map_genomes is not None:
+            genome = np.asarray(entry.map_genomes[entry.map_rep], dtype=np.float64)
+        else:
+            genome = self.dash.rep_genome(int(generation))
+        if genome is None or genome.shape != (meta.dim,):
+            return None
+        out = tuple(frame.active_neurons(genome))
+        if len(self._active_cache) >= ACTIVE_CACHE:
+            self._active_cache.pop(next(iter(self._active_cache)))
+        self._active_cache[int(generation)] = out
+        return out
+
+    def _growth_marks(self, layout: Any, genome: np.ndarray, gen: int | None
+                      ) -> tuple[list[np.ndarray] | None, list[np.ndarray] | None, str]:
+        """(켜진 뉴런, 새로 켜진 뉴런, 제목 끝 글). 자라는 뇌 실행(dash.brain_grows)만: 크기 고정·옛 실행은 (None, None, "")라
+        그림·제목이 v6.0과 같다. 새로 켜짐 = 지금 켜짐 ∧ ¬(gen − FRESH_GENERATIONS세대 대표의 켜짐), 그 대표가 없으면 None."""
+        if not self.dash.brain_grows:
+            return None, None, ""
+        frame = self.frame_for(layout)
+        if frame is None:
+            return None, None, ""
+        active = frame.active_neurons(genome)
+        fresh: list[np.ndarray] | None = None
+        if gen is not None:
+            before = self.active_at(int(gen) - FRESH_GENERATIONS)
+            if before is not None:
+                fresh = [a & ~b for a, b in zip(active, before, strict=True)]
+        label = ""
+        if not all(bool(a.all()) for a in active):
+            total = int(sum(frame.sizes))
+            label = S.BRAIN_SIZE_LABEL.format(n=int(sum(int(a.sum()) for a in active)), total=total,
+                                              links=frame.links(frame.counts_of(genome)))
+        return active, fresh, label
 
     def _empty(self, text: str = S.BRAIN_EMPTY) -> None:
         self.source_kind = self.source_generation = None
         self._title_parts = None
         self._title = ""
+        self.size_label = ""
         self.brain.clear_network()
         self.show_message(text, [] if text != S.BRAIN_EMPTY else [self.loading_note()])
         self.update_legend()
@@ -739,6 +916,7 @@ class BrainTile(_WatchTile):
             title = S.BRAIN_TITLE_LIVE.format(gen=name, t=shown)
         else:
             title = S.BRAIN_TITLE_PLAYING.format(label=name, t=shown)
+        title += self.size_label  # v6.1: 꺼진 자리가 있으면 「 · 뉴런 n/전체 · 연결 m」
         if force or title != self._title:
             self._title = title
             self.update_legend()
@@ -749,4 +927,5 @@ class BrainTile(_WatchTile):
         return self._title
 
 
-__all__ = ["EDGE_CAP", "BrainTile", "BrainView", "edge_strength", "paint_edges", "select_edges", "short_name"]
+__all__ = ["EDGE_CAP", "FRESH_GENERATIONS", "BrainTile", "BrainView", "edge_strength", "paint_edges", "select_edges",
+           "short_name"]

@@ -2713,3 +2713,27 @@ FRAME_GENOME_SHAPE: Final = "유전자 모양이 {shape}인데 이 뇌 틀에는
 HELP_TIPS["lab.brain"] = LAB_BRAIN_TIP
 HELP_TIPS["lab.grow_start"] = LAB_GROW_START_TIP
 HELP_TIPS["lab.grow_every"] = LAB_GROW_EVERY_TIP
+
+# ---------------------------------------------------------------------------
+# v6.1 L 묶음(학습: learners/cmaes.py, learners/grow.py, engine/trainer.py, engine/commands.py). 6절 밖에서 더 필요해진 글:
+# 학습 방법 설정 검사(CMAESConfig.stds, GrowConfig)와 명령줄 이어 하기 거절 한 줄.
+# ---------------------------------------------------------------------------
+LEARNER_ERR_STDS: Final = "좌표별 처음 폭은 0보다 큰 유한한 숫자들이어야 합니다 (지금 {value})."
+LEARNER_ERR_STDS_DIM: Final = "좌표별 처음 폭 {got}개가 유전자 차원({dim})과 맞지 않습니다."
+LEARNER_ERR_GROW_START: Final = "자라는 뇌의 처음 뉴런 수는 1 이상의 정수여야 합니다 (지금 {value})."
+LEARNER_ERR_GROW_EVERY: Final = "자라는 뇌가 자라는 간격은 1 이상의 정수(세대)여야 합니다 (지금 {value})."
+LEARNER_ERR_GROW_INIT: Final = "새 뉴런의 들어오는 가중치 크기는 0보다 큰 유한한 숫자여야 합니다 (지금 {value})."
+TRAIN_RESUME_GROW_FIXED: Final = ("이어 할 때는 자라는 뇌 설정(--grow-start, --grow-every)을 바꿀 수 없습니다. "
+                                  "학습 방법의 일부라서, 바꾸려면 새 실행으로 시작하세요.")
+
+# ---------------------------------------------------------------------------
+# v6.1 C 묶음 (화면: 실험실 「뇌」 줄, 뇌 그림, 「뇌 크기」 타일, 점수 추이 세로선). 6절 밖에서 화면에 더 필요한 글.
+# - DASH_TILE_HELP["brainsize"]: 「보는 재미」 타일 제목 풍선(v1.2 규칙: 「보는 재미」 타일마다 DASH_TILE_HELP, test_dashboard_v12).
+# - DASH_MARK_LABELS["grow"]: 점수 추이 세로선 위 이름(다른 세로선 이름처럼 짧게). 풍선은 DASH_MARK_GROW, 범례는 DASH_TREND_GROW.
+# - GROW_TILE_EMPTY: 「뇌 크기」 타일의 학습 전 빈 상태(실행이 자랄지 아직 모름: GROW_TILE_FIXED는 통계 줄이 생긴 뒤에만).
+# ---------------------------------------------------------------------------
+DASH_TILE_HELP["brainsize"] = ("세대마다 은닉 뉴런 수(계단, 왼쪽 눈금)와 연결 수(점선, 오른쪽 눈금)입니다. 세로 점선은 뇌가 "
+                               "자란 세대입니다. 그래프를 누르면 그 세대를 봅니다. 실험실 「뇌」에서 「작게 시작해 자라기」를 "
+                               "고른 실행에서만 자랍니다.")
+DASH_MARK_LABELS["grow"] = "뇌 자람"
+GROW_TILE_EMPTY: Final = "학습을 시작하면 세대마다 뇌의 뉴런 수와 연결 수를 그립니다."

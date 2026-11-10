@@ -17,6 +17,9 @@
   보일 때 갱신한다. 떠 있지 않으면(테스트, 다른 화면) 지금처럼 바로 갱신한다. flush()는 지금 쪽의 dirty 타일을 바로 갱신한다.
 - 「보는 재미」 자료는 RunHistory(history.py)에 모은다: 실행을 열면 load_history가 배경 스레드로 세대 대표 파일의 관찰
   기록을 읽고, 학습 중에는 add_generation이 세대 메시지의 관찰 기록을 넣는다. 보는 세대(focus)는 실험실 타임라인이 정한다.
+- v6.1 자라는 뇌(설계 4.19, D38): 「보는 재미」 쪽 「뇌 들여다보기」 바로 뒤에 「뇌 크기」 타일(brainsize, grow_tile.py). 통계 열
+  grow = 1인 세대에 자동 세로선 종류 "grow"(auto_marks, 범주 색 3 점선, 풍선 DASH_MARK_GROW, 점수 추이 범례 DASH_TREND_GROW).
+  자람과 학습 방법 교체가 같은 세대면 세로선 둘. 열이 없는 실행(크기 고정·옛 실행)은 아무것도 더 그리지 않는다.
 """
 
 from __future__ import annotations
@@ -74,9 +77,10 @@ if TYPE_CHECKING:
 
 TILE_IDS: tuple[str, ...] = ("trend", "heatmap", "diversity", "blocks", "ends", "perf")
 """「학습 그래프」 쪽 타일(v1.1까지의 여섯, 이 순서가 기본 배치)."""
-FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "density", "actions", "body", "structure")
-"""「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py, structure(v2.1 몸 구조,
-StructureTile)는 app/lab/structure_tile.py에 있다. 예전 배치에 없는 타일은 _load_settings가 뒤에 붙인다."""
+FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "brainsize", "density", "actions", "body", "structure")
+"""「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py, brainsize(v6.1 「뇌 크기」,
+GrowTile, 「뇌 들여다보기」 바로 뒤)는 app/lab/grow_tile.py, structure(v2.1 몸 구조, StructureTile)는 app/lab/structure_tile.py에
+있다. 예전 배치에 없는 타일은 _load_settings가 뒤에 붙인다."""
 ALL_TILE_IDS: tuple[str, ...] = TILE_IDS + FUN_TILE_IDS
 PAGES: tuple[str, ...] = ("learning", "fun")
 TILE_PAGES: dict[str, tuple[str, ...]] = {"learning": TILE_IDS, "fun": FUN_TILE_IDS}
@@ -101,6 +105,8 @@ SETTINGS_FILE = "settings.ini"
 SWITCH_KINDS: dict[int, str] = {1: "restart", 2: "restart", 3: "qualify_next", 4: "qualify_pick"}
 SWITCH_RESTART_FROM: dict[int, str] = {1: "fresh", 2: "champion"}  # 새로 시작한 곳
 QUALIFY_MARK_KINDS: tuple[str, ...] = ("qualify_next", "qualify_pick")
+GROW_MARK_KIND = "grow"
+"""v6.1 자라는 뇌: 통계 열 grow = 1인 세대(그 세대 끝에 뇌가 자람)의 자동 세로선 종류(auto_marks). 열이 없는 실행은 긋지 않는다."""
 _clock = time.monotonic  # 펌프 간격 시계(테스트가 바꾼다)
 LOADING_REFRESH_S = 0.3
 """배경으로 기록을 읽는 동안 「보는 재미」 타일 하나를 펌프가 다시 그리는 최소 간격(초). 읽은 묶음(64세대)마다 다섯
@@ -179,20 +185,24 @@ def _pen(color: str | QColor, width: float = 1.5, style: Qt.PenStyle = Qt.PenSty
 
 
 def mark_style(kind: str) -> str:
-    """세로선 종류 → 펜 묶음: "restart"(자동 재시작), "qualify"(예선 다음·예선 끝), "event"(사건 기록)."""
+    """세로선 종류 → 펜 묶음: "restart"(자동 재시작), "qualify"(예선 다음·예선 끝), "grow"(v6.1 뇌가 자람), "event"(사건 기록)."""
     if kind == "restart":
         return "restart"
     if kind in QUALIFY_MARK_KINDS:
         return "qualify"
+    if kind == GROW_MARK_KIND:
+        return "grow"
     return "event"
 
 
 def mark_pen(theme: Theme, style: str) -> QPen:
-    """세로선 펜: 사건은 회색 점선, 자동 재시작은 실선, 예선은 점점선."""
+    """세로선 펜: 사건은 회색 점선, 자동 재시작은 실선, 예선은 점점선, 뇌가 자람은 범주 색 3 점선(v6.1)."""
     if style == "restart":
         return _pen(theme.series[7], 1.5)
     if style == "qualify":
         return _pen(theme.series[6], 1.5, Qt.PenStyle.DotLine)
+    if style == "grow":
+        return _pen(theme.series[3], 1.5, Qt.PenStyle.DashLine)
     return _pen(theme.ink2, 1, Qt.PenStyle.DashLine)
 
 
@@ -961,6 +971,8 @@ class _TrendTile(_Tile):
         mb = self.dash.my_best
         if mb is not None:
             out.append(_Entry(t.series[5], GLYPH_DASH, S.DASH_MY_BEST, lambda _i: fmt_value(mb)))
+        if d.grow_marks:  # v6.1: 뇌가 자란 세대 세로선(자라는 뇌 실행만)
+            out.append(_Entry(t.series[3], GLYPH_DASH, S.DASH_TREND_GROW))
         if d.qualify_rows is not None:
             out.append(_Entry(_blend(t.series[6], t.surface, 0.3), GLYPH_FILL, S.DASH_QUALIFY_LEGEND))
         if self.ranges:
@@ -1298,7 +1310,7 @@ _TILE_CLASSES: dict[str, type[_Tile]] = {
     "perf": _PerfTile,
 }
 def tile_class(tile_id: str) -> type[_Tile]:
-    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈(watch_tiles, brain_view, structure_tile)은 여기서 늦게
+    """타일 id → 타일 클래스. 「보는 재미」 타일 모듈(watch_tiles, brain_view, structure_tile, grow_tile)은 여기서 늦게
     불러온다(그 모듈들이 _Tile을 상속하려고 이 모듈을 불러오므로 위에서 불러오면 순환한다)."""
     cls = _TILE_CLASSES.get(tile_id)
     if cls is not None:
@@ -1311,6 +1323,10 @@ def tile_class(tile_id: str) -> type[_Tile]:
         from evolab.app.lab.structure_tile import StructureTile
 
         return StructureTile
+    if tile_id == "brainsize":
+        from evolab.app.lab.grow_tile import GrowTile
+
+        return GrowTile
     from evolab.app.lab import watch_tiles
 
     return watch_tiles.TILE_CLASSES[tile_id]
@@ -1420,6 +1436,10 @@ class Dashboard(QWidget):
         self.auto_marks: list[tuple[int, str, dict[str, float]]] = []
         self._auto_rows: list[int] = []  # 자동 세로선마다 그 세대의 줄 번호(가로축 값 찾기)
         self._auto_tips: list[str] = []
+        self._grow_pending: int | None = None
+        """새 크기를 아직 모르는 마지막 「뇌가 자람」 세로선의 auto_marks 번호(다음 줄의 brain_neurons로 채운다, v6.1)."""
+        self.grow_marks = 0
+        """「뇌가 자람」 세로선 수(v6.1, 점수 추이 범례)."""
         self.learner_max = _NAN  # learner 열 최댓값(옛 실행은 NaN)
         self.qualify_rows: tuple[int, int] | None = None  # qualifying == 1인 첫 줄과 마지막 줄 번호
         self.my_best: float | None = None
@@ -1618,9 +1638,9 @@ class Dashboard(QWidget):
             gen[bad] = order[bad]
         self.table.load(n, cols)
         self.hist.extend([parse_scores(r.get("scores")) for r in rows])
-        if any(k in cols for k in ("learner", "qualifying", "switch")):
-            keys = [k for k in ("generation", "learner", "qualifying", "switch", "learner_stall", "learner_best")
-                    if k in cols]
+        if any(k in cols for k in ("learner", "qualifying", "switch", "grow")):
+            keys = [k for k in ("generation", "learner", "qualifying", "switch", "learner_stall", "learner_best", "grow",
+                                "brain_neurons") if k in cols]
             picked = [cols[k].tolist() for k in keys]
             for i in range(n):
                 self._note_learner(i, {k: v[i] for k, v in zip(keys, picked, strict=True)})
@@ -1644,6 +1664,8 @@ class Dashboard(QWidget):
         self.auto_marks = []
         self._auto_rows = []
         self._auto_tips = []
+        self._grow_pending = None
+        self.grow_marks = 0
         self.learner_max = _NAN
         self.qualify_rows = None
 
@@ -1661,6 +1683,7 @@ class Dashboard(QWidget):
                 self._auto_tips[-1] = self._auto_tip(gen, kind, info)
         if values.get("qualifying") == 1.0:
             self.qualify_rows = (i if self.qualify_rows is None else self.qualify_rows[0], i)
+        self._note_growth(i, values, learner)  # 같은 세대의 학습 방법 교체 세로선보다 먼저(예선 끝이 그 줄의 마지막 표시로 남게)
         code = values.get("switch", _NAN)
         kind = SWITCH_KINDS.get(int(code)) if math.isfinite(code) and code == int(code) else None
         if kind is None:
@@ -1676,10 +1699,45 @@ class Dashboard(QWidget):
         self._auto_rows.append(i)
         self._auto_tips.append(self._auto_tip(gen, kind, info))
 
+    def _note_growth(self, i: int, values: Mapping[str, float], learner: float) -> None:
+        """v6.1 자라는 뇌: i번째 줄의 grow·brain_neurons 열. grow = 1이면 「뇌가 자람」 세로선(그 세대 끝)을 더하고, 앞 세로선의
+        새 크기는 이 줄의 brain_neurons(그 세대 후보를 만든 크기)로 채운다. 열이 없는 줄(크기 고정·옛 실행)은 NaN이라 아무것도
+        하지 않는다."""
+        neurons = values.get("brain_neurons", _NAN)
+        k = self._grow_pending
+        if k is not None and math.isfinite(neurons):
+            gen, kind, info = self.auto_marks[k]
+            info["new"] = neurons
+            self._auto_tips[k] = self._auto_tip(gen, kind, info)
+            self._grow_pending = None
+        if values.get("grow") != 1.0:
+            return
+        gen = int(values["generation"])
+        info = {"grow": 1.0, "neurons": neurons, "new": _NAN, "learner": learner}
+        self.auto_marks.append((gen, GROW_MARK_KIND, info))
+        self._auto_rows.append(i)
+        self._auto_tips.append(self._auto_tip(gen, GROW_MARK_KIND, info))
+        self._grow_pending = len(self.auto_marks) - 1
+        self.grow_marks += 1
+
+    def _grown_size(self, old: float) -> float:
+        """다음 줄이 아직 없을 때 자란 뒤 뉴런 수의 어림: 층마다 두 배(틀에서 멈춤). 은닉층이 하나면 정확하다(내장 예제 모두)."""
+        meta = self.watch_meta
+        total = float(sum(meta.layout.brain.hidden)) if meta is not None else math.inf
+        return min(total, 2.0 * old)
+
     def _auto_tip(self, gen: int, kind: str, info: Mapping[str, float]) -> str:
         """자동 세로선 풍선 도움말. 필요한 값이 빠진(손상된) 줄은 사건 표시와 같은 짧은 글."""
         best = fmt_value(info.get("learner_best", _NAN))
         learner = info.get("learner", _NAN)
+        if kind == GROW_MARK_KIND:
+            old = info.get("neurons", _NAN)
+            if math.isfinite(old):
+                new = info.get("new", _NAN)
+                if not math.isfinite(new):
+                    new = self._grown_size(old)
+                return S.DASH_MARK_GROW.format(gen=gen, old=int(old), new=int(new))
+            return S.DASH_MARK_TOOLTIP.format(gen=gen, label=S.DASH_MARK_LABELS.get(kind, kind))
         if kind == "restart":
             stall = info.get("learner_stall", _NAN)
             where = SWITCH_RESTART_FROM.get(int(info.get("switch", 0)))
@@ -1702,7 +1760,7 @@ class Dashboard(QWidget):
         """다음 줄이 아직 없을 때의 통과자: 마지막 예선 끝 표시까지 이어진 예선 표시(출전마다 마지막 세대)의
         learner_best 가운데 첫 최댓값을 낸 learner(동점이면 앞 번호, 명세 A28). 다음 줄이 오면 그 줄의 learner로 고친다."""
         k = len(self.auto_marks) - 1
-        while k > 0 and self.auto_marks[k - 1][1] == "qualify_next":
+        while k > 0 and self.auto_marks[k - 1][1] in ("qualify_next", GROW_MARK_KIND):  # 출전 중에 자란 세로선은 건너뛴다
             k -= 1
         top, leader = -math.inf, _NAN
         for _gen, _kind, info in self.auto_marks[k:]:
@@ -1714,6 +1772,12 @@ class Dashboard(QWidget):
     # -- 타일이 쓰는 자료 -----------------------------------------------------
     def col(self, name: str) -> np.ndarray:
         return self.table.col(name)
+
+    @property
+    def brain_grows(self) -> bool:
+        """v6.1: 자라는 뇌 실행인가(통계에 brain_neurons 열이 있다, 설계 D35). 「뇌 들여다보기」는 이때만 유전자에서 꺼진 뉴런을
+        찾는다: 크기 고정 실행은 GA의 첫 개체가 처음 유전자(뇌 0)라 유전자만 보면 모든 뉴런이 꺼져 보인다."""
+        return self.table.has("brain_neurons")
 
     def x_values(self, follows_axis: bool = True) -> np.ndarray:
         if not follows_axis or self.axis == "generation":

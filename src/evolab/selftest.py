@@ -16,6 +16,10 @@ v3.1 점검 하나(설계 D59): 「내보내기」 — 착륙선 내장 예제�
 v6.0 점검 하나(v6 설계 D19, 5.6): 「빠른 계산 길」 — 내장 예제 여섯의 같은 평가를 물리 엔진 C 함수를 바로 부르는 길과 보통 길
 (공개 pymunk API)로 두 번 돌려 결과가 바이트까지 같은지 본다. 길이 꺼져 있으면(이 pymunk 판에 내부 함수가 없음) 안내하고
 통과하되, CI(EVOLAB_SELFTEST_REQUIRE_FASTPATH=1 또는 GitHub Actions)에서는 실패로 본다. 창이 필요 없어 --no-gui에서도 돈다.
+
+v6.1 점검 하나(v6 설계 5.6·8.4 W2): 「자라는 뇌」 — 착륙선 틀에서 자라는 뇌 학습 방법(learners/grow.py)을 세대마다 자라게 하며
+자라기 직전·직후 평균을 같은 시험으로 평가해 모든 결과 칸이 바이트까지 같은지(함수 보존), 꺼진 좌표가 정확히 +0.0인지, 틀까지
+다 자라는지 보고, 같은 설정의 짧은 학습(Trainer, 이 프로세스 안 평가) 두 번이 같은지 본다. 창이 필요 없어 --no-gui에서도 돈다.
 """
 
 from __future__ import annotations
@@ -494,6 +498,108 @@ def _check_fastpath() -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# v6.1 점검: 자라는 뇌 (자라기 직전·직후 뇌가 같은 결과를 내는지, 짧은 학습 두 번이 같은지)
+# ---------------------------------------------------------------------------
+
+
+GROW_CHECK_ENV: Final = "lander.evoenv"
+GROW_CHECK_SEED: Final = 6
+GROW_CHECK_POPSIZE: Final = 6
+GROW_CHECK_TRIALS: Final = 2
+GROW_CHECK_GENERATIONS: Final = 4
+"""짧은 학습 두 번의 세대 수(간격 1이라 1·2·3세대 끝에 자라 2 → 4 → 8 → 16, 4세대는 다 자란 뒤)."""
+
+
+def _grow_learner_check(spec: Any, layout: Any) -> tuple[list[int], int, str]:
+    """세대마다 자라는 학습 방법(간격 1, 가짜 점수)으로 틀까지 자라며 자람마다 직전·직후 평균을 같은 시험(궤적 포함)으로 평가해
+    비교한다. 직전 평균 = 직후 평균의 옛 켜진 좌표만(자람은 새 뉴런의 들어오는 좌표만 채운다). (켜진 수 경로, 쌍 수, 체크섬)."""
+    from evolab.engine.evaluate import evaluate
+    from evolab.engine.trainer import training_trials
+    from evolab.learners.cmaes import CMAESConfig
+    from evolab.learners.grow import GrowConfig, GrowingCMAES
+
+    learner = GrowingCMAES(layout.initial(), layout, CMAESConfig(popsize=GROW_CHECK_POPSIZE, seed=GROW_CHECK_SEED,
+                                                                 bounded_dims=layout.n_body), GrowConfig(every=1))
+    frame = learner.frame
+    trials = training_trials(spec, GROW_CHECK_SEED, 0, GROW_CHECK_TRIALS)[:GROW_CHECK_TRIALS]
+    pairs = [(0, t) for t in trials]
+    record = [True] * len(pairs)
+    path = [learner.counts[0]]
+    target = np.linspace(-0.3, 0.3, layout.dim)
+    parts: list[bytes] = []
+    for _ in range(4 * len(frame.sizes) + 8):
+        if learner.counts == frame.sizes:
+            break
+        old = learner.counts
+        X = learner.ask()
+        outside = np.ones(layout.dim, dtype=bool)
+        outside[frame.active_coords(old)] = False
+        if np.any(X[:, outside] != 0.0) or np.any(np.signbit(X[:, outside])):
+            raise SelfTestError(S.SELFTEST_GROW_DIFF.format(detail="candidates outside the active coordinates"))
+        learner.tell(X, -np.sum((X - target) ** 2, axis=1))
+        if learner.last_growth is None:
+            continue
+        after = learner.best()
+        before = np.zeros(layout.dim)
+        keep = frame.active_coords(old)
+        before[keep] = after[keep]
+        if np.array_equal(before, after):
+            raise SelfTestError(S.SELFTEST_GROW_DIFF.format(detail="growth did not add incoming weights"))
+        a = _eval_fingerprint(evaluate(spec, layout, before[None, :], pairs, record=record))
+        b = _eval_fingerprint(evaluate(spec, layout, after[None, :], pairs, record=record))
+        diff = [na for (na, va), (nb, vb) in zip(a, b, strict=False) if na != nb or va != vb]
+        if diff or len(a) != len(b):
+            raise SelfTestError(S.SELFTEST_GROW_DIFF.format(
+                detail=f"{GROW_CHECK_ENV} {old} -> {learner.counts}: {', '.join(diff) or 'fields'}"))
+        parts.extend(v for _n, v in a)
+        path.append(learner.counts[0])
+    if learner.counts != frame.sizes:
+        raise SelfTestError(S.SELFTEST_GROW_DIFF.format(detail=f"counts {learner.counts} != frame {frame.sizes}"))
+    return path, len(pairs), _checksum(np.frombuffer(b"".join(parts), dtype=np.uint8))
+
+
+def _grow_training_run(text: str) -> tuple[list[dict[str, str]], bytes, int]:
+    """짧은 자라는 뇌 학습 한 번(이 프로세스 안 평가, 저장소 없음): (통계 줄(시간 열 빼고, 글자로), 챔피언 바이트, 자란 수)."""
+    from evolab.engine.pool import WorkerPool
+    from evolab.engine.trainer import TIME_COLUMNS, TrainConfig, Trainer
+
+    config = TrainConfig(method="grow", run_seed=GROW_CHECK_SEED, popsize=GROW_CHECK_POPSIZE, trials=1, grow_every=1,
+                         validate_every=GROW_CHECK_POPSIZE, validation_seeds=2, validation_candidates=1,
+                         max_generations=GROW_CHECK_GENERATIONS)
+    with WorkerPool(0) as pool:
+        trainer = Trainer(text, config, pool, None, observe=False)
+        rows = [trainer.step() for _ in range(GROW_CHECK_GENERATIONS)]
+    stats = [{k: str(v) for k, v in r.items() if k not in TIME_COLUMNS} for r in rows]
+    champion = trainer.state.champion.genome
+    return stats, b"" if champion is None else champion.tobytes(), sum(int(r["grow"]) for r in rows)
+
+
+def _check_grow() -> str:
+    """「자라는 뇌」(v6 설계 5.6·8.4 W2): 자라기 직전·직후 평균이 같은 결과(함수 보존)를 내고, 짧은 학습 두 번이 같은지."""
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import load_env
+
+    path_file = paths.builtin_env_dir() / GROW_CHECK_ENV
+    spec = load_env(path_file)
+    layout = layout_for(spec)
+    path, n_pairs, checksum = _grow_learner_check(spec, layout)
+    text = path_file.read_text(encoding="utf-8-sig")
+    first, second = _grow_training_run(text), _grow_training_run(text)
+    if first != second:
+        gen = next((k + 1 for k, (a, b) in enumerate(zip(first[0], second[0], strict=False)) if a != b), None)
+        raise SelfTestError(S.SELFTEST_GROW_DIFF.format(detail=f"training run differs (generation {gen})"))
+    stats, champion, grown = first
+    if grown != len(path) - 1:
+        raise SelfTestError(S.SELFTEST_GROW_DIFF.format(detail=f"training grew {grown} times, expected {len(path) - 1}"))
+    return "\n".join([
+        S.SELFTEST_GROW_SAME,
+        f"{GROW_CHECK_ENV}: {' -> '.join(str(n) for n in path)}, pairs={n_pairs}, checksum={checksum}",
+        f"training: generations={len(stats)}, growths={grown}, "
+        f"checksum={_checksum(np.frombuffer(champion + repr(stats).encode(), dtype=np.uint8))}",
+    ])
+
+
 def _headless_offscreen() -> None:
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -848,6 +954,7 @@ def selftest_checks(workers: int, check_gui: bool = True, tour: str = "gen1") ->
         (S.SELFTEST_CHECK_IMPORTS, _check_imports),
         (S.SELFTEST_CHECK_PHYSICS, _check_physics),
         (S.SELFTEST_CHECK_LEARNER, _check_learner),
+        (S.SELFTEST_CHECK_GROW, _check_grow),
         (S.SELFTEST_CHECK_PROCESSES, lambda: _check_processes(workers)),
         (S.SELFTEST_CHECK_ENV, _check_builtin_env),
         (S.SELFTEST_CHECK_BUNDLE, _check_bundle_files),

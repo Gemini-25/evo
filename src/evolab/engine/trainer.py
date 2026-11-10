@@ -25,6 +25,12 @@
 v2.0과 비트 단위로 같게 돌고, 새 실행은 환경에 있음 유전자가 있을 때만 for_new_run(spec)이 STRUCTURE_FLIP_NEW_RUN을 넣는다.
 확률 0이거나 있음 유전자가 없으면 make_learner가 학습 방법 설정에 구조 칸을 넘기지 않는다(상태도 v2.0과 같은 키).
 
+자라는 뇌(v6.1, v6 설계 4.16·D31~D35): method = "grow"면 learners/grow.GrowingCMAES(CMA-ES를 켜진 좌표에, 정해진 세대마다 은닉층
+뉴런 두 배, 유전자는 늘 틀 길이). grow_start·grow_every는 그 실행의 설정에만 쓴다: to_dict()가 method != "grow"면 GROW_KEYS를 지워
+크기 고정 실행의 config 사전(run.json, 체크포인트, 재현 묶음)이 v6.0과 바이트 같다. 통계 열 GROW_COLUMNS(brain_neurons·brain_links·
+grow)는 자라는 실행만 switch 바로 뒤에 쓴다(크기 고정 실행의 열 머리는 v6.0과 같음). 학습 방법이 grow가 아니면 이 파일의 다른
+길은 한 줄도 바뀌지 않는다. 옛 프로그램(v3~v6.0)은 method = "grow"를 모르므로 이어 가기·재현을 거절한다(설계 2.4).
+
 조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 조립되지 않는 (개체, 시험) 쌍은 평가가 점수 NaN으로 돌려준다(evaluate.py).
 집계 점수는 NaN이 그대로 퍼지고(그 개체 = 실패), 학습 방법은 tell에서 sanitize_scores(유한한 최솟값 − 1)로 바꾼다. 통계,
 세대 대표, 관찰 기록, 화면에 보내는 점수는 같은 규칙으로 바꾼 값(agg_s)이라 실패 개체는 늘 그 세대 꼴찌다. 검증 점수가
@@ -82,6 +88,13 @@ SWITCH_NONE, SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION, SWITCH_QUALIFY_NEXT,
 3 예선 다음 출전, 4 예선 끝)."""
 LEARNER_COLUMNS = ("learner", "learner_trials", "learner_best", "learner_stall", "restarts", "qualifying", "switch")
 """학습 방법 기록 통계 열(v1.1). 결정적이라 TIME_COLUMNS에 넣지 않는다. 옛 열 머리로 시작한 실행에는 쓰이지 않는다."""
+METHODS: Final = ("cmaes", "ga", "sa", "grow")
+"""학습 방법 id(TrainConfig.method 값). "grow"(v6.1)는 CMA-ES · 자라는 뇌."""
+GROW_KEYS: Final = ("grow_start", "grow_every")
+"""자라는 뇌 설정 키(v6.1). method != "grow"면 to_dict()가 뺀다(크기 고정 실행의 config가 v6.0과 같게, 설계 D31)."""
+GROW_COLUMNS: Final = ("brain_neurons", "brain_links", "grow")
+"""자라는 실행(method == "grow")의 통계 열(v6.1, switch 바로 뒤, 결정적). brain_neurons·brain_links = 이번 세대 후보를 만든 은닉
+뉴런 합·연결 수(자라기 전), grow = 이 세대 끝에 자랐으면 1(v1.1 learner_*·switch 열과 같은 규칙)."""
 
 
 class Evaluator(Protocol):
@@ -186,9 +199,19 @@ class TrainConfig:
     """예선 출전 수. 1 = 예선 없음. 2..MAX_QUALIFY_ENTRANTS면 처음에 출전자마다 qualify_trials씩 차례로 돌린다."""
     qualify_trials: int = 12000
     """출전자 하나가 쓰는 학습 시험 수."""
+    # 자라는 뇌(v6.1, method="grow"). 이 실행에만 to_dict()가 쓴다(GROW_KEYS). 학습 중에는 바꿀 수 없다(학습 방법의 일부).
+    grow_start: int = 2
+    """은닉층마다 처음 뉴런 수(틀 = 환경 은닉층 크기보다 크면 틀로 자름: 처음부터 다 자란 크기)."""
+    grow_every: int = 10
+    """이 학습 방법 세대 수마다 은닉층마다 뉴런 두 배(틀에서 멈춤)."""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """저장용 사전(asdict). method != "grow"면 GROW_KEYS를 뺀다(크기 고정 실행은 v6.0과 같은 사전, 설계 D31)."""
+        d = asdict(self)
+        if self.method != "grow":
+            for key in GROW_KEYS:
+                del d[key]
+        return d
 
     def validate(self) -> None:
         """값 범위를 확인한다. 잘못되면 TrainerChangeError(한국어)."""
@@ -226,8 +249,14 @@ class TrainConfig:
             raise bad("target_score")
         if self.aggregate not in (None, "mean", "min", "q25"):
             raise bad("aggregate")
-        if self.method not in ("cmaes", "ga", "sa"):
+        if self.method not in METHODS:
             raise bad("method")
+        if self.method == "grow":
+            for name in GROW_KEYS:
+                if not is_int(getattr(self, name)) or getattr(self, name) < 1:
+                    raise bad(name)
+            if self.ipop:  # 개체 수가 바뀌면 「n세대마다」의 시험 수 뜻이 바뀐다(설계 D33)
+                raise TrainerChangeError(S.TRAIN_GROW_NO_IPOP)
         if self.method == "ga" and self.popsize < 2:
             raise bad("popsize")
         if not is_int(self.ga_elites) or self.ga_elites < 0 or (self.method == "ga" and self.ga_elites >= self.popsize):
@@ -482,6 +511,23 @@ def _structure_fields(p: float, layout: GenomeLayout) -> dict[str, Any]:
     return {"structure_flip": float(p), "structure_genes": layout.on_genes}
 
 
+def grow_problem(config: TrainConfig, layout: GenomeLayout) -> str | None:
+    """자라는 뇌(method == "grow")로 이 환경을 학습할 수 없으면 한국어 이유, 아니면 None(설계 4.16).
+
+    뇌 없는 환경(출력 없음, 글라이더)은 FRAME_NO_BRAIN, 은닉층이 없는 뇌는 TRAIN_GROW_NO_HIDDEN. 실행 폴더를 만들기 전에
+    (명령줄·세션의 새 실행) 부르고, Trainer를 만들 때도 같은 검사를 한다(이어 가기·재현 묶음).
+    """
+    from evolab.app import strings as S
+
+    if config.method != "grow":
+        return None
+    if layout.brain.n_out == 0:
+        return S.FRAME_NO_BRAIN
+    if not layout.brain.hidden:
+        return S.TRAIN_GROW_NO_HIDDEN
+    return None
+
+
 def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x0: np.ndarray | None = None) -> Learner:
     """설정대로 학습 방법을 만든다. index = 실행 안에서 만든 순서(시드 단어, 0은 v1.0과 같은 시드),
     x0 = 출발 유전자(None이면 처음 유전자: 몸 초깃값, 뇌 0). GA·담금질의 구조 뒤집기는 layout.on_genes를 뒤집는다."""
@@ -534,6 +580,25 @@ def make_learner(config: TrainConfig, layout: GenomeLayout, *, index: int = 0, x
                 **_structure_fields(config.sa_structure_flip, layout),
             ),
         )
+    if config.method == "grow":
+        # v6.1 자라는 뇌: CMA-ES만(GA·담금질 자라기는 미룸, 설계 D32). IPOP은 쓰지 않는다(validate가 거절, D33).
+        # diagonal_threshold는 안쪽 CMA-ES가 켜진 좌표 수에 적용한다. 출발점이 챔피언이면 그 켜진 수부터 자란다.
+        from evolab.learners.cmaes import CMAESConfig
+        from evolab.learners.grow import GrowConfig, GrowingCMAES
+
+        return GrowingCMAES(
+            start,
+            layout,
+            CMAESConfig(
+                popsize=config.popsize,
+                sigma0=config.sigma0,
+                diagonal_threshold=config.diagonal_threshold,
+                ipop=False,
+                seed=seed,
+                bounded_dims=layout.n_body,
+            ),
+            GrowConfig(start=config.grow_start, every=config.grow_every),
+        )
     raise ValueError(config.method)
 
 
@@ -564,7 +629,13 @@ class Trainer:
         check_initial_body(self.spec, self.layout)
         self.trials = trials_for(self.spec, config)
         self.how = config.aggregate or self.spec.file.evaluation.aggregate
+        problem = grow_problem(config, self.layout)
+        if problem is not None:  # 자라는 뇌인데 은닉층이 없는 뇌(v6.1): 틀 오류(FrameError)가 보이기 전에 한국어로
+            raise TrainerChangeError(problem)
         self.learner = make_learner(config, self.layout)
+        self.last_growth: tuple[int, int, int, int] | None = None
+        """마지막 세대 끝에 뇌가 자랐으면 (옛 뉴런 합, 새 뉴런 합, 옛 연결, 새 연결), 아니면 None(v6.1, 자라는 실행만).
+        세션이 세대 메시지 "growth"로, 명령줄이 CLI_TRAIN_GROWN 한 줄로 알린다. 저장하지 않는다(통계 열 grow와 같은 뜻)."""
         self.state = TrainState(qualifying=config.qualify_entrants > 1)
         self.block_ids = [b.id for b in self.spec.file.scoring.blocks]
         self.end_ids = [t.event for t in self.spec.terminations]
@@ -667,6 +738,7 @@ class Trainer:
         scores = res.scores.reshape(pop, T)
         agg = aggregate(scores, self.how)
         self.learner.tell(X, agg)  # 학습 방법이 NaN(조립 실패)을 agg_s와 같은 규칙으로 바꾼다
+        self.last_growth = getattr(self.learner, "last_growth", None)  # 자라는 뇌(v6.1): 이 tell에서 자랐나(교체 전에 읽음)
         # 통계·세대 대표·관찰·화면 점수: 조립 실패 개체는 유한한 최솟값 − 1(sanitize_scores). NaN이 없으면 agg 그대로의
         # 사본이라 v1.2와 비트 단위로 같다(±무한대 집계도 v1.2처럼 그대로 둔다)
         agg_s = sanitize_scores(agg, pop) if np.isnan(agg).any() else agg.copy()
@@ -886,6 +958,7 @@ class Trainer:
             "restarts": s.restarts,
             "qualifying": 1 if s.qualifying else 0,
             "switch": switch,
+            **self._grow_columns(learner_stats),  # 자라는 실행만(v6.1 GROW_COLUMNS), 크기 고정 실행은 비어 열이 v6.0과 같음
             "sigma": float(learner_stats.get("sigma", math.nan)),
             "diversity": float(np.mean(np.std(X, axis=0))),
             "distance": mean_pairwise_distance(X),
@@ -907,6 +980,13 @@ class Trainer:
         row["elapsed"] = s.elapsed
         row["steps_per_second"] = steps / gen_time if gen_time > 0 else 0.0
         return row
+
+    def _grow_columns(self, learner_stats: dict[str, float]) -> dict[str, Any]:
+        """자라는 실행의 통계 열(GROW_COLUMNS): 이번 세대 후보를 만든 뉴런 합·연결 수와 이 세대 끝에 자랐나(0/1). 아니면 빈 사전."""
+        if self.config.method != "grow":
+            return {}
+        return {"brain_neurons": int(learner_stats["neurons"]), "brain_links": int(learner_stats["links"]),
+                "grow": int(learner_stats["grown"])}
 
     def _fit_columns(self, row: dict[str, Any]) -> dict[str, Any]:
         """예전 형식으로 시작한 실행이면 그 열에 맞춘다(없는 열은 빈칸, 새 열은 뺀다)."""

@@ -12,6 +12,8 @@
 - GuiPriority(GUI_PRIORITY): 화면 스레드가 무거운 일(펌프 한 단계, 기록 묶음 넣기, 실행 열기)을 하는 동안 화면 프로세스의
   배경 작업(이 읽기, 유전자 지도 PCA, 뇌 연결선, 다시 시뮬레이션·세계 만들기)이 쉬게 한다. 둘은 GIL 하나를 나눠 쓴다.
 - 지도 점은 float16 유전자(디스크와 세대 메시지의 obs_genomes는 같은 값)로 그린다: 학습 중 그림 = 다시 연 그림.
+- v6.1 자라는 뇌: 통계 열 brain_neurons·brain_links·grow(GROW_COLUMNS, 자라는 실행만)를 읽는 grow_columns·grow_series.
+  열이 없는 실행(크기 고정·옛 실행)은 빈 값(None·빈 사전)이다. 「뇌 크기」 타일(grow_tile.py)이 쓴다.
 
 이 모듈의 계산(GenEntry, RunHistory, GenePCA, 순수 함수)은 Qt가 없어 배경 스레드에서 불러도 된다. 무작위 PCA의 난수는
 np.random.default_rng(0)(설계 3.2: 전역 난수를 쓰지 않음).
@@ -470,6 +472,57 @@ def rest_bins(low: float, high: float, bins: int = ob.ACTION_BINS) -> list[int]:
 def on_fraction(frac: np.ndarray, low: float, high: float) -> float:
     """칸 비율 (ACTION_BINS,) → 쓰는 시간 = 1 − 쉬는 칸의 비율."""
     return float(1.0 - frac[rest_bins(low, high, len(frac))].sum())
+
+
+# ---------------------------------------------------------------------------
+# 자라는 뇌(v6.1)의 통계 열
+GROW_COLUMNS: Final = ("brain_neurons", "brain_links", "grow")
+"""자라는 뇌 실행(학습 방법 "grow")에만 있는 통계 열(engine/trainer.GROW_COLUMNS와 같은 이름, v6 설계 D35·7.3). 뉴런·연결은 그
+세대 후보를 만든 크기(은닉층 합, 편향 뺀 가중치 수), grow는 그 세대 끝에 자랐으면 1. 크기 고정·옛 실행에는 없다."""
+
+
+@dataclass(frozen=True, eq=False)
+class GrowSeries:
+    """「뇌 크기」 타일(app/lab/grow_tile.py)이 그리는 자라는 뇌 계열. 줄 번호는 통계 표(대시보드 StatsTable)의 줄."""
+
+    rows: np.ndarray
+    """(n,) intp: 뉴런 수가 있는 통계 줄 번호(오름차순)."""
+    neurons: np.ndarray
+    """(n,) float64 은닉 뉴런 수(층 합)."""
+    links: np.ndarray
+    """(n,) float64 연결 수(값이 없으면 NaN)."""
+    events: np.ndarray
+    """자란(grow = 1) 통계 줄 번호(오름차순 intp)."""
+
+
+def grow_columns(rows: Iterable[Mapping[str, Any]]) -> dict[str, np.ndarray]:
+    """통계 줄(학습 중 숫자 사전이나 RunStore.read_stats()의 글자 사전)에서 GROW_COLUMNS를 float64 배열로. 그 열이 없는 줄
+    (크기 고정·옛 실행)과 읽을 수 없는 값은 NaN. 어느 줄에도 없는 열은 빼고 돌려준다(빈 사전 = 자라는 뇌 실행이 아님)."""
+    rows = list(rows)
+    out: dict[str, np.ndarray] = {}
+    for name in GROW_COLUMNS:
+        if not any(name in r for r in rows):
+            continue
+        out[name] = np.array([_finite_float(r.get(name)) for r in rows], dtype=np.float64)
+    return out
+
+
+def grow_series(columns: Mapping[str, np.ndarray]) -> GrowSeries | None:
+    """열 이름 → 줄마다 값(같은 길이, 없는 값 NaN)에서 GrowSeries. brain_neurons 열이 없거나 값이 하나도 없으면 None
+    (크기 고정·옛 실행: 「뇌 크기」 타일은 GROW_TILE_FIXED)."""
+    neurons = columns.get("brain_neurons")
+    if neurons is None:
+        return None
+    n = np.asarray(neurons, dtype=np.float64)
+    ok = np.isfinite(n)
+    if not ok.any():
+        return None
+    rows = np.flatnonzero(ok).astype(np.intp)
+    links = columns.get("brain_links")
+    lk = np.asarray(links, dtype=np.float64)[rows] if links is not None else np.full(len(rows), math.nan)
+    grow = columns.get("grow")
+    events = np.zeros(0, dtype=np.intp) if grow is None else np.flatnonzero(np.asarray(grow) == 1.0).astype(np.intp)
+    return GrowSeries(rows=rows, neurons=n[rows], links=lk, events=events)
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@
 - 세대 메시지의 "waited"(v6.0 D25, 저장하지 않음): 그 세대를 계산하기 전에 재생을 기다린 초. 「학습 먼저」·고속이면 늘 0.
   멈춘 동안은 세지 않는다.
 - 평가 오류(PoolError)로 세대가 중간에 끊기면 마지막 체크포인트로 되돌아가 멈춘다(rewind).
+- 세대 메시지의 "growth"(v6.1 자라는 뇌, 설계 7.3): 그 세대 끝에 뇌가 자랐을 때만 {"old", "new", "old_links", "new_links"}(은닉 뉴런
+  합과 연결 수, Trainer.last_growth). 자라지 않은 세대·크기 고정 실행에는 키가 없다(화면은 키가 없으면 아무것도 안 함).
 - 세대 메시지에는 그 세대의 관찰 기록(v1.2 "observation": 세대 대표 파일의 obs_ 키 사전 또는 None)이 함께 간다.
   관찰 기록을 만들지 못하면(학습은 그대로) 비치명 오류를 세션에서 한 번만 알린다.
 - 화면이 사라지면(파이프가 끊김) 이번 세대를 마치고 체크포인트를 남긴 뒤 끝난다. 워커는 이 프로세스가 끝나면
@@ -151,7 +153,8 @@ class Session:
     def _open(self) -> None:
         from evolab.engine.pool import WorkerPool, default_workers
         from evolab.engine.runsetup import create_run
-        from evolab.engine.trainer import TrainConfig, Trainer
+        from evolab.engine.trainer import TrainConfig, Trainer, TrainerChangeError, grow_problem
+        from evolab.policy.genome import layout_for
         from evolab.runs.store import RunStore
         from evolab.spec.io import compile_env
 
@@ -161,6 +164,10 @@ class Session:
             spec = compile_env(req.env_text)
             config = TrainConfig.from_dict(req.config)
             config.validate()
+            if config.method == "grow":  # v6.1: 은닉층이 없는 뇌면 실행 폴더를 만들기 전에 거절(빈 폴더를 남기지 않음)
+                problem = grow_problem(config, layout_for(spec))
+                if problem is not None:
+                    raise TrainerChangeError(problem)
             self.pool = WorkerPool(workers)
             self.store = create_run(Path(req.runs_dir), req.env_text, spec, config, workers, extra=dict(req.info))
             self.trainer = Trainer(req.env_text, config, self.pool, self.store)
@@ -426,6 +433,11 @@ class Session:
         champion = None
         if g.champion_changed and s.champion.genome is not None:
             champion = {"genome": s.champion.genome, "score": s.champion.score, "generation": s.champion.generation}
+        growth = getattr(self.trainer, "last_growth", None)
+        extra: dict[str, Any] = {}
+        if growth is not None:  # v6.1: 자란 세대만(설계 7.3)
+            old, new, old_links, new_links = growth
+            extra["growth"] = {"old": int(old), "new": int(new), "old_links": int(old_links), "new_links": int(new_links)}
         self._send({
             "type": "generation",
             "generation": g.generation,
@@ -439,6 +451,7 @@ class Session:
             "env_version": g.env_version,
             "observation": self.trainer.last_observation,
             "waited": self._take_waited(),
+            **extra,
         })
         problem = getattr(self.trainer, "observe_problem", None)
         if problem and problem != self.observe_sent:

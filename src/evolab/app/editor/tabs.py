@@ -829,7 +829,8 @@ class ChannelList(QWidget):
 
 
 class BrainTab(QWidget):
-    """뇌 설정: 입력 순서, 출력 순서, 은닉층, 활성화 함수, 파라미터 수."""
+    """뇌 설정: 입력 순서, 출력 순서, 은닉층, 활성화 함수, 파라미터 수. v6.1: 은닉층이 있는 뇌면 「자라는 뇌」 안내 한 줄
+    (EDP_BRAIN_GROW_NOTE: 실험실에서 「작게 시작해 자라기」를 고르면 이 크기가 다 자란 크기)."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -843,6 +844,10 @@ class BrainTab(QWidget):
         """뇌가 없는 환경(입력·출력이 모두 없음) 안내(v2, 글라이더)."""
         self.none_label.setWordWrap(True)
         self.none_label.hide()
+        self.grow_note = QLabel(S.EDP_BRAIN_GROW_NOTE)
+        """v6.1 자라는 뇌 안내(은닉층이 있는 뇌일 때, 검사 오류로 배치를 모를 때도 보임)."""
+        self.grow_note.setWordWrap(True)
+        self.grow_note.setStyleSheet("color: #8a93a6;")  # 흐린 글(실험실 안내 줄과 같은 색)
         self.param_count: int | None = None
         """뇌 파라미터 수(가중치 + 편향). 검사 오류가 있으면 None."""
         self.genome_dim: int | None = None
@@ -853,6 +858,7 @@ class BrainTab(QWidget):
         nl.addWidget(self.form)
         nl.addWidget(self.count_label)
         nl.addWidget(self.none_label)
+        nl.addWidget(self.grow_note)
         nl.addStretch(1)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -879,6 +885,7 @@ class BrainTab(QWidget):
             except ValueError:
                 layout = None
         self.none_label.setVisible(layout is not None and layout.brain.n_in == 0 and layout.brain.n_out == 0)
+        self.grow_note.setVisible(layout is None or (bool(layout.brain.hidden) and layout.brain.n_out > 0))
         if layout is None:
             self.param_count = self.genome_dim = None
             self.count_label.setText(S.EDP_BRAIN_PARAMS_NONE)

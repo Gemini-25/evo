@@ -18,6 +18,10 @@ pycma 4.5에서 실험으로 확인한 것:
   state_dict()는 그 세대 경계 상태를 돌려준다. 불러온 뒤 ask()는 같은 후보를 다시 낸다. (워커 오류로 세대 도중에
   멈춰도 Trainer가 체크포인트를 남길 수 있다. Trainer의 세대 수도 그 세대를 끝내지 않은 상태다.)
 - 상태: es 객체를 통째로 피클한다(전용 RandomState가 randn을 통해 함께 담긴다). 211차원 전체 공분산 약 0.9MB.
+- 좌표별 처음 폭(v6.1, v6 설계 4.15·7.3): CMAESConfig.stds가 비어 있으면 v6.0까지와 똑같이 만들고(pycma 옵션 없음) 상태 사전의
+  설정에도 stds 키를 쓰지 않는다. 비어 있지 않으면(자라는 뇌가 자랄 때 안쪽 CMA-ES를 다시 만듦, learners/grow.py) pycma에
+  sigma0 = 1.0과 CMA_stds = stds(길이 = 차원)를 넘긴다: 처음 좌표별 표준편차가 stds가 된다(pycma가 처음 D에 1e-5 단위로 더하는
+  작은 차이만 빼고).
 """
 
 from __future__ import annotations
@@ -57,6 +61,9 @@ class CMAESConfig:
     """학습 방법 전용 RandomState 시드(0 ≤ seed < 2**32). Trainer가 실행 시드에서 만든다."""
     bounded_dims: int = 0
     """앞쪽 k차원(몸 유전자)을 [-1, 1] 경계 안에 둔다. 나머지(뇌 가중치)는 경계 없음."""
+    stds: tuple[float, ...] = ()
+    """좌표별 처음 표준편차(v6.1). 비면 지금과 똑같이 만든다(pycma 옵션 없음, 상태 사전의 설정에 키 없음). 있으면 길이 = 차원이고
+    pycma에 sigma0 = 1.0, CMA_stds = stds를 넘긴다(sigma0 칸은 쓰지 않음)."""
 
     def __post_init__(self) -> None:
         if not _is_int(self.popsize) or self.popsize < 2:
@@ -71,6 +78,29 @@ class CMAESConfig:
             raise ValueError(S.LEARNER_ERR_SEED.format(value=self.seed))
         if not _is_int(self.bounded_dims) or self.bounded_dims < 0:
             raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS.format(value=self.bounded_dims))
+        try:
+            stds = tuple(float(v) for v in self.stds) if not isinstance(self.stds, (str, bytes)) else None
+        except (TypeError, ValueError):
+            stds = None
+        if stds is None or any(not _is_real(v) for v in self.stds) or any(not (math.isfinite(v) and v > 0) for v in stds):
+            raise ValueError(S.LEARNER_ERR_STDS.format(value=_short(self.stds)))
+        object.__setattr__(self, "stds", stds)  # 상태에서 읽은 list도 받는다(얼린 dataclass)
+
+
+def config_dict(config: CMAESConfig) -> dict[str, Any]:
+    """상태 사전에 담는 설정. stds가 비었으면 키를 뺀다(v6.0까지와 같은 사전, v6.1 T40). 있으면 실수 목록."""
+    d = asdict(config)
+    if not config.stds:
+        del d["stds"]
+    else:
+        d["stds"] = list(config.stds)
+    return d
+
+
+def _short(value: object) -> str:
+    """오류 문구용 짧은 표현."""
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + "..."
 
 
 def _mean_pheno(es: Any, bounded_dims: int) -> np.ndarray:
@@ -108,6 +138,8 @@ class CMAES:
             raise ValueError(S.LEARNER_ERR_X0)
         if config.bounded_dims > x.size:
             raise ValueError(S.LEARNER_ERR_BOUNDED_DIMS_TOO_MANY.format(value=config.bounded_dims, dim=x.size))
+        if config.stds and len(config.stds) != x.size:
+            raise ValueError(S.LEARNER_ERR_STDS_DIM.format(got=len(config.stds), dim=x.size))
         self._cma = import_cma()
         self._config = config
         self._dim = int(x.size)
@@ -160,6 +192,21 @@ class CMAES:
     def stop_reasons(self) -> tuple[str, ...]:
         """마지막 tell() 뒤 pycma 종료 조건 이름(예: 'tolfun'). ipop이면 이 조건으로 재시작했다."""
         return self._stop_reasons
+
+    @property
+    def diversity(self) -> float:
+        """마지막 ask() 후보의 유전자별 표준편차 평균(stats()["diversity"]와 같음, 고윳값 계산 없이)."""
+        return self._diversity
+
+    @property
+    def mean_step(self) -> float:
+        """마지막 tell()에서 추천해가 움직인 거리(stats()["mean_step"]와 같음)."""
+        return self._mean_step
+
+    def coordinate_stds(self) -> np.ndarray:
+        """좌표별 표준편차(pycma es.stds, sigma × 대각 디코딩 × √C 대각)의 float64 사본 (차원,). 자라는 뇌가 자랄 때 새 안쪽
+        CMA-ES의 처음 폭으로 쓰고(v6 설계 D27), 「탐색 폭」 통계는 그 중앙값이다(D34). 상태를 바꾸지 않는다."""
+        return np.array(self._es.stds, dtype=np.float64, copy=True) * np.ones(self._dim)
 
     # ------------------------------------------------------------------ ask/tell
     def ask(self) -> np.ndarray:
@@ -237,7 +284,7 @@ class CMAES:
         return {
             "format": STATE_FORMAT,
             "name": self.name,
-            "config": asdict(self._config),
+            "config": config_dict(self._config),  # stds가 비면 v6.0과 같은 키
             "dim": self._dim,
             "popsize": self._popsize,
             "restarts": self._restarts,
@@ -322,8 +369,12 @@ class CMAES:
         }
         if k:
             opts["bounds"] = [[-1.0] * k + [None] * (n - k), [1.0] * k + [None] * (n - k)]
+        sigma0 = self._config.sigma0
+        if self._config.stds:  # v6.1: 좌표별 처음 폭(비면 이 옵션이 없어 v6.0과 같은 pycma 객체)
+            opts["CMA_stds"] = list(self._config.stds)
+            sigma0 = 1.0
         with _quiet_cma():
-            return self._cma.CMAEvolutionStrategy(x0, self._config.sigma0, opts)
+            return self._cma.CMAEvolutionStrategy(x0, sigma0, opts)
 
     def _restart(self) -> None:
         """IPOP: 지금 추천해에서 개체 수 2배(상한 있음), 초기 시그마로 새로 시작. 난수 흐름은 이어 쓴다."""

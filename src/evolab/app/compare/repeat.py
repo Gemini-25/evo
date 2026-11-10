@@ -15,6 +15,10 @@
   값이다. 예선이 예산에 비해 크면(예산 이상이거나 절반 넘음) 끈다.
   학습 방법 목록에는 make_learner가 실제로 받는 방법만 보인다(available_methods). 아직 만들지 않은 방법은
   ValueError·NotImplementedError를 내고, 만드는 중인 모듈은 가져오기나 인자에서 다른 예외를 낼 수 있어 모두 뺀다.
+- v6.1: 목록 끝에 「CMA-ES · 자라는 뇌」(학습 방법 "grow", v6 설계 4.20·5.5). 설정은 새 실행 권장값 그대로(처음 뉴런 수 2, 10세대
+  마다 두 배)이고 TrainConfig.to_dict()가 grow_start·grow_every를 함께 넘겨, 묶음의 실행마다(config_for) 같은 값을 쓴다. 은닉층이
+  없거나 뇌가 없는 환경에서는 그 방법이 빠지되 「아직 쓸 수 없는 방법」 안내에는 넣지 않는다(만들지 않은 방법이 아니라 그
+  환경에서 자랄 수 없음).
 """
 
 from __future__ import annotations
@@ -56,7 +60,9 @@ from evolab.engine.trainer import TrainConfig, make_learner, qualify_budget_prob
 from evolab.runs.catalog import delete_run
 from evolab.runs.store import RunStore, RunStoreError
 
-METHODS: tuple[str, ...] = ("cmaes", "ga", "sa")
+METHODS: tuple[str, ...] = ("cmaes", "ga", "sa", "grow")
+"""반복 실행 학습 방법 목록(순서 = 보이는 순서). "grow"는 v6.1 CMA-ES · 자라는 뇌."""
+GROW_METHOD = "grow"
 DEFAULT_COUNT = 5
 DEFAULT_MAX_EVALUATIONS = 30000
 DEFAULT_MAX_MINUTES = 10.0
@@ -94,6 +100,12 @@ def available_methods(layout: Any) -> list[str]:
             continue
         out.append(method)
     return out
+
+
+def can_grow(layout: Any) -> bool:
+    """이 유전자 배치에서 자라는 뇌를 쓸 수 있는가(은닉층이 있는 뇌, v6 설계 4.14). 배치가 없으면 False."""
+    brain = getattr(layout, "brain", None)
+    return brain is not None and bool(brain.hidden) and brain.n_out > 0
 
 
 def size_key(method: str) -> str:
@@ -598,7 +610,8 @@ class RepeatDialog(QDialog):
         idx = self.method.findData(keep)
         self.method.setCurrentIndex(max(idx, 0))
         self.method.blockSignals(False)
-        missing = [S.METHOD_NAMES.get(m, m) for m in METHODS if m not in self._methods]
+        missing = [S.METHOD_NAMES.get(m, m) for m in METHODS if m not in self._methods
+                   and not (m == GROW_METHOD and not can_grow(self.layout_obj))]  # 그 환경에서 자랄 수 없는 것은 빼고
         self.method_note.setText(S.CMP_REPEAT_METHODS_MISSING.format(names=", ".join(missing)) if missing else "")
         self.method_note.setVisible(bool(missing) and self.layout_obj is not None)
         self._method_changed(self.method.currentIndex())

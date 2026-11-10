@@ -140,7 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", help=S.CLI_HELP_TRAIN)
     train.add_argument("env", type=Path, nargs="?", default=None, help=S.CLI_HELP_ENV_FILE)
-    train.add_argument("--method", default=None, choices=["cmaes", "ga", "sa"], help=S.CLI_HELP_METHOD)
+    train.add_argument("--method", default=None, choices=["cmaes", "ga", "sa", "grow"], help=S.CLI_HELP_METHOD)
     train.add_argument("--seed", type=_int_arg(), default=None, help=S.CLI_HELP_SEED)
     train.add_argument("--resume", type=Path, default=None, help=S.CLI_HELP_RESUME)
     train.add_argument("--out", type=Path, default=None, help=S.CLI_HELP_OUT)
@@ -168,6 +168,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # (환경에 있음 유전자가 있으면 0.05, 없으면 0). 학습 방법의 일부라 이어 할 때는 바꿀 수 없다.
     train.add_argument("--structure-flip", type=_float_arg, default=None, dest="structure_flip",
                        help=S.CLI_HELP_STRUCTURE_FLIP)
+    # 자라는 뇌(v6.1, --method grow): 범위(1 이상)는 학습 설정 검사가 본다. 학습 방법의 일부라 이어 할 때는 바꿀 수 없다.
+    train.add_argument("--grow-start", type=_int_arg(), default=None, dest="grow_start", help=S.CLI_HELP_GROW_START)
+    train.add_argument("--grow-every", type=_int_arg(), default=None, dest="grow_every", help=S.CLI_HELP_GROW_EVERY)
     # 그래프용 관찰 기록(v1.2)만 끈다. 학습 설정이 아니라 run.json·재현 묶음에 남지 않는다(학습 결과는 같다).
     train.add_argument("--no-observe", action="store_true", default=False, help=S.CLI_HELP_NO_OBSERVE)
 

@@ -30,6 +30,16 @@ v6.0 관전 방식(v6 설계 4.12·5.1·5.2, D23~D25):
   (lab/pace_notice = 1). 보기 칸을 저장할 때 lab/pace도 함께 쓰므로 v6에서 처음 쓴 사용자에게는 뜨지 않는다.
 - 화면에만 쓰는 일이라 학습 결과와 무관하다(T20: 세 방식의 통계·챔피언·체크포인트가 바이트 같음).
 
+v6.1 자라는 뇌(v6 설계 4.17·5.1·5.2, D36):
+- 「학습 설정」 묶음의 「학습 방법」 바로 아래 「뇌」 줄(brain_combo, CMA-ES일 때만 보임): 「크기 고정」(기본) / 「작게 시작해
+  자라기」. 「자라기」면 실행을 학습 방법 "grow"로 만들고(TrainConfig.grow_start·grow_every) 「처음 뉴런 수」(1..가장 작은
+  은닉층)·「자라는 간격(세대)」(1..GROW_EVERY_MAX) 두 칸과 회색 안내 두 줄(LAB_GROW_HINT 또는 LAB_GROW_HINT_ALREADY,
+  LAB_GROW_HINT_HONEST)을 보이고 IPOP 체크를 숨긴다(함께 쓸 수 없음). 은닉층이 없는 환경·뇌 없는 환경은 「자라기」 항목을
+  끄고 까닭을 풍선(LAB_BRAIN_GROW_NO_HIDDEN/NO_BRAIN)으로. 학습 중·이어 하는 실행에서는 학습 방법과 같이 잠근다.
+  사용자가 고른 값은 설정 lab/brain·lab/grow_start·lab/grow_every(실행을 열어 칸을 채운 값은 쓰지 않음).
+- 세대 메시지의 "growth"(자란 세대만) → 상태 글 끝줄 LAB_STATUS_GROWN 한 줄(다음 자람이 바꾼다, 막는 상자 없음).
+- 안내 줄의 뉴런 수는 은닉층 합(「뇌 크기」 타일·뇌 그림 제목·상태 글과 같은 수). 은닉층이 하나인 내장 예제는 그 층 그대로다.
+
 v2.1 몸 구조(설계 4.13·5.3·D41):
 - 「몸 구조」 타일(app/lab/structure_tile.py)에 실행의 환경 버전 목록을 준다(세대마다 그 세대를 계산한 환경으로 구조를
   센다). 학습 중 환경을 바꾸면 그 버전을 더한다.
@@ -144,6 +154,17 @@ WAIT_HINT_WINDOW: Final = 10
 """기다림 알림(D25): 최근 이만큼의 세대로 본다."""
 WAIT_HINT_RATIO: Final = 0.5
 """기다림 알림(D25): 그 세대들의 (기다린 시간 합) ÷ (계산 + 기다린 시간 합)이 이보다 크면 알린다."""
+BRAIN_FIXED: Final = "fixed"
+BRAIN_GROW: Final = "grow"
+BRAINS: Final = (BRAIN_FIXED, BRAIN_GROW)
+"""「뇌」 칸 값(v6.1, 설정 lab/brain). 「자라기」 + CMA-ES = 학습 방법 GROW_METHOD."""
+GROW_METHOD: Final = "grow"
+"""자라는 뇌의 학습 방법 id(TrainConfig.method, CMA-ES만, v6 설계 D31·D32)."""
+GROW_START_DEFAULT: Final = 2
+GROW_EVERY_DEFAULT: Final = 10
+GROW_EVERY_MAX: Final = 100
+GROW_START_MAX: Final = 4096
+"""환경이 없을 때 「처음 뉴런 수」 칸의 최댓값(환경이 있으면 가장 작은 은닉층 크기)."""
 ReplayJob = tuple[EnvSpec, GenomeLayout, np.ndarray, Trial, TraceMode]
 """다시 시뮬레이션 작업 하나: (환경, 유전자 배치, 유전자, 시험, 추적 종류 False | True | "brain")."""
 
@@ -513,6 +534,10 @@ class LabView(QWidget):
         """상태 글 끝줄: 학습을 멈추지 않는 학습 프로세스 알림(관찰 기록 실패, TRAIN_OBSERVE_FAILED_ONWARD). 실행이 바뀌면 지움."""
         self._build_note = ""
         """상태 글 끝줄: 관전 중인 세대에 조립할 수 없는 개체가 있으면 LAB_BUILD_FAILED_N(v2.0 설계 4.9). 실행이 바뀌면 지움."""
+        self._grow_note = ""
+        """상태 글 끝줄: 마지막으로 뇌가 자란 세대(v6.1 LAB_STATUS_GROWN, 세대 메시지 "growth"). 실행이 바뀌면 지움."""
+        self._brain_quiet = False
+        """「뇌」 줄 칸을 코드가 채우는 중(실행 설정·환경·설정 읽기): 사용자가 고른 값으로 설정에 쓰지 않는다."""
 
         # 재생 상태
         self.view_mode = "live"  # live(관전), fast(고속 챔피언), replay(타임라인·겹쳐 보기)
@@ -756,8 +781,29 @@ class LabView(QWidget):
         self.sa_temp.setSpecialValueText(S.LAB_SA_TEMP_AUTO)
         self.sa_cooling = _dspin(0.5, 1.0, 0.995, 4)
         form.addRow(S.LAB_METHOD, self.method)
+        # v6.1 「뇌」 줄(설계 5.1): 학습 방법 바로 아래, CMA-ES일 때만. 「자라기」면 두 칸과 회색 안내 두 줄
+        self.brain_combo = QComboBox()
+        self.brain_combo.addItem(S.LAB_BRAIN_FIXED, BRAIN_FIXED)
+        self.brain_combo.addItem(S.LAB_BRAIN_GROW, BRAIN_GROW)
+        self.brain_combo.setToolTip(S.LAB_BRAIN_TIP)
+        self.grow_start = _spin(1, GROW_START_MAX, GROW_START_DEFAULT)
+        self.grow_every = _spin(1, GROW_EVERY_MAX, GROW_EVERY_DEFAULT)
+        self.grow_hint = QLabel()
+        self.grow_honest = QLabel(S.LAB_GROW_HINT_HONEST)
+        for hint in (self.grow_hint, self.grow_honest):
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #8a93a6;")  # 흐린 글(학습 안정성 안내와 같은 색)
+        form.addRow(S.LAB_BRAIN, self.brain_combo)
+        form.addRow(S.LAB_GROW_START, self.grow_start)
+        form.addRow(S.LAB_GROW_EVERY, self.grow_every)
+        form.addRow(self.grow_hint)
+        form.addRow(self.grow_honest)
+        self.brain_combo.currentIndexChanged.connect(lambda _i: self._update_brain_rows())
+        self.brain_combo.activated.connect(lambda _i: self._save_brain_settings())
+        for spin in (self.grow_start, self.grow_every):
+            spin.valueChanged.connect(lambda _v: (self._update_grow_hint(), self._save_brain_settings()))
         form.addRow(S.LAB_SEED, self.seed)
-        self._method_rows: dict[str, list[QWidget]] = {"cmaes": [], "ga": [], "sa": []}
+        self._method_rows: dict[str, list[QWidget]] = {"cmaes": [self.brain_combo], "ga": [], "sa": []}
 
         def row(label: str, widget: QWidget, methods: tuple[str, ...]) -> None:
             form.addRow(label, widget)
@@ -927,7 +973,11 @@ class LabView(QWidget):
         mode = str(s.value("lab/mode", "spectate"))
         interval = number("lab/fast_interval", 10)
         pace = str(s.value("lab/pace", PACE_DEFAULT))
+        brain = str(s.value("lab/brain", BRAIN_FIXED))
+        grow_start = number("lab/grow_start", GROW_START_DEFAULT)
+        grow_every = number("lab/grow_every", GROW_EVERY_DEFAULT)
         self._restoring = True
+        self._brain_quiet = True
         try:
             if w > 0:
                 self.workers.setValue(w)
@@ -938,8 +988,13 @@ class LabView(QWidget):
             self.fast_interval.setValue(interval)
             if pace in PACES:
                 self.pace_combo.setCurrentIndex(self.pace_combo.findData(pace))
+            if brain in BRAINS:
+                self.brain_combo.setCurrentIndex(self.brain_combo.findData(brain))
+            self.grow_start.setValue(grow_start)
+            self.grow_every.setValue(grow_every)
         finally:
             self._restoring = False
+            self._brain_quiet = False
         self.pace_combo.setEnabled(self.rb_spectate.isChecked())
         self._check_pace_notice()
 
@@ -953,6 +1008,14 @@ class LabView(QWidget):
         s.setValue("lab/pace_notice", 1)
         self._pace_note = S.LAB_PACE_CHANGED_NOTICE
         self._update_status()
+
+    def _save_brain_settings(self) -> None:
+        """「뇌」 줄을 사용자가 바꿨다(v6.1): 고른 값을 설정에 남긴다. 실행 설정·환경으로 칸을 채울 때는 쓰지 않는다."""
+        if self._restoring or self._brain_quiet:
+            return
+        self.settings.setValue("lab/brain", str(self.brain_combo.currentData()))
+        self.settings.setValue("lab/grow_start", self.grow_start.value())
+        self.settings.setValue("lab/grow_every", self.grow_every.value())
 
     def _save_settings(self) -> None:
         if self._restoring:
@@ -1011,6 +1074,8 @@ class LabView(QWidget):
         self._base_config = dict(config) if config else None
         if config:
             self._form_from_config(config)
+        else:
+            self._update_brain_rows()  # 이 환경의 은닉층으로 「자라기」 항목·처음 뉴런 수 최댓값·안내 줄
         if spec.file.evaluation.trials:
             self.trials.setSpecialValueText(f"{S.LAB_TRIALS_ENV} ({spec.file.evaluation.trials})")
         self._show_still_scene()
@@ -1053,8 +1118,81 @@ class LabView(QWidget):
                 label = self._method_form.labelForField(w)
                 if label is not None:
                     label.setVisible(visible)
+        self._update_brain_rows()
         if set_defaults:
             self.popsize.setValue(64 if method == "ga" else 32)
+
+    # -- v6.1 「뇌」 줄 ---------------------------------------------------------
+    def grow_blocked(self) -> str | None:
+        """지금 환경에서 「작게 시작해 자라기」를 고를 수 없는 까닭(풍선 글), 고를 수 있으면 None(환경이 없어도 None)."""
+        lay = self.layout
+        if lay is None:
+            return None
+        if lay.brain.n_out == 0:
+            return S.LAB_BRAIN_GROW_NO_BRAIN
+        if not lay.brain.hidden:
+            return S.LAB_BRAIN_GROW_NO_HIDDEN
+        return None
+
+    def brain_grows(self) -> bool:
+        """「뇌」 줄이 새 실행을 자라는 뇌(학습 방법 GROW_METHOD)로 만드는가: CMA-ES + 「작게 시작해 자라기」."""
+        return str(self.method.currentData()) == "cmaes" and self.brain_combo.currentData() == BRAIN_GROW
+
+    def _set_row_visible(self, widget: QWidget, visible: bool) -> None:
+        widget.setVisible(visible)
+        label = self._method_form.labelForField(widget)
+        if label is not None:
+            label.setVisible(visible)
+
+    def _update_brain_rows(self) -> None:
+        """「뇌」 줄: 「자라기」 항목 켜짐(환경)과 풍선, 처음 뉴런 수 최댓값, 두 칸·안내 줄·IPOP 보이기(CMA-ES + 「자라기」)."""
+        if not hasattr(self, "_method_form"):
+            return  # 패널을 만드는 중
+        blocked = self.grow_blocked()
+        item = self.brain_combo.model().item(1)  # type: ignore[attr-defined]  # QStandardItemModel(QComboBox 기본)
+        item.setEnabled(blocked is None)
+        item.setToolTip(blocked or "")
+        self.brain_combo.setToolTip(S.LAB_BRAIN_TIP if blocked is None else f"{S.LAB_BRAIN_TIP}\n\n{blocked}")
+        quiet, self._brain_quiet = self._brain_quiet, True
+        try:
+            if blocked is not None and self.brain_combo.currentData() == BRAIN_GROW:
+                self.brain_combo.setCurrentIndex(self.brain_combo.findData(BRAIN_FIXED))
+            lay = self.layout
+            top = min(lay.brain.hidden) if lay is not None and lay.brain.hidden else GROW_START_MAX
+            if self.grow_start.maximum() != top:
+                self.grow_start.setMaximum(top)
+        finally:
+            self._brain_quiet = quiet
+        cmaes = str(self.method.currentData()) == "cmaes"
+        grow = self.brain_grows()
+        for w in (self.grow_start, self.grow_every, self.grow_hint, self.grow_honest):
+            self._set_row_visible(w, grow)
+        self._set_row_visible(self.ipop, cmaes and not grow)  # 자라는 뇌는 IPOP과 함께 쓸 수 없다(설계 D33)
+        self._update_grow_hint()
+
+    def grow_hint_text(self) -> str:
+        """안내 첫 줄: 고른 처음 뉴런 수·간격과 지금 환경으로 「2 → 4 → 8 → 16개, 30세대쯤에 다 자랍니다.」. 뉴런 수는 은닉층
+        합이고 층마다 두 배(틀에서 멈춤, learners/grow.py와 같은 규칙). 처음부터 다 자란 크기면 LAB_GROW_HINT_ALREADY. 환경이
+        없거나 은닉층이 없으면 빈 글."""
+        lay = self.layout
+        if lay is None or not lay.brain.hidden or lay.brain.n_out == 0:
+            return ""
+        sizes = lay.brain.hidden
+        counts = [min(self.grow_start.value(), n) for n in sizes]
+        path = [sum(counts)]
+        while any(c < n for c, n in zip(counts, sizes, strict=True)):
+            counts = [min(n, 2 * c) for c, n in zip(counts, sizes, strict=True)]
+            path.append(sum(counts))
+        steps = len(path) - 1
+        if steps == 0:
+            return S.LAB_GROW_HINT_ALREADY
+        return S.LAB_GROW_HINT.format(path=" \u2192 ".join(str(n) for n in path), gen=steps * self.grow_every.value())
+
+    def _update_grow_hint(self) -> None:
+        text = self.grow_hint_text()
+        if self.grow_hint.text() != text:
+            self.grow_hint.setText(text)
+        self.grow_hint.setVisible(self.brain_grows() and bool(text))  # 환경이 없으면 빈 줄을 두지 않는다
 
     def _form_value(self, key: str, widget: QSpinBox | QDoubleSpinBox, convert: Callable[[Any], Any]) -> Any:
         """칸 값을 설정 값으로(convert). 설정에서 칸을 채운 뒤 사용자가 바꾸지 않았으면 그 설정의 원래 값.
@@ -1089,7 +1227,14 @@ class LabView(QWidget):
             ("sa_initial_temperature", self.sa_temp, _or_none), ("sa_cooling", self.sa_cooling, _same),
             ("qualify_entrants", self.qualify_entrants, _same), ("qualify_trials", self.qualify_trials, _same),
         )}
-        c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked(), **fields, **self._restart_fields())
+        grow = self.brain_grows()
+        if grow:
+            method = GROW_METHOD
+        if hasattr(base, "grow_start"):  # v6.1 TrainConfig(자라는 뇌 칸). to_dict()는 method가 grow일 때만 쓴다(설계 D31)
+            fields["grow_start"] = self._form_value("grow_start", self.grow_start, _same)
+            fields["grow_every"] = self._form_value("grow_every", self.grow_every, _same)
+        c = dataclasses.replace(base, method=method, ipop=self.ipop.isChecked() and not grow, **fields,
+                                **self._restart_fields())
         self._stop_fields(c)
         return c
 
@@ -1121,12 +1266,23 @@ class LabView(QWidget):
             if key in c and (value is None or _shows(widget, float(value) / scale)):
                 self._form_exact[key] = (widget.value(), value)
 
-        idx = self.method.findData(c.get("method", "cmaes"))
+        method = c.get("method", "cmaes")
+        grow = method == GROW_METHOD  # v6.1: 자라는 뇌 실행은 CMA-ES + 「뇌」 「작게 시작해 자라기」로 보인다
+        quiet, self._brain_quiet = self._brain_quiet, True
+        try:
+            self.brain_combo.blockSignals(True)
+            self.brain_combo.setCurrentIndex(self.brain_combo.findData(BRAIN_GROW if grow else BRAIN_FIXED))
+            self.brain_combo.blockSignals(False)
+            setv(self.grow_start, "grow_start", GROW_START_DEFAULT)
+            setv(self.grow_every, "grow_every", GROW_EVERY_DEFAULT)
+        finally:
+            self._brain_quiet = quiet
+        idx = self.method.findData("cmaes" if grow else method)
         if idx >= 0:
             self.method.blockSignals(True)
             self.method.setCurrentIndex(idx)
             self.method.blockSignals(False)
-            self._method_changed(set_defaults=False)
+        self._method_changed(set_defaults=False)
         self.ipop.setChecked(bool(c.get("ipop", False)))
         for widget, key, empty in ((self.ga_elites, "ga_elites", 2), (self.ga_crossover, "ga_crossover", 0.7),
                                    (self.ga_mut_rate, "ga_mutation_rate", 0.1),
@@ -1322,6 +1478,7 @@ class LabView(QWidget):
         self._session_note = ""
         self._map_notice = ""
         self._build_note = ""
+        self._grow_note = ""
         self.last_notice = ""
         self.events = []
         self.champion = None
@@ -1455,6 +1612,7 @@ class LabView(QWidget):
         self.generation = int(msg["generation"])
         self.rows.append(row)
         self._note_switch()
+        self._note_growth(msg)
         self.dashboard.add_row(row)
         if msg.get("champion") is not None:
             self.champion = msg["champion"]
@@ -1482,6 +1640,19 @@ class LabView(QWidget):
             self.last_fast_candidate = msg
             self._maybe_fast_replay()
         self._update_buttons()  # 첫 세대가 오면 타임라인·1세대 vs 지금을 학습 중에도 쓸 수 있다
+
+    def _note_growth(self, msg: Mapping[str, Any]) -> None:
+        """v6.1: 세대 메시지의 "growth"(그 세대 끝에 뇌가 자람, 자란 세대만) → 상태 글 끝줄 LAB_STATUS_GROWN 한 줄. 키가 없거나
+        값이 이상하면 아무것도 하지 않는다(크기 고정·옛 학습 프로세스)."""
+        growth = msg.get("growth")
+        if not isinstance(growth, Mapping):
+            return
+        try:
+            self._grow_note = S.LAB_STATUS_GROWN.format(
+                gen=int(msg["generation"]), old=int(growth["old"]), new=int(growth["new"]),
+                old_links=int(growth["old_links"]), new_links=int(growth["new_links"]))
+        except (KeyError, TypeError, ValueError):
+            return
 
     def _keep_newest_waiting(self, dropping_all: bool = False) -> None:
         """「학습 먼저」의 재생 대기열 하나(설계 4.12): 기다리는 관전 세대를 버리고 그 세대 번호로 played를 보낸다.
@@ -1657,6 +1828,8 @@ class LabView(QWidget):
             text += "\n" + self._pace_note
         if self._wait_note:
             text += "\n" + self._wait_note
+        if self._grow_note:
+            text += "\n" + self._grow_note
         self.status.setText(text)
 
     def _learner_status(self, row: Mapping[str, Any]) -> str | None:
@@ -1747,7 +1920,8 @@ class LabView(QWidget):
         self.btn_edit.setEnabled(self.env_text is not None and (paused or not active))
         for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo, self.ipop,
                   self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
-                  self.sa_neighbors, self.sa_step, self.sa_temp, self.sa_cooling):
+                  self.sa_neighbors, self.sa_step, self.sa_temp, self.sa_cooling,
+                  self.brain_combo, self.grow_start, self.grow_every):  # v6.1 「뇌」 줄도 학습 방법처럼(명세 A7)
             w.setEnabled(not active)
         self._update_stability()  # 예선 칸(qualify_entrants, qualify_trials)도 학습 중이면 끈다
         has_gen = self.generation > 0 and self.run_dir is not None

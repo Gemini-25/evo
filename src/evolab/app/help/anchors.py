@@ -75,6 +75,10 @@ def _table() -> dict[str, Anchor]:
         "sa_step": "sa_step",
         "sa_temp": "sa_temp",
         "sa_cooling": "sa_cooling",
+        # v6.1 「뇌」 줄(학습 방법 바로 아래, CMA-ES일 때만)
+        "brain": "brain_combo",
+        "grow_start": "grow_start",
+        "grow_every": "grow_every",
         # 정지 조건, 학습 안정성
         "max_generations": "max_generations",
         "max_evaluations": "max_evaluations",

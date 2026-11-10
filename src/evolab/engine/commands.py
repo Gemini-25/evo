@@ -5,6 +5,9 @@ train --no-observe는 그래프용 관찰 기록(v1.2)만 끈다(Trainer 인자,
 측정 뒤 관찰을 켠 같은 평가를 한 번 더 돌려 차이를 알린다(D32). v6.0(v6 설계 4.10·D17): 단일 코어 줄은 학습과 같은 평가 창
 (evaluate.EVAL_WINDOW)으로 재고 문구에 창 크기를 적는다. 새 줄: 「평가 창」(BENCH_WINDOWS를 번갈아), 「관전 재생 길이」(이미 잰
 평가의 시험 0번 스텝 수, 계산이 더 들지 않음), 「pymunk C 함수 바로 부르기」(episode._CP_FAST).
+v6.1 자라는 뇌(v6 설계 4.16·5.5): train --method grow --grow-start --grow-every. 새 실행은 시작 줄 뒤에 TRAIN_GROW_SUMMARY 한 줄,
+자란 세대마다 CLI_TRAIN_GROWN 한 줄(진행 줄 간격과 상관없이). 은닉층이 없는 뇌면 실행 폴더를 만들기 전에 거절. 이어 할 때는
+grow_*를 바꿀 수 없다(학습 방법의 일부: --grow-start·--grow-every를 주면 TRAIN_RESUME_GROW_FIXED, 종료 코드 2).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from evolab.engine.trainer import (
     SWITCH_RESTART_FRESH,
     TrainConfig,
     Trainer,
+    grow_problem,
     qualify_budget_problem,
     structure_note,
     structure_range_note,
@@ -48,6 +52,8 @@ RESUME_LIVE = ("restart_patience", "restart_from")
 """이어 할 때 플래그로 바꿀 수 있는 학습 중 변경(화면의 「적용」과 같은 길: apply_config → 체크포인트 → 보호 → 사건)."""
 RESUME_FIXED_FLAGS = (("--qualify", "qualify"), ("--qualify-trials", "qualify_trials"))
 """이어 할 때 바꿀 수 없는 플래그(예선은 실행 처음에만 뜻이 있다)."""
+RESUME_GROW_FLAGS = (("--grow-start", "grow_start"), ("--grow-every", "grow_every"))
+"""이어 할 때 바꿀 수 없는 자라는 뇌 플래그(v6.1: 학습 방법의 일부)."""
 
 
 def say(text: str) -> None:
@@ -96,7 +102,7 @@ def _config_from_args(args: Any, base: TrainConfig | None = None, spec: EnvSpec 
         ("target_score", "target"), ("stagnation_generations", "stagnation"), ("trials", "trials"),
         ("validate_every", "validate_every"), ("diagonal_threshold", "diagonal_threshold"), ("ipop", "ipop"),
         ("restart_patience", "restart"), ("restart_from", "restart_from"), ("qualify_entrants", "qualify"),
-        ("qualify_trials", "qualify_trials"),
+        ("qualify_trials", "qualify_trials"), ("grow_start", "grow_start"), ("grow_every", "grow_every"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -130,6 +136,23 @@ def _stability_text(config: TrainConfig) -> str:
     qualify = (S.TRAIN_STABILITY_QUALIFY_ON.format(k=config.qualify_entrants, b=config.qualify_trials)
                if config.qualify_entrants > 1 else S.TRAIN_STABILITY_OFF)
     return S.TRAIN_STABILITY.format(restart=restart, qualify=qualify)
+
+
+def _grow_text(config: TrainConfig, layout: Any) -> str | None:
+    """자라는 뇌 새 실행의 시작 줄(v6.1 TRAIN_GROW_SUMMARY): 은닉 뉴런 합 처음 → 다 자란 크기, 간격. 크기 고정이면 None."""
+    if config.method != "grow" or not layout.brain.hidden:
+        return None
+    sizes = layout.brain.hidden
+    start = sum(min(config.grow_start, s) for s in sizes)
+    return S.TRAIN_GROW_SUMMARY.format(start=start, full=sum(sizes), every=config.grow_every)
+
+
+def _grown_text(trainer: Trainer, row: dict[str, Any]) -> str | None:
+    """이 세대 끝에 뇌가 자랐으면 한 줄(v6.1 CLI_TRAIN_GROWN), 아니면 None."""
+    growth = getattr(trainer, "last_growth", None)
+    if growth is None:
+        return None
+    return S.CLI_TRAIN_GROWN.format(gen=row["generation"], old=growth[0], new=growth[1])
 
 
 def _changes_text(changes: dict[str, Any]) -> str:
@@ -177,6 +200,9 @@ def _progress_suffix(trainer: Trainer, row: dict[str, Any]) -> str:
 
 def _progress(trainer: Trainer, state: dict[str, Any]) -> Any:
     def on_generation(row: dict[str, Any]) -> None:
+        grown = _grown_text(trainer, row)
+        if grown is not None:  # 자람(v6.1)도 진행 줄 간격과 상관없이 바로 알린다(학습 방법 교체보다 먼저 일어남: tell 안)
+            say(grown)
         note = _switch_text(trainer, row)
         if note is not None:  # 학습 방법 교체는 진행 줄 간격과 상관없이 바로 알린다
             say(note)
@@ -217,6 +243,9 @@ def train_command(args: Any) -> int:
                 return 2
             if getattr(args, "structure_flip", None) is not None:  # 학습 방법의 일부(v2.1): 이어 할 때는 못 바꿈
                 warn(S.TRAIN_RESUME_STRUCTURE_FIXED)
+                return 2
+            if any(getattr(args, attr, None) is not None for _flag, attr in RESUME_GROW_FLAGS):  # 학습 방법의 일부(v6.1)
+                warn(S.TRAIN_RESUME_GROW_FIXED)
                 return 2
             store = RunStore.open(Path(args.resume))
             gen, ckpt = store.load_checkpoint(None)
@@ -265,12 +294,19 @@ def train_command(args: Any) -> int:
                 warn(problem)
                 return 2
             layout = layout_for(spec)
+            problem = grow_problem(config, layout)
+            if problem is not None:  # 자라는 뇌인데 은닉층이 없는 뇌(v6.1): 폴더를 만들기 전에 거절
+                warn(S.TRAIN_CANNOT_START.format(reason=problem))
+                return 2
             store = create_run(base_dir, env_text, spec, config, workers)
             pool = WorkerPool(workers)
             trainer = Trainer(env_text, config, pool, store, observe=observe)
             say(S.TRAIN_STARTED.format(name=spec.file.name, method=METHOD_NAMES.get(config.method), dim=layout.dim,
                                        pop=config.popsize, trials=trainer.trials, workers=workers, path=store.root))
             say(_stability_text(config))
+            grow_line = _grow_text(config, layout)
+            if grow_line is not None:  # v6.1 자라는 뇌: 시작 요약 한 줄(설계 5.5)
+                say(grow_line)
             note = structure_range_note(config, spec)
             if note is not None:  # 범위 때문에 구조 뒤집기가 건드리지 않는 있음 칸(v2.1): 시작할 때 한 번
                 warn(note)
