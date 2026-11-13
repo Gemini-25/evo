@@ -138,6 +138,9 @@ class EnvDocument(QObject):
     tool_request = Signal(str, object)
     """화면 부품(속성 패널의 「캔버스에서 길 그리기」 같은 단추)이 캔버스 도구를 켜 달라고 한다: (도구 id, 부품 Ref).
     문서 내용은 바꾸지 않는다. 캔버스가 받는다."""
+    fix_request = Signal(str)
+    """「고치기」가 화면을 열어 달라고 한다(6.2.0, fixes.OPEN_*: 몸 틀 보관함, 규칙 더하기). 문서 내용은 바꾸지 않는다.
+    에디터 화면(view.EditorView)이 받는다."""
 
     def __init__(self, data: dict[str, Any] | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -544,8 +547,49 @@ class EnvDocument(QObject):
         return [i for i in self.issues if where_to_ref(self.data, i.where) == ref]
 
 
+EDITOR_LINTS: tuple[str, ...] = ("ground_is_body", "score_far_is_good", "no_keys", "motor_twice", "joint_apart",
+                                  "never_stops")
+"""켜는 뜻 검사(설계 D40의 여섯). 내장 것에서 뜨는 코드는 여기서 뺀다(되돌릴 지점 B5)."""
+EDITOR_CODES: tuple[str, ...] = ("unattached", "overlap", *EDITOR_LINTS)
+"""에디터만 하는 검사의 코드 전부(Issue.code). 엔진 검사의 코드는 spec/compiled.py."""
+IGNORABLE: frozenset[str] = frozenset({"ground_is_body", "score_far_is_good", "no_keys"})
+"""「괜찮습니다」로 숨길 수 있는 살펴볼 것(어림이라 틀려도 되는 것)."""
+IGNORED_KEY = "ignored"
+"""editor 사전에서 숨긴 살펴볼 것의 키(해시 밖): ["<code>@<where>", …]."""
+APART_GAP = 0.01
+"""관절의 두 앵커가 이만큼(m) 넘게 떨어져 있으면 「어긋난 관절」."""
+GROUND_RATIO = 4.0
+"""에이전트 물체 하나가 나머지 몸 전체보다 이 배수 넘게 넓고 맨 아래면 「땅이 몸이 됨」."""
+KEYED_KINDS = ("motor", "thruster", "jump", "move")
+"""키가 없으면 「키 없는 구동기」로 세는 구동기 종류(D40)."""
+
+
+def ignore_key(issue: Issue) -> str:
+    return f"{issue.code}@{issue.where}"
+
+
+def ignored(data: Any) -> set[str]:
+    """editor.ignored에 적힌 숨긴 살펴볼 것. 모양이 틀리면 빈 집합."""
+    editor = data.get("editor") if isinstance(data, dict) else None
+    rows = editor.get(IGNORED_KEY) if isinstance(editor, dict) else None
+    return {r for r in rows if isinstance(r, str)} if isinstance(rows, list) else set()
+
+
+def _label(item: Any) -> str:
+    return str(getattr(item, "label", "") or getattr(item, "id", ""))
+
+
+def _number(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
 def editor_checks(env: m.EnvFile, spec: EnvSpec | None) -> list[Issue]:
-    """에디터만 하는 검사(경고): 관절로 안 이어진 에이전트 물체, 시작할 때 겹친 물체."""
+    """에디터만 하는 검사: 관절로 안 이어진 에이전트 물체, 시작할 때 겹친 물체(경고)와 뜻 검사 여섯(EDITOR_LINTS, D40).
+
+    모든 항목에 코드가 있다(EDITOR_CODES). editor.ignored에 적힌 살펴볼 것은 빼고 돌려준다.
+    """
     out: list[Issue] = []
     agent = [i for i, b in enumerate(env.bodies) if b.owner == "agent"]
     if len(agent) > 1:
@@ -554,35 +598,135 @@ def editor_checks(env: m.EnvFile, spec: EnvSpec | None) -> list[Issue]:
             linked |= {j.a, j.b}
         for i in agent:
             if env.bodies[i].id not in linked:
-                out.append(Issue("warning", f"bodies[{i}]", S.ED_CHECK_UNATTACHED.format(id=env.bodies[i].id)))
+                out.append(Issue("warning", f"bodies[{i}]", S.ED_CHECK_UNATTACHED.format(id=env.bodies[i].id),
+                                 "unattached"))
+    out += _lint_file(env)
     if spec is not None:
-        out += _overlap_checks(env, spec)
+        ep = _start_episode(spec)
+        if ep is not None:
+            out += _overlap_checks(env, ep)
+            out += _lint_scene(env, ep)
+    hidden = ignored(env.editor)
+    return [i for i in out if not (i.code in IGNORABLE and ignore_key(i) in hidden)]
+
+
+def _lint_file(env: m.EnvFile) -> list[Issue]:
+    """파일만 보고 하는 뜻 검사: 거리 점수의 부호, 키 없는 구동기, 한 관절에 모터 둘, 멈추지 않는 물체."""
+    from evolab.presets.josa import fill
+    from evolab.presets.rules import display_name
+
+    out: list[Issue] = []
+    data = {"bodies": [b.model_dump(by_alias=True) for b in env.bodies],
+            "regions": [r.model_dump(by_alias=True) for r in env.regions]}
+    if "score_far_is_good" in EDITOR_LINTS and env.scoring is not None:
+        for k, b in enumerate(env.scoring.blocks):
+            if isinstance(b, m.DistanceBlock) and b.weight > 0:
+                out.append(Issue("info", f"scoring.blocks[{k}]", fill(S.ED_CHECK_SCORE_FAR, {
+                    "thing": display_name(data, b.body), "where": display_name(data, b.target)}), "score_far_is_good"))
+    if "no_keys" in EDITOR_LINTS:
+        keyless = [k for k, a in enumerate(env.actuators) if a.kind in KEYED_KINDS and not _keys_of(a)]
+        if keyless:
+            where = f"actuators[{keyless[0]}]" if len(keyless) == 1 else "actuators"
+            out.append(Issue("info", where, S.ED_CHECK_NO_KEYS.format(n=len(keyless)), "no_keys"))
+    if "motor_twice" in EDITOR_LINTS:
+        seen: dict[str, int] = {}
+        joints = {j.id: j for j in env.joints}
+        for k, a in enumerate(env.actuators):
+            if isinstance(a, m.Motor):
+                seen[a.joint] = seen.get(a.joint, 0) + 1
+                n = sum(1 for x in env.actuators if isinstance(x, m.Motor) and x.joint == a.joint)
+                if seen[a.joint] == 2:
+                    joint = joints.get(a.joint)
+                    out.append(Issue("warning", f"actuators[{k}]", S.ED_CHECK_MOTOR_TWICE.format(
+                        joint=_label(joint) if joint is not None else a.joint, n=n), "motor_twice"))
+    if "never_stops" in EDITOR_LINTS and env.world.view != "top" and env.world.damping >= 1.0:
+        g = tuple(_number(v) for v in env.world.gravity)
+        if g == (0.0, 0.0):
+            for k, b in enumerate(env.bodies):
+                if b.owner == "world" and b.type == "dynamic" and _number(b.drag) == 0.0:
+                    out.append(Issue("warning", f"bodies[{k}]", fill(S.ED_CHECK_NEVER_STOPS, {"name": _label(b)}),
+                                     "never_stops"))
     return out
 
 
-def _overlap_checks(env: m.EnvFile, spec: EnvSpec) -> list[Issue]:
-    """미리보기 시험으로 세계를 만들어, 시작 자세에서 서로 부딪히는 물체 쌍을 찾는다(관절로 이은 쌍과 에이전트끼리 제외).
+def _keys_of(actuator: Any) -> list[str]:
+    keys: list[str] = []
+    for name in ("keys", "keys_pos", "keys_neg", "keys_up", "keys_down", "keys_left", "keys_right"):
+        keys += list(getattr(actuator, name, None) or [])
+    return keys
 
-    v2: 정해진 움직임(kinematic) 물체와 움직이지 않는 물체(kinematic·static)의 쌍은 뺀다. 물리 엔진에서 둘 다 질량이
-    무한이라 서로 부딪히지 않는다(설계 D26). 장애물 줄(생성기 물체)도 kinematic이라 같다.
-    """
-    import pymunk
 
+def _start_episode(spec: EnvSpec) -> Any:
+    """미리보기 시험으로 시작 자세의 세계를 만든다(겹침·어긋난 관절·땅이 된 몸 검사가 함께 씀). 못 만들면 None."""
     from evolab.engine import seeds
     from evolab.policy.genome import layout_for
-    from evolab.world.physics2d.episode import Episode, EpisodeBuildError
+    from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
 
     try:
         layout = layout_for(spec)
         body = layout.body_values(layout.initial()[None, :])[0] if layout.n_body else None
         trial = seeds.display_trial()
         if spec.track_set_size:
-            from evolab.world.physics2d.episode import Trial
-
             trial = Trial(trial.seed, 0)
-        ep = Episode(spec, body, trial)
+        return Episode(spec, body, trial)
     except (EpisodeBuildError, ValueError):
-        return []
+        return None
+
+
+def _lint_scene(env: m.EnvFile, ep: Any) -> list[Issue]:
+    """시작 자세의 세계를 보고 하는 뜻 검사: 어긋난 관절, 땅처럼 보이는 에이전트 물체."""
+    from evolab.presets.josa import fill
+
+    out: list[Issue] = []
+    if "joint_apart" in EDITOR_LINTS:
+        for k, j in enumerate(env.joints):
+            if j.kind not in ("pivot", "rot_spring", "weld") or j.a not in ep.bodies or j.b not in ep.bodies:
+                continue
+            gap = _anchor_gap(ep, j)
+            if gap is not None and gap > APART_GAP:
+                out.append(Issue("warning", f"joints[{k}]", S.ED_CHECK_JOINT_APART.format(joint=_label(j), gap=gap),
+                                 "joint_apart"))
+    if "ground_is_body" in EDITOR_LINTS:
+        boxes: dict[str, tuple[float, float, float, float]] = {}
+        for shape, (bid, _tags) in ep._shape_info.items():
+            bb = shape.cache_bb()
+            old = boxes.get(bid)
+            box = (bb.left, bb.bottom, bb.right, bb.top)
+            boxes[bid] = box if old is None else (min(old[0], box[0]), min(old[1], box[1]), max(old[2], box[2]),
+                                                   max(old[3], box[3]))
+        agent = [(k, b) for k, b in enumerate(env.bodies) if b.owner == "agent" and b.id in boxes]
+        if len(agent) > 1:
+            for k, b in agent:
+                others = [boxes[o.id] for _k, o in agent if o.id != b.id]
+                width = max(x[2] for x in others) - min(x[0] for x in others)
+                bottom = min(x[1] for x in others)
+                mine = boxes[b.id]
+                if mine[2] - mine[0] > GROUND_RATIO * max(width, 1e-6) and mine[3] <= bottom + 0.05:
+                    out.append(Issue("info", f"bodies[{k}]", fill(S.ED_CHECK_GROUND_IS_BODY, {"name": _label(b)}),
+                                     "ground_is_body"))
+    return out
+
+
+def _anchor_gap(ep: Any, j: m.Joint) -> float | None:
+    """시작할 때 관절의 두 앵커 사이 거리(m). 앵커가 수식이면 만든 값으로."""
+    try:
+        st = sy.joint_stage(ep.env, j)
+        aa, ab = ep._vec(j.anchor_a, st), ep._vec(j.anchor_b, st)
+    except Exception:  # noqa: BLE001 (계산 못 하는 앵커는 검사하지 않는다)
+        return None
+    wa = ep.bodies[j.a].local_to_world(aa)
+    wb = ep.bodies[j.b].local_to_world(ab)
+    return float((wa - wb).length)
+
+
+def _overlap_checks(env: m.EnvFile, ep: Any) -> list[Issue]:
+    """시작 자세에서 서로 부딪히는 물체 쌍을 찾는다(관절로 이은 쌍과 에이전트끼리 제외).
+
+    v2: 정해진 움직임(kinematic) 물체와 움직이지 않는 물체(kinematic·static)의 쌍은 뺀다. 물리 엔진에서 둘 다 질량이
+    무한이라 서로 부딪히지 않는다(설계 D26). 장애물 줄(생성기 물체)도 kinematic이라 같다.
+    """
+    import pymunk
+
     joined = {frozenset((j.a, j.b)) for j in env.joints}
     index = {b.id: i for i, b in enumerate(env.bodies)}
     seen: set[frozenset[str]] = set()
@@ -603,5 +747,5 @@ def _overlap_checks(env: m.EnvFile, spec: EnvSpec) -> list[Issue]:
                 seen.add(pair)
                 a, b = sorted(pair)
                 where = f"bodies[{index[a]}]" if a in index else (f"bodies[{index[b]}]" if b in index else "")
-                out.append(Issue("warning", where, S.ED_CHECK_OVERLAP.format(a=a, b=b)))
+                out.append(Issue("warning", where, S.ED_CHECK_OVERLAP.format(a=a, b=b), "overlap"))
     return out

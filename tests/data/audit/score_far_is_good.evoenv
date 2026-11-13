@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "name": "검사 견본",
+  "description": "",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "wind": [
+      0.0,
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 10.0,
+    "bounds": [
+      -20.0,
+      -5.0,
+      20.0,
+      20.0
+    ],
+    "contact_debounce": 0.1
+  },
+  "params": [],
+  "randomize": [],
+  "generators": [],
+  "agent": {
+    "spawn": {
+      "x": 0.0,
+      "y": 1.2,
+      "angle": 0.0,
+      "vx": 0.0,
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "ground",
+      "label": "땅",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 30.0,
+          "h": 0.4,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "ground"
+      ],
+      "drag": 0.0
+    },
+    {
+      "id": "torso",
+      "label": "몸통",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.4,
+          "h": 0.6,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0
+    },
+    {
+      "id": "leg",
+      "label": "다리",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "hip",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.15,
+          "h": 0.5,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0
+    }
+  ],
+  "joints": [
+    {
+      "id": "hip",
+      "label": "엉덩이",
+      "kind": "pivot",
+      "a": "torso",
+      "b": "leg",
+      "anchor_a": [
+        0.0,
+        -0.3
+      ],
+      "anchor_b": [
+        0.0,
+        0.25
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": null,
+      "collide": false
+    }
+  ],
+  "actuators": [
+    {
+      "kind": "motor",
+      "id": "m_hip",
+      "label": "엉덩이 모터",
+      "joint": "hip",
+      "max_torque": 20.0,
+      "max_speed": 6.0,
+      "keys_pos": [
+        "Q"
+      ],
+      "keys_neg": [
+        "A"
+      ]
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "body_state",
+      "id": "st",
+      "label": "몸통 상태",
+      "body": "torso",
+      "fields": [
+        "vx",
+        "vy",
+        "angle"
+      ],
+      "frame": "world",
+      "scale": {}
+    }
+  ],
+  "regions": [
+    {
+      "id": "goal",
+      "label": "골",
+      "kind": "zone",
+      "shape": {
+        "kind": "box",
+        "w": 1.0,
+        "h": 2.0,
+        "offset": [
+          0.0,
+          0.0
+        ],
+        "angle": 0.0
+      },
+      "pos": [
+        8.0,
+        1.0
+      ],
+      "tags": []
+    }
+  ],
+  "checkpoints": [],
+  "events": [],
+  "termination": [
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 끝"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "id": "s_dist",
+        "label": "간 거리",
+        "weight": 1.0,
+        "kind": "progress",
+        "body": "torso",
+        "direction": 0.0
+      },
+      {
+        "id": "s_near",
+        "label": "골까지",
+        "weight": 1.0,
+        "kind": "distance_to",
+        "body": "torso",
+        "target": "goal",
+        "agg": "min"
+      }
+    ],
+    "formula": null
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {}
+}
