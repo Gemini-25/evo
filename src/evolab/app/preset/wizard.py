@@ -636,7 +636,10 @@ class PresetWizard(QDialog):
                 result: Any = TR.probe(spec)
             except Exception:  # noqa: BLE001 - 알림뿐이라 실패는 조용히
                 result = None
-            self._probe_ready.emit(gen, result)
+            try:
+                self._probe_ready.emit(gen, result)
+            except RuntimeError:  # 창이 먼저 닫혀 지워짐
+                pass
 
         t = threading.Thread(target=work, name="preset-probe", daemon=True)
         t.gen = gen  # type: ignore[attr-defined]

@@ -5,6 +5,9 @@
 직접 조종, 실험실로 보내기(멈춘 실험이면 고친 환경으로 이어서 학습, 아니면 새 실행에 쓸 환경).
 v2: 캔버스 아래 미리보기 시각 줄(정해진 움직임 물체가 있을 때), 보기 메뉴(전체 보기, 기본 보기 저장·지우기), 내장 예제
 목록은 paths.builtin_envs() 순서.
+6.2.0: 「새 프리셋…」(Ctrl+Shift+N, app/preset 안내 창), 아래 「규칙」 탭·문제 목록의 「고치기」(editor/fixes.py: 화면을 여는 고치기는
+doc.fix_request로 받는다). 화면 다듬기 U38 ①: 팔레트·속성 패널 폭을 실행 중에 잰다. U39: 「직접 조종」·「실험실로 보내기」는 도구 줄
+옆의 따로 선 오른쪽 줄(go_bar: 넘칠 수 없다)에 두고 「실험실로 보내기」를 으뜸 단추로, 오류가 있어 꺼지면 까닭을 액션에 건다.
 v2.1: 아래 「구조」 탭과 캔버스를 잇는다(줄 강조, 「없는 부품도 보기」), 「배열로 늘리기…」(구조 탭 단추와
 물체 오른쪽 메뉴)는 대화 상자(editor/structure.ReplicateDialog)를 띄워 tools.replicate로 늘린다.
 """
@@ -12,9 +15,11 @@ v2.1: 아래 「구조」 탭과 캔버스를 잇는다(줄 강조, 「없는 �
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,7 +29,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
+    QSizePolicy,
     QSplitter,
+    QStyle,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -33,9 +40,11 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.editor import tools as T
 from evolab.app.editor.canvas import EditorCanvas, PreviewBar
 from evolab.app.editor.document import EnvDocument, Ref
+from evolab.app.editor.fixes import OPEN_RULES_ADD, OPEN_TEMPLATE_BODY
 from evolab.app.editor.forms import FieldWidget
 from evolab.app.editor.palette import Palette
 from evolab.app.editor.properties import PropertyPanel
@@ -46,10 +55,19 @@ from evolab.spec.compiled import EnvFileError
 from evolab.spec.io import parse_env
 
 BUILTIN_TITLES = {"lander": S.ED_BUILTIN_LANDER, "track_car": S.ED_BUILTIN_TRACK, "hill_car": S.ED_BUILTIN_HILL,
-                  "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER, "wheels": S.ED_BUILTIN_WHEELS}
+                  "jump": S.ED_BUILTIN_JUMP, "glider": S.ED_BUILTIN_GLIDER, "wheels": S.ED_BUILTIN_WHEELS,
+                  "running": S.ED_BUILTIN_RUNNING}
 """내장 예제 메뉴 이름(파일 이름 줄기 -> 이름). 여기 없는 파일은 그 파일의 name."""
 SHARED_PARAMS_SHOWN = 6
 """「배열로 늘리기」 뒤 상태 줄에 이름을 보이는 공유 몸 수치 수(넘으면 …)."""
+PALETTE_MAX = 260
+"""팔레트 폭의 상한(px, U38 ①)."""
+PROPS_WIDTH = 390
+PROPS_WIDTH_WIDE = 420
+WIDE_WINDOW = 1600
+"""창이 이 폭(px) 이상이면 속성 패널을 PROPS_WIDTH_WIDE로(U38 ①)."""
+NEW_PRESET_SHORTCUT = "Ctrl+Shift+N"
+"""「새 프리셋…」(설계 D42: Ctrl+N은 그대로 빈 환경)."""
 
 
 def _builtin_title(path: Path) -> str:
@@ -90,6 +108,15 @@ class EditorView(QWidget):
         self.props = PropertyPanel(self.doc)
         self.tabs = BottomTabs(self.doc)
         self.tabs.issue_activated.connect(lambda _ref, _where: self.canvas.update())
+        self.tabs.issues_tab.fixed.connect(lambda text: self.canvas.message(text))
+        self.doc.fix_request.connect(self._on_fix_request)
+        self.wizard: Any = None
+        """마지막으로 띄운 「새 프리셋」 창(6.2.0)."""
+        self.lab_ready: Callable[[], bool] | None = None
+        """실험실이 새 환경을 받을 수 있는가(주 창이 정함). 안내 창의 「실험실로 보내기」가 저장하기 전에 본다. None이면 늘 받음."""
+        self.popup_menus = True
+        """「규칙 더하기…」 고치기가 더하기 메뉴를 띄우는가(테스트는 끈다: 메뉴는 이벤트 루프를 막는다)."""
+        self._sized = False
         structure_tab = self.tabs.structure_tab  # v2.1 구조 탭 <-> 캔버스
         structure_tab.highlight_changed.connect(self.canvas.set_structure_highlight)
         structure_tab.show_absent_changed.connect(self.canvas.set_show_absent)
@@ -105,6 +132,7 @@ class EditorView(QWidget):
         self.doc.file_changed.connect(lambda: self.title_changed.emit(self.doc.title()))
 
         self.toolbar = self._build_toolbar()
+        self.go_bar = self._build_go_bar()
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -118,7 +146,8 @@ class EditorView(QWidget):
         top.setStretchFactor(0, 0)
         top.setStretchFactor(1, 1)
         top.setStretchFactor(2, 0)
-        top.setSizes([170, 800, 330])
+        top.setSizes([170, 800, 330])  # 처음 보일 때 잰 값으로 다시(_fit_sizes)
+        self.top_split = top
         split = QSplitter(Qt.Orientation.Vertical)
         split.addWidget(top)
         split.addWidget(self.tabs)
@@ -126,7 +155,12 @@ class EditorView(QWidget):
         split.setStretchFactor(1, 2)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-        lay.addWidget(self.toolbar)
+        bars = QHBoxLayout()
+        bars.setContentsMargins(0, 0, 0, 0)
+        bars.setSpacing(0)
+        bars.addWidget(self.toolbar, 1)
+        bars.addWidget(self.go_bar, 0)
+        lay.addLayout(bars)
         lay.addWidget(split, 1)
         status_row = QWidget()
         sl = QHBoxLayout(status_row)
@@ -151,6 +185,9 @@ class EditorView(QWidget):
             return a
 
         self.act_new = act(S.ED_NEW, self.new_file, QKeySequence.StandardKey.New)
+        self.act_new_preset = act(S.ED_NEW_PRESET, self.new_preset, QKeySequence(NEW_PRESET_SHORTCUT))
+        self.act_new_preset.setObjectName("act_new_preset")
+        self.act_new_preset.setToolTip(S.ED_NEW_PRESET_TIP)
         self.act_open = act(S.ED_OPEN, self.open_file, QKeySequence.StandardKey.Open)
         self.act_save = act(S.ED_SAVE, self.save, QKeySequence.StandardKey.Save)
         self.act_save_as = act(S.ED_SAVE_AS, self.save_as, QKeySequence.StandardKey.SaveAs)
@@ -189,9 +226,24 @@ class EditorView(QWidget):
             self.addAction(a)
         self.act_copy = act(S.ED_COPY, self.copy, QKeySequence.StandardKey.Copy)
         self.act_paste = act(S.ED_PASTE, self.paste, QKeySequence.StandardKey.Paste)
-        bar.addSeparator()
-        self.act_play = act(S.ED_PLAY, self.play)
-        self.act_lab = act(S.ED_TO_LAB, self.to_lab)
+        bar.setObjectName("toolbar")
+        return bar
+
+    def _build_go_bar(self) -> QToolBar:
+        """「직접 조종」·「실험실로 보내기」(으뜸)의 따로 선 오른쪽 줄(U39: 도구 줄이 넘쳐도 숨지 않는다)."""
+        bar = QToolBar()
+        bar.setObjectName("go_bar")
+        bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.act_play = QAction(S.ED_PLAY, self)
+        self.act_play.triggered.connect(self.play)
+        self.act_lab = QAction(S.ED_TO_LAB, self)
+        self.act_lab.triggered.connect(self.to_lab)
+        for a in (self.act_play, self.act_lab):
+            bar.addAction(a)
+            self.addAction(a)
+        self.lab_button = bar.widgetForAction(self.act_lab)
+        if isinstance(self.lab_button, QToolButton):
+            style.set_role(self.lab_button, "primary")
         return bar
 
     def _on_checked(self, issues: list) -> None:
@@ -200,8 +252,86 @@ class EditorView(QWidget):
         infos = sum(1 for i in issues if i.severity == "info")  # 살펴볼 것(info)만 있으면 「문제 없음」 그대로(문제가 아니다)
         self.status.setText(S.ED_STATUS.format(errors=errors, warnings=warnings, infos=infos) if errors or warnings
                             else S.ED_STATUS_OK)
-        self.act_play.setEnabled(errors == 0)
-        self.act_lab.setEnabled(errors == 0)
+        why = S.ED_WHY_ERRORS.format(n=errors) if errors else ""
+        style.set_enabled(self.act_play, errors == 0, why)
+        style.set_enabled(self.act_lab, errors == 0, why)
+
+    # ------------------------------------------------------------------
+    # 처음 크기 (U38 ①)
+    # ------------------------------------------------------------------
+    def palette_width(self) -> int:
+        """팔레트 폭: 팔레트가 바라는 폭 + 세로 스크롤 막대 + 테(상한 PALETTE_MAX)."""
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        return min(PALETTE_MAX, self.palette.sizeHint().width() + bar + 4)
+
+    def props_width(self) -> int:
+        win = self.window()
+        wide = win is not None and win.width() >= WIDE_WINDOW
+        return max(self.props.minimumWidth(), PROPS_WIDTH_WIDE if wide else PROPS_WIDTH)
+
+    def _fit_sizes(self) -> None:
+        total = self.top_split.width()
+        if total <= 0:
+            return
+        pal, props = self.palette_width(), self.props_width()
+        self.top_split.setSizes([pal, max(100, total - pal - props), props])
+
+    def showEvent(self, ev: Any) -> None:  # noqa: N802
+        super().showEvent(ev)
+        if not self._sized:
+            self._sized = True
+            self._fit_sizes()
+
+    # ------------------------------------------------------------------
+    # 새 프리셋 (6.2.0)
+    # ------------------------------------------------------------------
+    def new_preset(self) -> Any:
+        """「새 프리셋」 창을 창에 묶인 모달로 띄운다. 끝나면 load_preset이 그 환경을 연다."""
+        from evolab.app.preset.wizard import open_wizard
+
+        self.commit_pending()
+        wizard = open_wizard(self, can_leave=self._wizard_can_leave)
+        wizard.finished_with.connect(lambda text, then, path: self.load_preset(text, path, then))
+        self.wizard = wizard
+        return wizard
+
+    def _wizard_can_leave(self, what: str) -> bool:
+        """안내 창이 저장하고 닫기 전에: 에디터의 저장 물음, 「실험실로 보내기」면 실험실이 받을 수 있는가(설계 D42)."""
+        if not self.maybe_save():
+            return False
+        if what == "lab" and self.lab_ready is not None and not self.lab_ready():
+            QMessageBox.information(self.wizard if self.wizard is not None else self, S.APP_NAME, S.MAIN_LAB_BUSY)
+            return False
+        return True
+
+    def load_preset(self, text: str, path: Path | str | None, then: str) -> bool:
+        """안내 창이 만든 환경을 연다(저장 위치 = 안내 창이 저장한 파일). then이 "lab"이면 실험실로도 보낸다.
+
+        저장 물음은 안내 창이 닫기 전에 이미 했으므로(_wizard_can_leave) 다시 묻지 않는다.
+        """
+        try:
+            self.doc.load_text(text, Path(path) if path else None)
+        except EnvFileError as exc:
+            show_error(self, S.ED_OPEN_FAILED, exc, next_step=structure_next_step(exc))
+            return False
+        self.from_lab = False
+        self.canvas.fit()
+        if then == "lab":
+            self.to_lab()
+        return True
+
+    def _on_fix_request(self, name: str) -> None:
+        """화면을 여는 「고치기」: 몸 틀 보관함, 규칙 탭의 더하기 메뉴."""
+        if name == OPEN_TEMPLATE_BODY:
+            button = self.palette.buttons.get("tpl_body")
+            if button is not None:
+                QTimer.singleShot(0, button.click)
+        elif name == OPEN_RULES_ADD:
+            rules = self.tabs.rules_tab
+            self.tabs.setCurrentWidget(rules)
+            rules.add_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            if self.popup_menus:
+                QTimer.singleShot(0, rules.open_add_menu)
 
     # ------------------------------------------------------------------
     # 파일

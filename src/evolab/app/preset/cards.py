@@ -65,6 +65,10 @@ class FlowLayout(QLayout):
     def add(self, widget: QWidget) -> None:
         self.addChildWidget(widget)
         self.addItem(QWidgetItem(widget))
+        host = self.parentWidget()
+        if host is not None and host.isVisible():
+            widget.show()  # addChildWidget은 다음 이벤트 때 보이게 한다: 지금 보이게(바로 누를 수 있게)
+        self.invalidate()
 
     def count(self) -> int:
         return len(self._items)

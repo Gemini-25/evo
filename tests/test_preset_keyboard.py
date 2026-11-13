@@ -34,6 +34,8 @@ CONTROLS = (QAbstractButton, QComboBox, QLineEdit, QAbstractSpinBox, QSlider, QL
 def iso(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("EVOLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("EVOLAB_STATE_DIR", str(tmp_path / "state"))
+    # 테스트 끝에 창을 닫을 때 「버릴까요?」 상자가 뜨지 않게(물음 자체는 T20이 따로 본다)
+    monkeypatch.setattr(PresetWizard, "ask_discard", lambda self: True)
     return tmp_path
 
 

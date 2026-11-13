@@ -1,7 +1,7 @@
 """에디터 아래쪽 탭 (명세: 화면과 조작 > 에디터 > 배치).
 
-세계 설정, 사건·종료 조건, 점수 블록과 수식, 랜덤 범위, 생성기, 평가 설정, 뇌 설정, 구조(v2.1, editor/structure.py),
-매개변수, 검사 결과.
+규칙(6.2.0, editor/rules_tab.py), 세계 설정(맨 위 「세계 종류」), 사건·종료 조건(고급), 점수 블록과 수식(고급), 랜덤 범위, 생성기,
+평가 설정, 뇌 설정, 구조(v2.1, editor/structure.py), 매개변수, 문제 목록(6.2.0: 줄마다 「고치기」, editor/fixes.py).
 칸 위젯은 속성 패널과 같은 폼 엔진(forms.py)을 쓰고, 모든 편집은 문서(EnvDocument)를 거친다.
 """
 
@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QFrame,
     QGroupBox,
@@ -48,6 +49,7 @@ from evolab.app.editor.document import (
     set_path,
     where_to_ref,
 )
+from evolab.app.editor.fixes import FLOOR_FRICTION, Fix, can_ignore, fixes_for, ignore
 from evolab.app.editor.forms import (
     FieldWidget,
     FormContext,
@@ -69,6 +71,7 @@ from evolab.app.editor.forms import (
     type_info,
     watch_focus,
 )
+from evolab.app.editor.rules_tab import RulesTab
 from evolab.app.editor.structure import StructureTab
 from evolab.spec import model as m
 from evolab.spec import symbols as sy
@@ -468,16 +471,104 @@ class _MasterDetail(QWidget):
 # ---------------------------------------------------------------------------
 
 
+WORLD_SIDE_GRAVITY = (0.0, -9.81)
+"""옆에서 본 세계의 중력(새로 만들기와 같다)."""
+
+
+def world_kind(data: dict[str, Any]) -> str:
+    """세계 종류: "top"(위에서 본), "side"(옆에서 본, 중력이 기본값), "custom"(옆에서 본 세계인데 중력을 손으로 적음)."""
+    world = data.get("world") if isinstance(data.get("world"), dict) else {}
+    if world.get("view") == "top":
+        return "top"
+    g = world.get("gravity", list(WORLD_SIDE_GRAVITY))
+    try:
+        same = len(g) == 2 and all(not isinstance(v, bool) and float(v) == w for v, w in zip(g, WORLD_SIDE_GRAVITY,
+                                                                                               strict=True))
+    except (TypeError, ValueError):
+        same = False
+    return "side" if same else "custom"
+
+
+def set_world_kind(data: dict[str, Any], kind: str) -> None:
+    """세계 종류 + 중력 + 바닥 마찰을 한 번에(사전을 고침). 옆에서 본 세계는 기본값 칸을 지워 가장 낮은 형식으로 남는다."""
+    world = data.setdefault("world", {})
+    if kind == "top":
+        world["view"] = "top"
+        world["gravity"] = [0.0, 0.0]
+        world["damping"] = FLOOR_FRICTION
+    elif kind == "side":
+        world.pop("view", None)
+        world.pop("damping", None)
+        world["gravity"] = list(WORLD_SIDE_GRAVITY)
+
+
+class WorldKindRow(QWidget):
+    """「세계 종류: (옆에서 본 세계 | 위에서 본 세계)」 두 단추. 중력을 손으로 적은 옆 세계는 「직접 정함」 글."""
+
+    def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.doc = doc
+        self.setObjectName("world_kind")
+        self.setToolTip(S.EDP_WORLD_KIND_TIP)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.label = QLabel(S.EDP_WORLD_KIND)
+        self.label.setToolTip(S.EDP_WORLD_KIND_TIP)
+        lay.addWidget(self.label)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(False)
+        self.buttons: dict[str, QToolButton] = {}
+        for kind in ("side", "top"):
+            b = QToolButton()
+            b.setText(S.EDP_WORLD_KINDS[kind])
+            b.setToolTip(S.EDP_WORLD_KIND_TIPS[kind])
+            b.setCheckable(True)
+            b.setObjectName(f"world_kind_{kind}")
+            b.clicked.connect(lambda _c=False, k=kind: self.choose(k))
+            self.group.addButton(b)
+            self.buttons[kind] = b
+            lay.addWidget(b)
+        self.custom = QLabel(S.EDP_WORLD_KINDS["custom"])
+        self.custom.setToolTip(S.EDP_WORLD_KIND_TIPS["custom"])
+        style.tone(self.custom, "ink2")
+        lay.addWidget(self.custom)
+        lay.addStretch(1)
+        doc.changed.connect(self.refresh)
+        self.refresh()
+
+    def kind(self) -> str:
+        return world_kind(self.doc.data)
+
+    def refresh(self) -> None:
+        kind = self.kind()
+        for k, b in self.buttons.items():
+            b.setChecked(k == kind)
+        self.custom.setVisible(kind == "custom")
+
+    def choose(self, kind: str) -> None:
+        """그 종류로 바꾼다(되돌리기 한 단계). 이미 그 종류면 아무것도 안 함."""
+        if kind == self.kind():
+            self.refresh()
+            return
+        self.doc.edit(S.EDP_UNDO_WORLD_KIND, lambda d: set_world_kind(d, kind))
+        self.refresh()
+
+
 class WorldTab(QWidget):
-    """세계 설정: 환경 이름·설명, 세계(중력, 바람, 시간, 경계, 접촉 디바운스), 시작 위치."""
+    """세계 설정: 맨 위 세계 종류(6.2.0), 환경 이름·설명, 세계(중력, 바람, 시간, 경계, 접촉 디바운스, 바닥 마찰), 시작 위치."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         body = QWidget()
-        row = QHBoxLayout(body)
-        row.setContentsMargins(4, 4, 4, 4)
+        col = QVBoxLayout(body)
+        col.setContentsMargins(4, 4, 4, 4)
+        self.kind_row = WorldKindRow(doc)
+        col.addWidget(self.kind_row)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         self.env_form = ModelForm(doc, (), m.EnvFile, only=("name", "description"))
-        self.world_form = ModelForm(doc, ("world",), m.World)
+        self.world_form = ModelForm(doc, ("world",), m.World, exclude=("view",))
         self.spawn_form = ModelForm(doc, ("agent", "spawn"), m.Spawn)
         for title, form, stretch in ((S.EDP_GROUP_ENV, self.env_form, 3), (S.EDP_GROUP_WORLD, self.world_form, 4),
                                      (S.EDP_GROUP_SPAWN, self.spawn_form, 3)):
@@ -487,6 +578,7 @@ class WorldTab(QWidget):
             bl.addWidget(form)
             bl.addStretch(1)
             row.addWidget(box, stretch)
+        col.addLayout(row, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(_scroll(body))
@@ -916,34 +1008,110 @@ class ParamsTab(QWidget):
 
 
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
-"""검사 결과 탭의 줄 순서: 오류, 경고, 안내."""
+"""문제 목록 탭의 줄 순서: 오류, 경고, 살펴볼 것."""
 SEVERITY_ICONS = {"error": QStyle.StandardPixmap.SP_MessageBoxCritical,
                   "warning": QStyle.StandardPixmap.SP_MessageBoxWarning,
                   "info": QStyle.StandardPixmap.SP_MessageBoxInformation}
-"""오류 빨강, 경고 노랑, 안내(v2) 파란 「i」."""
+"""오류 빨강, 경고 노랑, 살펴볼 것(v2 안내) 파란 「i」."""
+
+
+def fix_widget(doc: EnvDocument, issue: Issue, done: Callable[[str], None] | None = None,
+               parent: QWidget | None = None) -> QWidget | None:
+    """이 검사 결과의 「고치기」 단추(고칠 길이 여럿이면 ▾ 메뉴)와, 숨길 수 있는 살펴볼 것이면 「괜찮습니다」.
+
+    고칠 길이 없으면 None. 단추는 fix_button, 「괜찮습니다」는 ignore_button 속성으로 찾는다. done(글)은 고친 뒤 상태 줄 글.
+    """
+    fixes = fixes_for(doc, issue)
+    if not fixes and not can_ignore(issue):
+        return None
+    box = QWidget(parent)
+    lay = QHBoxLayout(box)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(4)
+
+    def run(fix: Fix) -> None:
+        fix.apply(doc)
+        if done is not None and not fix.opens:
+            done(S.FIX_DONE.format(what=fix.label))
+
+    button: QToolButton | None = None
+    if fixes:
+        button = QToolButton(box)
+        button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        plain = [f for f in fixes if not f.menu]
+        if len(fixes) == 1:
+            button.setText(fixes[0].label)
+            button.setToolTip(fixes[0].tip)
+            button.clicked.connect(lambda _=False, f=fixes[0]: run(f))
+        else:
+            menu = QMenu(button)
+            menu.setToolTipsVisible(True)
+            subs: dict[str, QMenu] = {}
+            for f in fixes:
+                target = menu
+                if f.menu:
+                    if f.menu not in subs:
+                        subs[f.menu] = menu.addMenu(f.menu)
+                        subs[f.menu].setToolTipsVisible(True)
+                    target = subs[f.menu]
+                act = target.addAction(f.label)
+                act.setToolTip(f.tip)
+                act.triggered.connect(lambda _=False, f=f: run(f))
+            button.setMenu(menu)
+            if plain:
+                button.setText(plain[0].label)
+                button.setToolTip(plain[0].tip)
+                button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+                button.clicked.connect(lambda _=False, f=plain[0]: run(f))
+            else:
+                button.setText((fixes[0].menu or S.FIX_BUTTON) + " ▾")
+                button.setToolTip(fixes[0].tip)
+                button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        lay.addWidget(button)
+    ignore_button: QToolButton | None = None
+    if can_ignore(issue):
+        ignore_button = QToolButton(box)
+        ignore_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        ignore_button.setText(S.FIX_IGNORE)
+        ignore_button.setToolTip(S.FIX_IGNORE_TIP)
+        ignore_button.clicked.connect(lambda: ignore(doc, issue))
+        lay.addWidget(ignore_button)
+    lay.addStretch(1)
+    box.fix_button = button  # type: ignore[attr-defined]
+    box.ignore_button = ignore_button  # type: ignore[attr-defined]
+    box.fixes = fixes  # type: ignore[attr-defined]
+    return box
 
 
 class IssuesTab(QWidget):
-    """검사 결과 전부. 두 번 누르면 그 부품을 고르고 issue_activated(ref, where)를 낸다."""
+    """문제 목록: 검사 결과 전부와 줄마다 「고치기」(6.2.0). 두 번 누르면 그 부품을 고르고 issue_activated(ref, where)를 낸다."""
 
     issue_activated = Signal(object, str)
     """(Ref 또는 None, where). 캔버스가 그 부품으로 화면을 옮길 때 쓴다."""
+    fixed = Signal(str)
+    """고치기를 했다: 상태 줄 글(FIX_DONE)."""
 
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.doc = doc
+        self.setObjectName("issues_tab")
+        self.issues: list[Issue] = []
+        """보이는 차례의 검사 결과(줄 번호 = 이 목록의 번호)."""
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(3)
+        self.tree.setColumnCount(len(S.EDP_ISSUES_HEADERS))
         self.tree.setHeaderLabels(list(S.EDP_ISSUES_HEADERS))
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setWordWrap(True)
-        self.tree.header().setStretchLastSection(True)
-        self.tree.header().resizeSection(0, self.fontMetrics().averageCharWidth() * 8 + 30)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().resizeSection(0, self.fontMetrics().averageCharWidth() * 10 + 30)
         self.tree.header().resizeSection(1, self.fontMetrics().averageCharWidth() * 28)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.itemDoubleClicked.connect(self._on_double)
         self.empty = QLabel(S.EDP_ISSUES_NONE)
         hint = QLabel(S.EDP_ISSUES_HINT)
+        hint.setWordWrap(True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(hint)
@@ -964,19 +1132,40 @@ class IssuesTab(QWidget):
 
     def fill(self, issues: list[Issue]) -> None:
         self.tree.clear()
-        style = self.style()
+        style_ = self.style()
         order = sorted(issues, key=lambda i: SEVERITY_ORDER.get(i.severity, 1))
+        self.issues = order
         for issue in order:
-            icon = style.standardIcon(SEVERITY_ICONS.get(issue.severity, QStyle.StandardPixmap.SP_MessageBoxWarning))
+            icon = style_.standardIcon(SEVERITY_ICONS.get(issue.severity, QStyle.StandardPixmap.SP_MessageBoxWarning))
             item = QTreeWidgetItem([S.EDP_ISSUES_SEVERITY.get(issue.severity, issue.severity),
-                                    self.where_text(issue.where), issue.message])
+                                    self.where_text(issue.where), issue.message, ""])
             item.setIcon(0, icon)
             item.setData(0, Qt.ItemDataRole.UserRole, issue.where)
             item.setToolTip(2, issue.message)
             item.setToolTip(1, issue.where)
             self.tree.addTopLevelItem(item)
+            box = fix_widget(self.doc, issue, self.fixed.emit)
+            if box is not None:
+                self.tree.setItemWidget(item, 3, box)
         self.empty.setVisible(not issues)
         self.tree.setVisible(bool(issues))
+
+    def fix_widget(self, row: int) -> QWidget | None:
+        item = self.tree.topLevelItem(row)
+        return None if item is None else self.tree.itemWidget(item, 3)
+
+    def fix_button(self, row: int) -> QToolButton | None:
+        """그 줄의 「고치기」 단추(없으면 None)."""
+        box = self.fix_widget(row)
+        return getattr(box, "fix_button", None) if box is not None else None
+
+    def ignore_button(self, row: int) -> QToolButton | None:
+        box = self.fix_widget(row)
+        return getattr(box, "ignore_button", None) if box is not None else None
+
+    def row_of(self, code: str) -> int:
+        """그 코드의 첫 줄 번호(없으면 −1)."""
+        return next((k for k, i in enumerate(self.issues) if i.code == code), -1)
 
     def activate(self, where: str) -> None:
         ref = where_to_ref(self.doc.data, where)
@@ -999,6 +1188,7 @@ class BottomTabs(QTabWidget):
     def __init__(self, doc: EnvDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.doc = doc
+        self.rules_tab = RulesTab(doc)
         self.world_tab = WorldTab(doc)
         self.events_tab = EventsTab(doc)
         self.scoring_tab = ScoringTab(doc)
@@ -1009,7 +1199,8 @@ class BottomTabs(QTabWidget):
         self.structure_tab = StructureTab(doc)
         self.params_tab = ParamsTab(doc)
         self.issues_tab = IssuesTab(doc)
-        for w, title in ((self.world_tab, S.EDP_TAB_WORLD), (self.events_tab, S.EDP_TAB_EVENTS),
+        for w, title in ((self.rules_tab, S.EDP_TAB_RULES), (self.world_tab, S.EDP_TAB_WORLD),
+                         (self.events_tab, S.EDP_TAB_EVENTS),
                          (self.scoring_tab, S.EDP_TAB_SCORING), (self.random_tab, S.EDP_TAB_RANDOM),
                          (self.generators_tab, S.EDP_TAB_GENERATORS), (self.eval_tab, S.EDP_TAB_EVAL),
                          (self.brain_tab, S.EDP_TAB_BRAIN), (self.structure_tab, S.ED_TAB_STRUCTURE),
@@ -1017,6 +1208,8 @@ class BottomTabs(QTabWidget):
                          (self.issues_tab, S.EDP_TAB_ISSUES)):
             self.addTab(w, title)
         self.issues_tab.issue_activated.connect(self._on_issue)
+        self.rules_tab.advanced_requested.connect(self.show_where)
+        self.setCurrentWidget(self.world_tab)  # 처음 보이는 탭은 그대로 세계 설정(규칙은 맨 앞에 있을 뿐)
         doc.checked.connect(self._update_issue_title)
         self._update_issue_title(list(doc.issues))
 

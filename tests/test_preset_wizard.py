@@ -52,6 +52,8 @@ FIXTURES = ROOT / "tests" / "fixtures" / "recipes"
 def iso(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("EVOLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("EVOLAB_STATE_DIR", str(tmp_path / "state"))
+    # 테스트 끝에 창을 닫을 때 「버릴까요?」 상자가 뜨지 않게(물음 자체는 T20이 따로 본다)
+    monkeypatch.setattr(PresetWizard, "ask_discard", lambda self: True)
     return tmp_path
 
 
@@ -502,7 +504,7 @@ def test_t27_usage_log_rows_have_no_names_or_paths(qtbot: Any, iso: Path) -> Non
     assert WZ.usage_log_enabled()  # 기본 켬
     w = make(qtbot)
     w.name_edit.setText("비밀 이름")
-    w.go(1)
+    w.rail.setCurrentRow(1)
     w.next()
     w.pages[2].checks["ground_flat"].setChecked(True)
     w.btn_lab.click()
