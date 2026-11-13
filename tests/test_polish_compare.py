@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from PySide6.QtCore import QSettings, Qt
 
+from evolab.app import strings as S
 from evolab.app import style
 from evolab.app.compare.view import SWATCH_ROLE, TABLE_COL_FINAL, CompareView
 from evolab.runs.store import RunStore
@@ -147,3 +148,80 @@ def test_axes_use_thousands_and_integer_generations(view: CompareView) -> None:
     assert bottom.integer and bottom.tickStrings([1.0, 2.0], 1.0, 1.0) == ["1", "2"]
     view.set_x_axis("evaluations")
     assert not bottom.integer
+
+
+def test_race_lanes_of_a_group_get_distinct_colors(qtbot: Any, tmp_path: Path) -> None:
+    """U25: 묶음이 실행 둘 이상을 내면 첫 칸은 묶음 색, 나머지는 보이는 항목의 칸 0..k−1 다음 칸부터."""
+    root = tmp_path / "runs"
+    paths: list[Path] = []
+    for k in range(4):
+        info: dict[str, Any] = {"env_name": "환경", "method": "cmaes", "created": f"2020-02-0{k + 1}T00:00:00",
+                                "config": {"method": "cmaes", "run_seed": k + 1}}
+        if k < 3:
+            info["group"] = {"id": "g", "name": "묶음", "index": k, "count": 3}
+        store = RunStore.create(root, f"r{k}", info)
+        store.append_stats({"generation": 1, "evaluations": 10, "elapsed": 1.0, "compare_score": 1.0 + k,
+                            "compare_success": "", "champion_score": "", "score_best": 1.0})
+        paths.append(store.root)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    v = CompareView(lambda: root, settings=settings)
+    qtbot.addWidget(v)
+    v.set_selected_runs(paths)
+    assert len(v.shown) == 2
+    series = v.theme.series
+    group = next(s for s in v.shown if s.kind == "group")
+    single = next(s for s in v.shown if s.kind == "run")
+    lanes = dict(v.race_runs())
+    members = [e.path for e in group.entries]
+    assert lanes[members[0]] == group.color and lanes[single.entries[0].path] == single.color
+    assert [lanes[p] for p in members[1:]] == [series[2], series[3]]
+    assert len(set(lanes.values())) == 4
+
+
+def test_layout_table_rows_folder_line_and_mixed_env_note(qtbot: Any, view: CompareView, base: Path) -> None:
+    """U28: 표 최소 높이 = 머리 + min(줄 수, 5)줄, 왼쪽 처음 폭 360px, 폴더 경로 한 줄(전체는 풍선), 환경이 섞이면 보조 글."""
+    from evolab.app.compare.view import LEFT_WIDTH
+
+    assert view.split.sizes()[0] == LEFT_WIDTH
+    runs = [e.path for e in view.entries]
+    view.set_selected_runs(runs[:3])
+    head = view.table.horizontalHeader().sizeHint().height()
+    row = view.table.verticalHeader().defaultSectionSize()
+    assert view.table.minimumHeight() >= head + 3 * row
+    view.set_selected_runs(runs)
+    assert view.table.minimumHeight() < head + 6 * row  # 5줄까지만
+    # 서로 다른 환경(환경0…환경5): 보조 글, 하나면 없음
+    assert view.mix_label.isVisibleTo(view) and view.mix_label.text() == S.CMP_MIXED_ENVS
+    view.set_selected_runs(runs[:1])
+    assert not view.mix_label.isVisibleTo(view)
+    # 폴더 줄: 한 줄로 줄여 그림, 풍선에 전체
+    assert view.folder_label.toolTip() == view.folder_label.text() and str(base) in view.folder_label.text()
+    view.folder_label.resize(80, view.folder_label.height())
+    assert "…" in view.folder_label.shown_text()
+
+
+def test_empty_list_shows_text_and_repeat_button(qtbot: Any, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    v = CompareView(lambda: tmp_path / "없음", settings=settings)
+    qtbot.addWidget(v)
+    v.resize(1280, 720)
+    v.show()
+    assert v.empty_label.isVisible() and v.empty_repeat_button.isVisible() and not v.tree.isVisible()
+    assert v.empty_repeat_button.text() == S.CMP_REPEAT_BUTTON
+
+
+def test_splitter_positions_are_remembered(qtbot: Any, base: Path, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    a = CompareView(lambda: base, settings=settings)
+    qtbot.addWidget(a)
+    a.resize(1280, 800)
+    a.show()
+    a.split.moveSplitter(500, 1)
+    a.right_split.moveSplitter(300, 1)
+    sizes = (a.split.sizes(), a.right_split.sizes())
+    assert sizes[0][0] == 500
+    b = CompareView(lambda: base, settings=settings)
+    qtbot.addWidget(b)
+    b.resize(1280, 800)
+    b.show()
+    assert (b.split.sizes(), b.right_split.sizes()) == sizes

@@ -8,7 +8,7 @@
   "rules": [
     {"rule": "distance", "who": "runner", "part": "torso", "direction": "right", "per_m": 1.0},
     {"rule": "fall", "who": "runner", "parts": ["torso", "thigh_l", "thigh_r"], "what": "$ground", "root": "torso",
-     "height": 0.8, "penalty": 1.0},
+     "height": 0.8, "penalty": 5.0},
     {"rule": "save_energy", "weight": 0.02},
     {"rule": "out_ends", "outcome": "failure"},
     {"rule": "time_limit", "seconds": 15.0}

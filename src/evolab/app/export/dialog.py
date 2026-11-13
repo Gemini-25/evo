@@ -157,7 +157,7 @@ class ExportDialog(QDialog):
         lay.addLayout(buttons)
 
         self._restore()
-        self.format_group.idToggled.connect(lambda _i, on: on and self._refresh())
+        self.format_group.idToggled.connect(lambda _i, on: on and self._refresh(snug=True))
         self.size_combo.currentIndexChanged.connect(lambda _i: self._refresh())
         self.camera_combo.currentIndexChanged.connect(lambda _i: self._refresh())
         self._refresh()
@@ -262,22 +262,24 @@ class ExportDialog(QDialog):
             self.set_format("gif")
         self._refresh()
 
-    def _refresh(self) -> None:
+    def _refresh(self, snug: bool = False) -> None:
         try:
             self._refresh_lines()
         finally:
-            self._fit()
+            self._fit(snug)
 
-    def _fit(self) -> None:
-        """보이는 줄이 늘면 창을 그만큼 키운다(줄이지는 않는다). Qt는 맨 위 창의 최소 높이에 줄 바꿈 글의 높이(heightForWidth)를
-        넣지 않아, 저장 뒤 세 줄 상태 글이나 MP4의 두 줄 인코더 안내가 생기면 형식 단추 줄이 겹쳐 그려졌다(v3.1 통합 그림)."""
+    def _fit(self, snug: bool = False) -> None:
+        """보이는 줄이 늘면 창을 그만큼 키운다. Qt는 맨 위 창의 최소 높이에 줄 바꿈 글의 높이(heightForWidth)를
+        넣지 않아, 저장 뒤 세 줄 상태 글이나 MP4의 두 줄 인코더 안내가 생기면 형식 단추 줄이 겹쳐 그려졌다(v3.1 통합 그림).
+
+        snug(형식을 바꿀 때, 다듬기 U30): 줄어든 만큼 창도 줄인다(숨은 크기·카메라 줄 자리에 빈 띠가 남지 않게). 폭은 그대로."""
         lay = self.layout()
         if lay is None or not self.isVisible():
             return
         lay.activate()
         need = lay.totalHeightForWidth(self.width()) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
         need = max(need, lay.totalMinimumSize().height())
-        if need > self.height():
+        if need > self.height() or (snug and need < self.height()):
             self.resize(self.width(), need)
 
     def _refresh_lines(self) -> None:

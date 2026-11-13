@@ -475,7 +475,7 @@
     "id": "s_fall",
     "label": "넘어짐",
     "event": "fall",
-    "weight": -1.0
+    "weight": -5.0
    },
    {
     "kind": "energy",

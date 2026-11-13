@@ -1,0 +1,520 @@
+{
+  "version": 4,
+  "name": "공 넣기 M4 크기 min 힘 min",
+  "description": "위에서 본 마당에서 원형 선수 혼자 공을 밀어 오른쪽 골에 넣습니다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      0.0
+    ],
+    "wind": [
+      0.0,
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 15.0,
+    "bounds": [
+      -12.0,
+      -9.0,
+      12.0,
+      9.0
+    ],
+    "contact_debounce": 0.1,
+    "view": "top",
+    "damping": 0.5
+  },
+  "params": [],
+  "randomize": [],
+  "generators": [],
+  "agent": {
+    "spawn": {
+      "x": -3.5,
+      "y": 0.0,
+      "angle": 0.0,
+      "vx": 0.0,
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "wall_top",
+      "label": "위 벽",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        0.0,
+        4.25
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 15.0,
+          "h": 0.5,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "wall"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "wall_bottom",
+      "label": "아래 벽",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        0.0,
+        -4.25
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 15.0,
+          "h": 0.5,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "wall"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "wall_left",
+      "label": "왼 벽",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        -7.25,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.5,
+          "h": 8.0,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "wall"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "wall_right",
+      "label": "오른 벽",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        7.25,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.5,
+          "h": 8.0,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 0.7,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "wall"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "ball",
+      "label": "공",
+      "owner": "world",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": 0.25,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 20.0,
+        "friction": 0.3,
+        "elasticity": 0.6
+      },
+      "tags": [
+        "ball"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "disc",
+      "label": "선수",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "circle",
+          "r": 0.3,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 50.0,
+        "friction": 0.3,
+        "elasticity": 0.2
+      },
+      "tags": [
+        "player"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    }
+  ],
+  "joints": [],
+  "actuators": [
+    {
+      "kind": "move",
+      "id": "go",
+      "label": "밀기",
+      "body": "disc",
+      "mode": "xy",
+      "max_force": 135.0,
+      "max_speed": 2.1,
+      "max_turn": 6.0,
+      "keys_up": [
+        "Up",
+        "W"
+      ],
+      "keys_down": [
+        "Down",
+        "S"
+      ],
+      "keys_left": [
+        "Left",
+        "A"
+      ],
+      "keys_right": [
+        "Right",
+        "D"
+      ]
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "body_state",
+      "id": "st",
+      "label": "내 움직임",
+      "body": "disc",
+      "fields": [
+        "vx",
+        "vy"
+      ],
+      "frame": "world",
+      "scale": {
+        "vx": 3.5,
+        "vy": 3.5
+      }
+    },
+    {
+      "kind": "target",
+      "id": "see_ball",
+      "label": "공 위치",
+      "body": "disc",
+      "target": "ball",
+      "frame": "world",
+      "scale": 20.0
+    },
+    {
+      "kind": "target",
+      "id": "see_goal",
+      "label": "골 위치",
+      "body": "ball",
+      "target": "goal",
+      "frame": "world",
+      "scale": 20.0
+    },
+    {
+      "kind": "target",
+      "id": "see_goal_2",
+      "label": "골 위치",
+      "body": "disc",
+      "target": "goal",
+      "frame": "world",
+      "scale": 20.0
+    }
+  ],
+  "regions": [
+    {
+      "id": "goal",
+      "label": "골",
+      "kind": "goal",
+      "shape": {
+        "kind": "box",
+        "w": 1.0,
+        "h": 3.0,
+        "offset": [
+          0.0,
+          0.0
+        ],
+        "angle": 0.0,
+        "density": null
+      },
+      "pos": [
+        6.5,
+        0.0
+      ],
+      "tags": [
+        "goal"
+      ]
+    }
+  ],
+  "checkpoints": [],
+  "events": [
+    {
+      "id": "reach",
+      "label": "들어가면 성공",
+      "when": "inside(ball, goal)",
+      "hold": 0.0
+    }
+  ],
+  "termination": [
+    {
+      "event": "reach",
+      "outcome": "success",
+      "label": "들어가면 성공"
+    },
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 초과"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "id": "s_near",
+        "label": "가까울수록 점수",
+        "weight": -1.0,
+        "kind": "distance_to",
+        "body": "ball",
+        "target": "goal",
+        "agg": "min"
+      },
+      {
+        "id": "s_reach",
+        "label": "들어가면 성공",
+        "weight": 100.0,
+        "kind": "event",
+        "event": "reach",
+        "value": "occurred"
+      }
+    ],
+    "formula": null
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {
+    "view": [
+      -8.0,
+      -5.0,
+      8.0,
+      5.0
+    ],
+    "rules": [
+      {
+        "kind": "near",
+        "event": null,
+        "blocks": [
+          "s_near"
+        ]
+      },
+      {
+        "kind": "reach",
+        "event": "reach",
+        "blocks": [
+          "s_reach"
+        ]
+      }
+    ],
+    "recipe": {
+      "recipe": 1,
+      "start": "drill",
+      "name": "공 넣기 연습",
+      "world": "top",
+      "arena": {
+        "template": "yard_top",
+        "values": {}
+      },
+      "roles": [
+        {
+          "id": "player",
+          "label": "",
+          "body": {
+            "template": "disc",
+            "values": {
+              "size": 0.75,
+              "power": 0.6
+            }
+          }
+        }
+      ],
+      "props": [
+        {
+          "template": "ball",
+          "values": {},
+          "spawn": "center"
+        },
+        {
+          "template": "goal",
+          "values": {},
+          "spawn": "goal"
+        }
+      ],
+      "rules": [
+        {
+          "rule": "near",
+          "thing": "ball",
+          "where": "goal",
+          "per_m": 1.0,
+          "when": "min"
+        },
+        {
+          "rule": "reach",
+          "part": "ball",
+          "where": "goal",
+          "outcome": "success",
+          "bonus": 100.0
+        },
+        {
+          "rule": "time_limit",
+          "seconds": 15.0
+        }
+      ],
+      "players": {
+        "mode": "solo",
+        "seats": [
+          {
+            "role": "player",
+            "count": 1,
+            "spawn": "start"
+          }
+        ]
+      },
+      "description": "위에서 본 마당에서 원형 선수 혼자 공을 밀어 오른쪽 골에 넣습니다.",
+      "brain": {
+        "inputs": "all",
+        "hidden": [
+          16
+        ],
+        "activation": "tanh",
+        "outputs": "all"
+      },
+      "evaluation": {
+        "trials": 3,
+        "aggregate": "mean"
+      },
+      "world_values": {
+        "damping": 0.5
+      },
+      "built": "40b2da9c6ebdb7063a39c27173ac58b646bf5b6abfc20bdf353514543adbe8ad",
+      "templates": {
+        "ball": "288a3f0179e8ea9be7f2ef80ffd77edd0360c9f776fab297435518258d5bb216",
+        "disc": "f66b09eaab941407c7256a6f18381c25065da8b2053a557008da8732a4cbfaa9",
+        "goal": "6b70e0ef4da66edd7626640bc3c98812331637061fa235567b56df6b9d0ae735",
+        "yard_top": "2cd7b41a53fd6bd05101b902aa8dc03859bae6d6c7a43a3c47570691656a585c"
+      }
+    }
+  }
+}

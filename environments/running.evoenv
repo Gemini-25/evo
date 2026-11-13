@@ -709,7 +709,7 @@
       {
         "id": "s_fall",
         "label": "넘어지면 끝",
-        "weight": -1.0,
+        "weight": -5.0,
         "kind": "event",
         "event": "fall",
         "value": "occurred"
@@ -815,7 +815,7 @@
           "what": "$ground",
           "root": "torso",
           "height": 0.8,
-          "penalty": 1.0
+          "penalty": 5.0
         },
         {
           "rule": "save_energy",
@@ -857,7 +857,7 @@
         "qualify_entrants": 3,
         "qualify_trials": 9600
       },
-      "built": "37ba0d7fa2dd8c0de5493bdbdf0ea7e8c3ac334f4b041368766a30a5d8d7cc7c",
+      "built": "fd5ce1f9efe5dfc1d4bfccd4d9050c2b74f52dec57a7b091c21a82e112c51630",
       "templates": {
         "biped": "2f4dd1cf3211dae5f89ef77ccd5e60571ac1707095ba6e4b7bc76db2ed98f68f",
         "track_side": "e05443daf61a29815c6a019b4d8d5311a446eea2b863ef18d1c26e732f549570"

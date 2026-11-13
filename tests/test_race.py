@@ -652,7 +652,7 @@ def test_compare_view_race_button(qtbot: Any, runs: Runs, tmp_path: Path) -> Non
     assert dlg.view.who_box.isVisible()
     wait_ready(qtbot, dlg.view)
 
-    # 묶음: 구성 실행이 묶음 색으로 들어감, 다시 누르면 같은 창
+    # 묶음: 구성 실행이 칸마다 다른 색(첫 칸은 묶음 색)으로 들어감, 다시 누르면 같은 창
     saved = {run: (run / "run.json").read_bytes() for run in (runs.a, runs.c)}
     RunStore.open(runs.a).update_run_info(group={"id": "g-race", "name": "묶음", "index": 0, "count": 2})
     RunStore.open(runs.c).update_run_info(group={"id": "g-race", "name": "묶음", "index": 1, "count": 2})
@@ -663,7 +663,9 @@ def test_compare_view_race_button(qtbot: Any, runs: Runs, tmp_path: Path) -> Non
         group = next(s for s in view.shown if s.kind == "group")
         again = view.open_race()
         assert again is dlg
-        assert [e.color for e in again.view.entries] == [group.color, group.color]
+        # 6.2.0 U25: 묶음 구성 실행의 칸 색은 서로 다르고 첫 칸은 묶음 색
+        lane_colors = [e.color for e in again.view.entries]
+        assert lane_colors[0] == group.color and len(set(lane_colors)) == len(lane_colors) == 2
         wait_ready(qtbot, again.view)
     finally:
         for run, data in saved.items():

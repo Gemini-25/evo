@@ -153,3 +153,62 @@ def test_focus_stays_on_a_field_the_user_chose(race: RaceDialog) -> None:
     view.next_button.setFocus()
     view.focus_start()
     assert QApplication.focusWidget() is view.start_button
+
+
+def test_rank_chips_winner_border_and_result_line(race: RaceDialog) -> None:
+    """U25: 순위가 정해지면 칸 머리에 순위 칩, 1위 칸에 칸 색 테두리, 결과 줄은 굵은 이름."""
+    view = race.view
+    view.pause()
+    assert all(not lane.rank_chip.isVisibleTo(lane) and not lane.winner for lane in view.lanes)
+    view.seek(0.0)
+    view.advance(1e6)
+    view.advance(1.5)
+    assert view.finished and view.rank_list is not None
+    for lane, (rank, tie) in zip(view.lanes, view.rank_list, strict=True):
+        assert lane.rank_chip.isVisibleTo(lane)
+        assert lane.rank_chip.text() == (S.RACE_RANK_CHIP_TIE if tie else S.RACE_RANK_CHIP).format(rank=rank)
+        assert lane.winner == (rank == 1)
+        assert (lane.entry.color in lane.styleSheet()) == (rank == 1)
+    text = view.result_label.text()
+    assert text.startswith("결과:") and all(f"<b>{e.label}</b>" in text for e in view.entries)
+    # 처음부터: 칩과 테두리를 지운다
+    view.restart()
+    view.pause()
+    assert all(not lane.rank_chip.isVisibleTo(lane) and not lane.winner and lane.styleSheet() == "" for lane in view.lanes)
+
+
+def test_export_dialog_shrinks_when_rows_hide(qtbot: Any, tmp_path: Any) -> None:
+    """U30 (경주 창의 「내보내기…」): 형식을 바꾸면 숨은 줄 자리에 빈 띠가 남지 않게 창 높이를 맞춘다. 「무엇을」 → 「내보낼 것」."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QColor
+
+    from evolab.app.export.dialog import ExportDialog
+    from evolab.engine import seeds
+    from evolab.engine.replay import replay
+
+    spec = M.compile_cached(LANDER_TEXT)
+    layout = layout_for(spec)
+    reps = [replay(spec, layout, np.random.default_rng(k).normal(0.0, 1.0, layout.dim), seeds.display_trial())
+            for k in (1, 2)]
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    dlg = ExportDialog(None, kind="race", items=[(r, QColor(c), n) for r, c, n in zip(reps, ("#3987e5", "#d95926"),
+                                                                                       ("a", "b"), strict=True)],
+                       title="나란히 경주 · 코스 1", default_name="경주", meta={}, settings=settings, probe=False)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert S.EXP_WHAT == "내보낼 것"
+
+    def need() -> int:
+        lay = dlg.layout()
+        lay.activate()
+        h = lay.totalHeightForWidth(dlg.width()) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+        return max(h, lay.totalMinimumSize().height())
+
+    dlg.set_format("mp4")
+    heights = {}
+    for fmt in ("mp4", "gif", "html", "gif", "mp4"):
+        dlg.set_format(fmt)
+        QApplication.processEvents()
+        assert dlg.height() == need(), fmt  # 빈 띠 없음(숨은 줄 자리만큼 줄고, 다시 보이면 늘어남)
+        heights.setdefault(fmt, dlg.height())
+    assert heights["html"] < heights["gif"] < heights["mp4"]

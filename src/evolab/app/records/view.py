@@ -64,6 +64,30 @@ def format_score(score: float | None) -> str:
     return S.REC_NONE if score is None else style.fmt_score(score)
 
 
+def delete_name(s: RunSummary) -> str:
+    """삭제 확인 상자가 실행을 부르는 이름(U27). 읽을 수 없는 실행은 폴더 이름."""
+    if not s.ok or not s.env_name:
+        return s.name
+    return S.REC_DELETE_NAME.format(env=s.env_name, method=S.METHOD_NAMES.get(s.method, s.method),
+                                    started=format_started(s.started), generations=s.generations)
+
+
+def _delete_box(parent: QWidget, title: str, text: str, detail: str) -> bool:
+    """「삭제」(위험)·「취소」(기본·Esc) 상자. 삭제를 누르면 True. 테스트는 이 함수를 바꿔 끼운다."""
+    box = QMessageBox(QMessageBox.Icon.Warning, title, text, QMessageBox.StandardButton.NoButton, parent)
+    box.setInformativeText(detail)
+    delete = box.addButton(S.REC_DELETE, QMessageBox.ButtonRole.DestructiveRole)
+    cancel = box.addButton(S.REC_DELETE_CANCEL, QMessageBox.ButtonRole.RejectRole)
+    style.set_role(delete, "danger")
+    box.setDefaultButton(cancel)
+    box.setEscapeButton(cancel)
+    try:
+        box.exec()
+        return box.clickedButton() is delete
+    finally:
+        box.deleteLater()
+
+
 def _started_key(iso: str) -> float:
     try:
         return dt.datetime.fromisoformat(iso).timestamp()
@@ -565,11 +589,9 @@ class RecordsView(QWidget):
         return answer == QMessageBox.StandardButton.Ok
 
     def confirm_delete(self, summary: RunSummary) -> bool:
-        answer = QMessageBox.warning(
-            self, S.REC_DELETE_TITLE, S.REC_DELETE_CONFIRM.format(name=summary.name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
-        )
-        return answer == QMessageBox.StandardButton.Yes
+        """삭제 확인(U27): 실행을 「환경 · 방법 · 시작 시각 (n세대)」로 부르고, 결과는 덧붙임 글로."""
+        return _delete_box(self, S.REC_DELETE_TITLE, S.REC_DELETE_CONFIRM.format(name=delete_name(summary)),
+                           S.REC_DELETE_DETAIL)
 
     def show_error(self, text: str) -> None:
         """오류 상자(다음 할 일 + 오류 보고 묶음 단추, errors.show_error). 테스트는 이 메서드를 바꿔 끼운다."""

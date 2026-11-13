@@ -610,11 +610,13 @@ def test_confirm_dialogs_use_message_box(qtbot: Any, view_runs: Path, monkeypatc
     s = view.runs()[0]
     seen: list[str] = []
 
-    def warning(parent: Any, title: str, text: str, *a: Any) -> Any:
-        seen.append(text)
-        return QMessageBox.StandardButton.Yes
+    def delete_box(parent: Any, title: str, text: str, detail: str) -> bool:  # 6.2.0 U27: 새 상자 함수를 바꿔 끼움
+        seen.append(text + "\n" + detail)
+        return True
 
-    monkeypatch.setattr(QMessageBox, "warning", warning)
+    from evolab.app.records import view as records_view
+
+    monkeypatch.setattr(records_view, "_delete_box", delete_box)
     assert view.confirm_delete(s) and "되돌릴 수 없습니다" in seen[-1]
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Cancel)
     assert not view.confirm_branch(s, 4)

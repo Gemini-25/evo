@@ -134,3 +134,37 @@ def test_context_menu_mirrors_buttons(qtbot: Any, view: RecordsView) -> None:
         acts[0].trigger()
     assert sig.args == [run]
     menu.deleteLater()
+
+
+def test_delete_box_names_the_run_and_defaults_to_cancel(qtbot: Any, view: RecordsView) -> None:
+    """U27: 「『달 착륙선 · CMA-ES · 3월 1일 12:00 (1세대)』 실행을 삭제할까요?」, 결과는 덧붙임 글, 「삭제」(위험)·「취소」(기본·Esc)."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    s = next(r for r in view.runs() if r.name == "r0")
+    seen: dict[str, Any] = {}
+
+    def answer(press: str) -> None:
+        box = QApplication.activeModalWidget()
+        assert isinstance(box, QMessageBox)
+        seen["text"], seen["detail"] = box.text(), box.informativeText()
+        seen["buttons"] = sorted(b.text() for b in box.buttons())
+        seen["default"] = box.defaultButton().text()
+        delete = next(b for b in box.buttons() if b.text() == S.REC_DELETE)
+        seen["role"] = delete.property(style.ROLE_PROPERTY)
+        if press == "esc":
+            QTest.keyClick(box, Qt.Key.Key_Escape)
+        else:
+            delete.click()
+
+    QTimer.singleShot(50, lambda: answer("esc"))
+    assert not view.confirm_delete(s)
+    name = S.REC_DELETE_NAME.format(env="달 착륙선", method="CMA-ES", started=style.fmt_when("2024-03-01T12:00:00"),
+                                    generations=1)
+    assert seen["text"] == S.REC_DELETE_CONFIRM.format(name=name)
+    assert seen["detail"] == S.REC_DELETE_DETAIL and "되돌릴 수 없습니다" in seen["detail"]
+    assert seen["buttons"] == sorted([S.REC_DELETE, S.REC_DELETE_CANCEL])
+    assert seen["default"] == S.REC_DELETE_CANCEL and seen["role"] == "danger"
+    QTimer.singleShot(50, lambda: answer("delete"))
+    assert view.confirm_delete(s)

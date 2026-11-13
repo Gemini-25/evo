@@ -91,6 +91,13 @@ MAX_GRID = 4000
 """묶음 공통 격자의 최대 점 수. 넘으면 고르게 줄인다."""
 LIVE_REFRESH_MS = 1000
 SETTINGS_GROUP = "compare"
+SPLIT_KEYS = ("split_main", "split_right")
+"""두 나눔 막대의 위치(QSplitter.saveState)를 기억하는 설정 키(U28)."""
+LEFT_WIDTH = 360
+"""왼쪽 목록 칸의 처음 폭(px, U28)."""
+SPLIT_GAP = 12
+"""목록 도구 줄과 그래프 도구 줄 사이(px, U28)."""
+TABLE_MIN_ROWS = 5
 SETTINGS_FILE = "settings.ini"
 PATH_ROLE = Qt.ItemDataRole.UserRole
 GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -612,6 +619,34 @@ def _swatch(color: str) -> QIcon:
 _STYLES = (Qt.PenStyle.SolidLine, Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine)
 
 
+class _ElidedLabel(QLabel):
+    """한 줄로 줄여 그리는 글(U28: 긴 폴더 경로). text()는 전체 글 그대로이고 풍선에도 전체 글."""
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self.setToolTip(text)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(1, super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(1, super().sizeHint().height())
+
+    def paintEvent(self, _event: Any) -> None:  # noqa: N802
+        from PySide6.QtGui import QPainter
+
+        painter = QPainter(self)
+        rect = self.contentsRect()
+        shown = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, rect.width())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), shown)
+        painter.end()
+
+    def shown_text(self) -> str:
+        """지금 폭에서 그려지는 글(줄였으면 가운데에 …)."""
+        return self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, self.contentsRect().width())
+
+
 class _PlotWidget(pg.PlotWidget):
     def sizeHint(self) -> QSize:
         return QSize(480, 300)
@@ -674,10 +709,8 @@ class CompareView(QWidget):
         self._live_timer.timeout.connect(lambda: self.redraw(keep_view=True))
 
         # -- 왼쪽: 실행 목록 ----------------------------------------------------
-        self.folder_label = QLabel()
-        self.folder_label.setWordWrap(True)
-        self.folder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        # 줄을 바꿔도 윈도우 경로(\로 이어진 한 덩어리)는 끊을 자리가 없어 그 너비가 창의 최소 너비가 됐다
+        # U28: 폴더 경로는 한 줄로 줄여 그리고(가운데 …) 전체는 풍선에. 경로 너비가 창의 최소 너비가 되지 않는다
+        self.folder_label = _ElidedLabel()
         self.folder_label.setMinimumWidth(1)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
@@ -696,6 +729,7 @@ class CompareView(QWidget):
         self.empty_label = QLabel(S.CMP_LIST_EMPTY)
         self.empty_label.setWordWrap(True)
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        style.tone(self.empty_label, "ink2")
 
         self.repeat_button = QPushButton(S.CMP_REPEAT_BUTTON)
         self.repeat_button.setToolTip(S.CMP_REPEAT_BUTTON_TIP)
@@ -728,7 +762,7 @@ class CompareView(QWidget):
 
         left = QWidget()
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setContentsMargins(0, 0, SPLIT_GAP // 2, 0)
         lb = QHBoxLayout()
         lb.addWidget(self.repeat_button)
         lb.addStretch(1)
@@ -737,8 +771,20 @@ class CompareView(QWidget):
         ll.addLayout(lb)
         ll.addWidget(self.repeat_box)
         ll.addWidget(self.repeat_status)
-        ll.addWidget(self.tree, 1)
-        ll.addWidget(self.empty_label)
+        # U28: 빈 목록이면 목록 자리 가운데에 글 한 문장 + 할 일 단추 하나(1.8의 작은 빈 그릇)
+        self.empty_repeat_button = QPushButton(S.CMP_REPEAT_BUTTON)
+        self.empty_repeat_button.setToolTip(S.CMP_REPEAT_BUTTON_TIP)
+        self.empty_repeat_button.clicked.connect(self.open_repeat_dialog)
+        empty_box = QWidget()
+        eb = QVBoxLayout(empty_box)
+        eb.addStretch(1)
+        eb.addWidget(self.empty_label)
+        eb.addWidget(self.empty_repeat_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        eb.addStretch(1)
+        self.list_stack = QStackedWidget()
+        self.list_stack.addWidget(self.tree)
+        self.list_stack.addWidget(empty_box)
+        ll.addWidget(self.list_stack, 1)
         ll.addWidget(self.folder_label)
 
         # -- 가운데: 그래프 ----------------------------------------------------
@@ -819,11 +865,15 @@ class CompareView(QWidget):
         gl.addWidget(self.title_label)
         gl.addWidget(self.legend)
         gl.addWidget(self.stack, 1)
+        # U28: 고른 실행의 환경이 둘 이상이면 그래프 아래 보조 글(다른 두 알림보다 앞)
+        self.mix_label = style.note(S.CMP_MIXED_ENVS)
+        self.mix_label.hide()
+        gl.addWidget(self.mix_label)
         gl.addWidget(self.note_label)
 
         graph = QWidget()
         gv = QVBoxLayout(graph)
-        gv.setContentsMargins(0, 0, 0, 0)
+        gv.setContentsMargins(SPLIT_GAP - SPLIT_GAP // 2, 0, 0, 0)  # 목록 도구 줄과 그래프 도구 줄 사이 12px(U28)
         gv.addLayout(bar)
         gv.addWidget(self.graph_frame, 1)
 
@@ -849,11 +899,12 @@ class CompareView(QWidget):
         tbar.addWidget(self.csv_button)
         table_box = QWidget()
         tv = QVBoxLayout(table_box)
-        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setContentsMargins(SPLIT_GAP - SPLIT_GAP // 2, 0, 0, 0)
         tv.addLayout(tbar)
         tv.addWidget(self.table, 1)
 
         right = QSplitter(Qt.Orientation.Vertical)
+        self.right_split = right
         right.addWidget(graph)
         right.addWidget(table_box)
         right.setStretchFactor(0, 3)
@@ -864,14 +915,18 @@ class CompareView(QWidget):
         split.addWidget(right)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.setSizes([440, 840])
+        split.setSizes([LEFT_WIDTH, 1280 - LEFT_WIDTH])
         split.setChildrenCollapsible(False)
+        self.split = split
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.addWidget(split)
 
         self._load_settings()
         self._loading = False
+        # 두 나눔 막대 위치 기억(U28)
+        split.splitterMoved.connect(lambda _p, _i: self._save_splits())
+        right.splitterMoved.connect(lambda _p, _i: self._save_splits())
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -885,8 +940,15 @@ class CompareView(QWidget):
             y = s.value("metric")
             mean = s.value("group_mean")
             target = s.value("target")
+            splits = [s.value(k) for k in SPLIT_KEYS]
         finally:
             s.endGroup()
+        for splitter, state in zip((self.split, self.right_split), splits, strict=True):
+            if state is not None:
+                try:
+                    splitter.restoreState(state)
+                except (TypeError, ValueError):  # 다른 형식의 값: 처음 크기 그대로
+                    pass
         if isinstance(x, str) and x in X_AXES:
             self.set_x_axis(x)
         if isinstance(y, str) and y in Y_METRICS:
@@ -901,6 +963,14 @@ class CompareView(QWidget):
             if math.isfinite(value):
                 self._set_target_quietly(value)
                 self._target_user_set = True
+
+    def _save_splits(self) -> None:
+        s = self._settings
+        s.beginGroup(SETTINGS_GROUP)
+        for key, splitter in zip(SPLIT_KEYS, (self.split, self.right_split), strict=True):
+            s.setValue(key, splitter.saveState())
+        s.endGroup()
+        s.sync()
 
     def save_settings(self) -> None:
         if self._loading:
@@ -929,8 +999,11 @@ class CompareView(QWidget):
         self._checked &= {e.key for e in self.entries if e.ok}
         self._fill_tree()
         self.folder_label.setText(S.CMP_FOLDER.format(count=len(self.entries), path=base))
-        self.empty_label.setVisible(not self.entries)
+        self._show_empty(not self.entries)
         self.redraw(keep_view=True)
+
+    def _show_empty(self, empty: bool) -> None:
+        self.list_stack.setCurrentIndex(1 if empty else 0)
 
     def _layout_entries(self) -> list[tuple[str, Any]]:
         """목록 순서: ("run", RunEntry) 또는 ("group", (묶음 정보, [RunEntry …])). 묶음은 가장 최근 실행 자리에."""
@@ -1081,7 +1154,7 @@ class CompareView(QWidget):
         self._checked = {e.key for e in self.entries if e.ok and e.key in wanted}
         self._fill_tree()
         self.folder_label.setText(S.CMP_FOLDER.format(count=len(self.entries), path=self.runs_dir()))
-        self.empty_label.setVisible(not self.entries)
+        self._show_empty(not self.entries)
         self._reslot = True  # 한꺼번에 고름: 목록 차례로 칸을 다시 준다(U24 ③)
         self.redraw()
 
@@ -1400,6 +1473,7 @@ class CompareView(QWidget):
         self.title_label.setText(S.CMP_TITLE.format(y=S.CMP_Y_NAMES[self.y_metric], x=S.CMP_X_NAMES[self.x_axis]))
         self.legend.setText("&nbsp;&nbsp; ".join(legend))
         self.stack.setCurrentWidget(self.plot_widget if self.shown else self.message)
+        self.mix_label.setVisible(len({e.env_name for sh in self.shown for e in sh.entries}) > 1)
         if self.shown and self._no_success_hidden:
             self.note_label.setText(S.CMP_NO_SUCCESS_RATE)
             self.note_label.show()
@@ -1438,6 +1512,7 @@ class CompareView(QWidget):
         target = self.target
         self.rows = [table_row(s.name, s.color, s.entries, s.datas, target, s.kind == "group") for s in self.shown]
         self.table.setRowCount(len(self.rows))
+        self._fit_table_height()
         for r, row in enumerate(self.rows):
             texts = row_texts(row)
             tip_lines = [S.CMP_TIP_FOLDER.format(path=p) for p in row.paths[:10]]
@@ -1453,6 +1528,17 @@ class CompareView(QWidget):
                 if c >= TABLE_COL_SEED:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
+
+    def table_min_height(self) -> int:
+        """표의 최소 높이(U28): 머리 + min(줄 수, 5)줄(1280×720에서 세 줄이 스크롤 없이 보이게)."""
+        rows = max(1, min(self.table.rowCount(), TABLE_MIN_ROWS))
+        head = self.table.horizontalHeader().sizeHint().height()
+        return head + rows * self.table.verticalHeader().defaultSectionSize() + 2 * self.table.frameWidth() + 2
+
+    def _fit_table_height(self) -> None:
+        h = self.table_min_height()
+        if self.table.minimumHeight() != h:
+            self.table.setMinimumHeight(h)
 
     def table_texts(self) -> list[list[str]]:
         """표에 보이는 글자(줄마다)."""
@@ -1523,8 +1609,22 @@ class CompareView(QWidget):
     # 나란히 경주
     # ------------------------------------------------------------------
     def race_runs(self) -> list[tuple[Path, str]]:
-        """경주에 넣을 실행(그래프 순서, 묶음은 구성 실행)과 그래프에서 그 실행에 준 색(묶음 구성 실행은 묶음 색)."""
-        return [(e.path, s.color) for s in self.shown for e in s.entries]
+        """경주에 넣을 실행(그래프 순서, 묶음은 구성 실행)과 칸 색.
+
+        한 실행짜리 항목은 그래프에서 준 색. 묶음이 실행 둘 이상을 내면(U25) 첫 칸은 묶음 색, 나머지는 보이는 항목이 쓰는
+        칸 0..k−1 **다음** 칸부터 차례로(경주 창 안에서만 쓰는 색: 그래프의 다른 항목과 겹치지 않는다).
+        """
+        series = self.theme.series
+        extra = len(self.shown)
+        out: list[tuple[Path, str]] = []
+        for s in self.shown:
+            for j, e in enumerate(s.entries):
+                if j == 0 or s.kind != "group":
+                    out.append((e.path, s.color))
+                else:
+                    out.append((e.path, series[extra % len(series)]))
+                    extra += 1
+        return out
 
     def _update_race_button(self) -> None:
         enough = len(self.race_runs()) >= 2
@@ -1593,6 +1693,7 @@ class CompareView(QWidget):
         self.repeat_status.hide()
         self.repeat_box.show()
         self.repeat_button.setEnabled(False)
+        self.empty_repeat_button.setEnabled(False)
         self._update_repeat_label()
         self.repeat_started.emit(self._follow_group)
         runner.start()
@@ -1628,7 +1729,7 @@ class CompareView(QWidget):
         self._checked &= {e.key for e in self.entries if e.ok}
         self._fill_tree()
         self.folder_label.setText(S.CMP_FOLDER.format(count=len(self.entries), path=self.runs_dir()))
-        self.empty_label.setVisible(not self.entries)
+        self._show_empty(not self.entries)
         self.redraw(keep_view=index > 0)
         self._update_repeat_label()
         self.repeat_run_started.emit(Path(run_dir))
@@ -1663,6 +1764,7 @@ class CompareView(QWidget):
         r = self.runner
         self.repeat_box.hide()
         self.repeat_button.setEnabled(True)
+        self.empty_repeat_button.setEnabled(True)
         self._live_timer.stop()
         if r is not None:
             if completed:

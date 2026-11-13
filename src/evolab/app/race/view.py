@@ -207,12 +207,45 @@ class _Lane(QFrame):
         self.canvas = _LaneCanvas(on_paint)
         self.status = QLabel()
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # U25: 순위가 정해지면 머리에 순위 칩(1위는 강조색 채움, 나머지는 테두리만), 우승 칸은 칸 색 2px 테두리
+        self.rank_chip = QLabel()
+        self.rank_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rank_chip.hide()
+        self.winner = False
+        self.setObjectName("raceLane")
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(6)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.rank_chip, 0, Qt.AlignmentFlag.AlignTop)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 3, 4, 3)
         lay.setSpacing(2)
-        lay.addWidget(self.title)
+        lay.addLayout(head)
         lay.addWidget(self.canvas, 1)
         lay.addWidget(self.status)
+
+    def set_rank(self, rank: int | None, tie: bool = False) -> None:
+        """순위 칩과 우승 테두리. None이면 지운다(준비·처음부터·환경이 섞인 경주)."""
+        if rank is None:
+            if self.rank_chip.isVisibleTo(self) or self.winner:
+                self.rank_chip.hide()
+                self.rank_chip.clear()
+                self.winner = False
+                self.setStyleSheet("")
+            return
+        ui = style.ui_for(self)
+        self.rank_chip.setText((S.RACE_RANK_CHIP_TIE if tie else S.RACE_RANK_CHIP).format(rank=rank))
+        if rank == 1:
+            chip = (f"background: {ui.accent}; color: {ui.on_accent}; font-weight: bold; border: 1px solid {ui.accent}; "
+                    "border-radius: 8px; padding: 0px 8px;")
+        else:
+            chip = f"color: {ui.ink2}; border: 1px solid {ui.line}; border-radius: 8px; padding: 0px 8px;"
+        self.rank_chip.setStyleSheet(chip)
+        self.rank_chip.show()
+        self.winner = rank == 1
+        color = html.escape(self.entry.color)
+        self.setStyleSheet(f"QFrame#raceLane {{ border: 2px solid {color}; border-radius: 3px; }}" if self.winner else "")
 
     def set_replay(self, rep: Replay | None) -> None:
         self.replay = rep
@@ -325,6 +358,7 @@ class RaceView(QWidget):
         # -- 결과, 아래 줄 --------------------------------------------------------
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
+        self.result_label.setTextFormat(Qt.TextFormat.RichText)
         self.message = QLabel()
         self.message.setWordWrap(True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -559,6 +593,7 @@ class RaceView(QWidget):
         self.overlay_canvas.set_overlay([])
         for lane in self.lanes:
             lane.set_replay(None)
+            lane.set_rank(None)
             lane.set_status(S.RACE_PREPARING.format(done=0, total=len(self.lanes)))
         self._update_controls()
         if not self.entries:
@@ -667,6 +702,8 @@ class RaceView(QWidget):
         self.finished = False
         self.rank_list = None
         self.result_label.clear()
+        for lane in self.lanes:
+            lane.set_rank(None)
         if self.ready:
             self._show_time()
 
@@ -747,9 +784,14 @@ class RaceView(QWidget):
         for k, lane in enumerate(self.lanes):
             lane.set_status(self._lane_text(k))
         if self.rank_list is not None:
+            for lane, (rank, tie) in zip(self.lanes, self.rank_list, strict=True):
+                lane.set_rank(rank, tie)
             order = sorted(range(len(self.entries)), key=lambda k: (self.rank_list[k][0], k))  # type: ignore[index]
-            items = [S.RACE_RESULT_ITEM.format(rank=self.rank_list[k][0], name=self.entries[k].label) for k in order]
-            self.result_label.setText(S.RACE_RESULT.format(order=S.RACE_RESULT_SEP.join(items)))
+            # U25: 이름은 굵게, 항목 사이는 넓게(「·」가 이름 안과 순위 사이에 함께 쓰여 구별되지 않던 문제)
+            items = [S.RACE_RESULT_ITEM.format(rank=self.rank_list[k][0], name=f"<b>{html.escape(self.entries[k].label)}</b>")
+                     for k in order]
+            sep = "&nbsp;&nbsp;" + html.escape(S.RACE_RESULT_SEP.strip()) + "&nbsp;&nbsp;"
+            self.result_label.setText(html.escape(S.RACE_RESULT.format(order="\0")).replace("\0", sep.join(items)))
         else:
             self.result_label.clear()
         self._update_controls()

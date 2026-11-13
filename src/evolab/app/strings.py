@@ -469,7 +469,7 @@ REC_RESUME_FAILED: Final = "이어 갈 수 없습니다: {reason}"
 REC_RESUME_BUSY: Final = "이미 학습 중인 실행입니다."
 REC_BRANCH_FOLDER: Final = "{stamp}_{env}_{method}_{generation}세대 분기"
 REC_DELETE_TITLE: Final = "실행 삭제"
-REC_DELETE_CONFIRM: Final = "'{name}' 실행을 삭제할까요?\n통계, 체크포인트, 챔피언, 내보낸 파일까지 폴더 전체가 지워지며 되돌릴 수 없습니다."
+REC_DELETE_CONFIRM: Final = "『{name}』 실행을 삭제할까요?"  # 6.2.0 U27: 결과는 REC_DELETE_DETAIL(덧붙임 글)로 나눔
 REC_DELETE_FAILED: Final = "삭제할 수 없습니다: {reason}"
 REC_DELETE_BUSY: Final = "지금 학습 중인 실행은 삭제할 수 없습니다. 학습을 멈춘 뒤 다시 시도하세요."
 REC_DELETE_OUTSIDE: Final = "실행 기록 폴더({runs_dir}) 바로 아래의 실행만 삭제할 수 있습니다: {path}"
@@ -2595,7 +2595,7 @@ PORTABLE_README: Final = (
 )
 
 # ---- 내보내기 대화 상자 (app/export/dialog.py) ----
-EXP_WHAT: Final = "무엇을"
+EXP_WHAT: Final = "내보낼 것"  # 6.2.0 U30: 「무엇을」이었다
 EXP_WHAT_REPLAY: Final = "지금 보는 재생 ({label})"
 EXP_WHAT_RACE: Final = "이 경주 ({n}칸)"
 EXP_FORMAT: Final = "형식"
@@ -3267,3 +3267,12 @@ REC_WHY_UNREADABLE: Final = "읽을 수 없는 실행이라 쓸 수 없습니다
 # 6.2.0 묶음 PD (대화 상자: app/errors.py, app/report/dialog.py)가 더한 것
 # 오류 보고 묶음 창의 「저장…」(으뜸)이 꺼졌을 때 풍선에 붙는 까닭(다듬기 1.8)
 REP_SAVE_WHY_OFF: Final = "넣을 것을 하나 이상 고르면 만들 수 있습니다."
+# 경주 칸 머리의 순위 칩(다듬기 U25)
+RACE_RANK_CHIP: Final = "{rank}위"
+RACE_RANK_CHIP_TIE: Final = "공동 {rank}위"
+# 삭제 확인 상자(다듬기 U27): 실행을 사람 말로 부르고(REC_DELETE_NAME), 결과는 덧붙임 글, 단추는 「삭제」(위험)·「취소」(기본·Esc)
+REC_DELETE_NAME: Final = "{env} · {method} · {started} ({generations}세대)"
+REC_DELETE_DETAIL: Final = "통계, 체크포인트, 챔피언, 내보낸 파일까지 폴더 전체가 지워지며 되돌릴 수 없습니다."
+REC_DELETE_CANCEL: Final = "취소"
+# 비교 화면(다듬기 U28): 고른 실행의 환경이 둘 이상일 때 그래프 아래 보조 글
+CMP_MIXED_ENVS: Final = "서로 다른 환경의 실행이 섞여 있습니다. 점수 크기는 환경마다 달라 바로 견줄 수 없습니다."
