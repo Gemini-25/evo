@@ -3184,3 +3184,6 @@ REC_WHY_PICK: Final = "목록에서 실행을 고르면 쓸 수 있습니다."
 REC_PICK_NOTE: Final = "목록에서 실행을 고르면 단추가 켜집니다."
 # ---- 직접 조종 (app/play/window.py: Hb, 하면 좋음 U13) ----
 PLAY_WHY_SAVE: Final = "한 판이 끝나면 저장할 수 있습니다."
+# ---- 날짜 (app/style.py: fmt_when. 기록·비교의 시작 시각) ----
+STYLE_WHEN: Final = "{month}월 {day}일 {hour:02d}:{minute:02d}"
+STYLE_WHEN_YEAR: Final = "{year}년 {month}월 {day}일 {hour:02d}:{minute:02d}"
