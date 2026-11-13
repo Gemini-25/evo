@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBo
 from evolab import __version__, paths
 from evolab.app import strings as S
 
-
 STATE_TICK_MS = 1000
 """학습 중(시작하는 중·학습 중)에만 도는 주 창 타이머: 상태 막대 꼬리표와 창 제목의 세대를 이 간격으로만 고친다(6.2.0 U32, 세대마다 하지 않음)."""
 

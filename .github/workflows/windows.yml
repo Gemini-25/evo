@@ -13,6 +13,8 @@
 #           → exe 내보내기(W7) → 폰 재생 파일을 헤드리스 Edge로(W9). 설치·내보내기 단계는 앞 단계가 실패해도 그 단계에 필요한 것이
 #           있으면 돈다(!cancelled + 앞 단계 결과): v3.0처럼 하나가 실패해도 나머지 배포본 확인은 끝까지 한다.
 #   release 태그 v*이고 tests·package가 모두 성공하면 설치 파일·휴대용 zip·SHA256SUMS.txt를 GitHub 릴리스에 올린다(W10).
+#           6.2.0: 태그를 밀어 올릴 수 없는 곳에서도 낼 수 있게, 수동 실행(workflow_dispatch)의 release 입력을 켜면 같은 일을 한다.
+#           이때 태그 이름은 묶인 프로그램의 버전(v<버전>)이고 그 커밋에 새로 만든다. 같은 버전의 릴리스가 이미 있으면 실패한다.
 name: windows
 
 on:
@@ -21,6 +23,11 @@ on:
       - "docs/**"
       - "**.md"
   workflow_dispatch:
+    inputs:
+      release:
+        description: "테스트와 묶기가 모두 성공하면 이 커밋을 GitHub 릴리스로 올린다 (태그 v<프로그램 버전>을 새로 만든다)"
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -654,7 +661,7 @@ jobs:
   # 제목·본문은 release_files.py가 strings.py에서 만든 release-title.txt·release-notes.md(설치 안내 + 체크섬). 같은 태그로 다시
   # 돌면 파일만 바꿔 올린다. 받을 곳(저장소 공개 여부)은 열린 질문 Q2: 기본은 이 릴리스와 Actions artifact.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     needs: [tests, package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -672,6 +679,17 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          create_args=(--verify-tag)
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            # 수동 실행(release 입력): 태그 이름은 묶인 프로그램의 버전에서 나오고, 이 커밋에 새로 만든다.
+            if [ ! -f release/release-title.txt ]; then echo "::error::missing release/release-title.txt"; exit 1; fi
+            TAG="v$(head -n 1 release/release-title.txt | awk '{print $NF}')"
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::cannot read the program version from release-title.txt ($TAG)"; exit 1; fi
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::the release $TAG already exists (a manual run never replaces a release: raise the program version first)"; exit 1
+            fi
+            create_args=(--target "$GITHUB_SHA")
+          fi
           version="${TAG#v}"
           setup="release/evolab-setup-${version}.exe"
           portable="release/evolab-${version}-portable.zip"
@@ -685,7 +703,7 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" "${create_args[@]}" \
               --title "$(head -n 1 release/release-title.txt)" --notes-file release/release-notes.md
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'

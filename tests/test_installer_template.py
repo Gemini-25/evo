@@ -717,7 +717,11 @@ def test_workflow_jobs(workflow: dict[str, Any]) -> None:
     assert "needs" not in jobs["package"] and "needs" not in jobs["tests"]
     release = jobs["release"]
     assert release["needs"] == ["tests", "package"]
-    assert release["if"] == "startsWith(github.ref, 'refs/tags/v')"
+    # 6.2.0: 태그 v* 또는 수동 실행의 release 입력(태그를 밀어 올릴 수 없는 곳에서 릴리스를 내는 길)
+    assert release["if"] == ("startsWith(github.ref, 'refs/tags/v') || "
+                             "(github.event_name == 'workflow_dispatch' && inputs.release)")
+    dispatch = workflow[True if True in workflow else "on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["release"]["type"] == "boolean" and dispatch["inputs"]["release"]["default"] is False
     assert release["permissions"] == {"contents": "write"}
     # tests job에 EVOLAB_DATA_DIR를 두지 않는다(test_release::test_custom_data_dir가 paths.ini에 기댄다)
     assert not any(k.startswith("EVOLAB_") for k in jobs["tests"].get("env", {}))
@@ -762,6 +766,10 @@ def test_workflow_installer_steps(workflow: dict[str, Any]) -> None:
     publish = _step(workflow, "release", "Publish the GitHub release")
     for needle in ("evolab-setup-${version}.exe", "evolab-${version}-portable.zip", "SHA256SUMS.txt", "sha256sum -c",
                    "release-notes.md", "release-title.txt", "gh release create"):
+        assert needle in publish["run"], needle
+    # 수동 실행: 태그는 프로그램 버전에서 만들고(이 커밋에), 이미 있는 릴리스는 바꾸지 않는다. 태그 실행은 태그를 확인한다.
+    for needle in ('create_args=(--verify-tag)', 'create_args=(--target "$GITHUB_SHA")', "already exists",
+                   'TAG="v$(head -n 1 release/release-title.txt'):
         assert needle in publish["run"], needle
     for path in ("packaging/make_installer.py", "packaging/installer_smoke.ps1", "packaging/installer/release_files.py",
                  "packaging/installer/sign.ps1", "packaging/list_unsigned.py"):

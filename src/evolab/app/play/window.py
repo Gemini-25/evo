@@ -482,7 +482,7 @@ class PlayCanvas(QWidget):
         if not self.hud:
             return
         fm = p.fontMetrics()
-        rect = fm.boundingRect(QRectF(0, 0, 10000, 10000), int(Qt.AlignmentFlag.AlignLeft), self.hud)
+        rect = fm.boundingRect(0, 0, 10000, 10000, int(Qt.AlignmentFlag.AlignLeft), self.hud)
         box = QRectF(10.0, 10.0, rect.width() + 16.0, rect.height() + 10.0)
         p.setPen(QPen(COLOR_HUD_EDGE, 1.0))
         p.setBrush(QBrush(COLOR_HUD_BOX))
@@ -644,6 +644,9 @@ class PlayWindow(QWidget):
 
         help_label = QLabel(self.help_text())
         help_label.setWordWrap(True)
+        # 6.2.0 U13 ⑤: 「조종 키」 글 상자를 옆 칸 맨 위에 테두리와 함께(글은 그대로)
+        help_label.setFrameShape(QLabel.Shape.StyledPanel)
+        help_label.setMargin(style.SPACE[1])
         self.help_label = help_label
         self.structure_label = QLabel()
         """처음 몸에 없는 부품 안내(v2.1). 없는 부품이 없으면 숨긴다."""
@@ -651,13 +654,22 @@ class PlayWindow(QWidget):
         self.structure_label.hide()
 
         side = QVBoxLayout()
+        side.addWidget(help_label)
         side.addWidget(self.structure_label)
         side.addWidget(self.status)
         side.addWidget(self.seed_label)
         side.addWidget(QLabel(S.PLAY_BLOCKS_TITLE))
         side.addWidget(self.blocks, 3)
-        side.addWidget(QLabel(S.PLAY_SENSORS_TITLE))
+        self.sensors_title = QLabel(S.PLAY_SENSORS_TITLE)
+        side.addWidget(self.sensors_title)
         side.addWidget(self.sensors, 2)
+        # 6.2.0 U13 ⑥: 센서가 없는 환경은 빈 표 대신 보조 글 한 줄(표의 줄은 그대로 채운다)
+        self.no_sensors = style.note(S.PLAY_NO_SENSORS)
+        side.addWidget(self.no_sensors)
+        empty = not self.spec.inputs
+        self.sensors.setVisible(not empty)
+        self.sensors_title.setVisible(not empty)
+        self.no_sensors.setVisible(empty)
         row = QHBoxLayout()
         row.addWidget(button(S.PLAY_RESTART, self.restart))
         row.addWidget(button(S.PLAY_NEW_SEED, self.new_seed))
@@ -670,7 +682,6 @@ class PlayWindow(QWidget):
         row2.addWidget(self.save_button)
         row2.addWidget(button(S.PLAY_LOAD_RECORD, self.load_record))
         side.addLayout(row2)
-        side.addWidget(help_label)
         panel = QWidget()
         panel.setLayout(side)
         panel.setFixedWidth(360)
@@ -728,7 +739,9 @@ class PlayWindow(QWidget):
         self.record = new_record(self.spec, seed)
         self.last_result = None
         self.paused = False
-        self.save_button.setEnabled(False)
+        # 6.2.0 U13 ④: 꺼진 까닭은 풍선에만(toolTip()은 그대로). 지켜보기만 하는 환경은 제 풍선(PLAY_SAVE_WATCH_ONLY)이 까닭이다
+        style.set_enabled(self.save_button, False, S.PLAY_WHY_SAVE if self.spec.outputs else "")
+        self.canvas.result = None
         geom = self.episode.geometry()
         agent = next((b.id for b in self.spec.file.bodies if b.owner == "agent"), None)
         self.canvas.channel_names = self.episode.actuator_channels()
@@ -818,7 +831,10 @@ class PlayWindow(QWidget):
         self.record.score = res.score
         self.record.outcome = res.outcome
         self.record.steps = res.steps
-        self.save_button.setEnabled(bool(self.spec.outputs))
+        style.set_enabled(self.save_button, bool(self.spec.outputs))  # 끝난 판: 저장할 수 있다(까닭을 지움)
+        self.canvas.result = (S.PLAY_RESULT_BAND.format(label=res.end_label, score=style.fmt_score(res.score)),
+                              S.PLAY_RESULT_KEYS)
+        self.canvas.update()
         if self.replaying is not None and self.replaying.score is not None:
             if res.score == self.replaying.score and res.steps == self.replaying.steps:
                 QMessageBox.information(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_SAME.format(score=res.score))
@@ -863,11 +879,11 @@ class PlayWindow(QWidget):
         for r, b in enumerate(blocks):
             self._set(self.blocks, r, 0, b.label or b.id)
             self._set(self.blocks, r, 1, f"{res.blocks[b.id]:.3f}")
-            self._set(self.blocks, r, 2, S.PLAY_NO_WEIGHT if formula else f"{res.weighted.get(b.id, 0.0):+.2f}")
+            self._set(self.blocks, r, 2, S.PLAY_NO_WEIGHT if formula else _signed(res.weighted.get(b.id, 0.0)))
         total = res.score
         self._set(self.blocks, len(blocks), 0, S.PLAY_TOTAL)
         self._set(self.blocks, len(blocks), 1, "")
-        self._set(self.blocks, len(blocks), 2, f"{total:+.2f}")
+        self._set(self.blocks, len(blocks), 2, _signed(total))
         obs = ep.observe()
         names = ep.inputs
         self.sensors.setRowCount(len(names))
@@ -951,6 +967,12 @@ class PlayWindow(QWidget):
         if rec.env_hash != env_hash(self.spec.file):
             QMessageBox.warning(self, S.PLAY_REPLAY_TITLE, S.PLAY_REPLAY_ENV_DIFF)
         self.start(rec.seed, replaying=rec)
+
+
+def _signed(v: float) -> str:
+    """점수 표의 부호 붙은 값(소수 2자리). −0은 「+0.00」(6.2.0 U13 ③: 「-0.00」이 보이지 않게)."""
+    text = f"{float(v):+.2f}"
+    return "+0.00" if text == "-0.00" else text
 
 
 def records_dir() -> Path:

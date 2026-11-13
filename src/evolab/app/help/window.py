@@ -20,7 +20,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QPalette, QTextBlockFormat, QTextCursor, QTextFormat
+from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QPalette, QTextBlockFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,

@@ -721,6 +721,8 @@ class LabView(QWidget):
         self._preset_form = False
         """「학습 안정성」 칸에 지금 프리셋 권장값이 들어 있다(다음에 권장값 없는 환경을 고르면 새 실행 기본값으로 되돌린다)."""
         self._emitted_state: str | None = None
+        self._roles_key: tuple[Any, ...] | None = None
+        self._why_key: tuple[bool, ...] | None = None
         self._stop_reason = ""
         """학습 프로세스가 알린 멈춘 까닭(finished의 reason: "max_generations" 등). 다른 상태면 빈 글."""
         self.start_notice = ""
@@ -2234,9 +2236,6 @@ class LabView(QWidget):
             self.btn_continue.setToolTip(getattr(self, "_continue_tip", ""))
         self.btn_step.setEnabled(paused)
         self.btn_end.setEnabled(active)
-        # 6.2.0 U9: 꺼진 까닭은 풍선에만(style.set_enabled: toolTip()은 도움말 글 그대로)
-        style.set_enabled(self.btn_apply, paused, S.LAB_WHY_PAUSED_ONLY)
-        style.set_enabled(self.btn_reload, paused and self.env_path is not None, S.LAB_WHY_PAUSED_ONLY if not paused else "")
         self.btn_edit.setEnabled(self.env_text is not None and (paused or not active))
         for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo, self.ipop,
                   self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
@@ -2245,12 +2244,20 @@ class LabView(QWidget):
             w.setEnabled(not active)
         self._update_stability()  # 예선 칸(qualify_entrants, qualify_trials)도 학습 중이면 끈다
         has_gen = self.generation > 0 and self.run_dir is not None
-        style.set_enabled(self.btn_timeline, has_gen, S.LAB_WHY_NEED_GEN)
-        style.set_enabled(self.btn_versus, has_gen, S.LAB_WHY_NEED_GEN)
-        style.set_enabled(self.btn_flip, self.generation >= 2 or self._flip_timer.isActive(), S.LAB_WHY_NEED_TWO)
-        style.set_enabled(self.btn_race, self.generation >= 2 and self.run_dir is not None, S.LAB_WHY_NEED_TWO)
-        style.set_enabled(self.btn_video, self._last_video is not None, S.LAB_WHY_NO_VIDEO)
-        style.set_enabled(self.btn_live, self.view_mode == "replay", S.LAB_WHY_LIVE)
+        flags = (paused, paused and self.env_path is not None, has_gen,
+                 self.generation >= 2 or self._flip_timer.isActive(), self.generation >= 2 and self.run_dir is not None,
+                 self._last_video is not None, self.view_mode == "replay")
+        if flags != self._why_key:  # 세대마다 불리는 길: 켜짐이 그대로면 건너뛴다(다듬기 C7)
+            self._why_key = flags
+            # 6.2.0 U9: 꺼진 까닭은 풍선에만(style.set_enabled: toolTip()은 도움말 글 그대로)
+            style.set_enabled(self.btn_apply, flags[0], S.LAB_WHY_PAUSED_ONLY)
+            style.set_enabled(self.btn_reload, flags[1], S.LAB_WHY_PAUSED_ONLY if not paused else "")
+            style.set_enabled(self.btn_timeline, has_gen, S.LAB_WHY_NEED_GEN)
+            style.set_enabled(self.btn_versus, has_gen, S.LAB_WHY_NEED_GEN)
+            style.set_enabled(self.btn_flip, flags[3], S.LAB_WHY_NEED_TWO)
+            style.set_enabled(self.btn_race, flags[4], S.LAB_WHY_NEED_TWO)
+            style.set_enabled(self.btn_video, flags[5], S.LAB_WHY_NO_VIDEO)
+            style.set_enabled(self.btn_live, flags[6], S.LAB_WHY_LIVE)
         # 학습 중에만 보이는 안내 두 줄(묶음이 접힘선 아래라 접힘 예산과 무관)
         if self.locked_note.isHidden() == active:
             self.locked_note.setVisible(active)
@@ -2264,9 +2271,12 @@ class LabView(QWidget):
             primary = self.btn_pause if self.state in ("starting", "running") else self.btn_continue
         else:
             primary = self.btn_continue if self.run_dir is not None and self.generation > 0 else self.btn_start
-        for button in (self.btn_start, self.btn_pause, self.btn_continue):
-            style.set_role(button, "primary" if button is primary else "normal")
-        self.state_dot.set_kind(self.state)
+        key = (id(primary), self.state)  # 테마가 바뀌면 style.refresh_theme이 급을 다시 입힌다
+        if key != self._roles_key:  # 세대마다 불리는 길: 같으면 아무것도 하지 않는다(다듬기 V13·C7)
+            self._roles_key = key
+            for button in (self.btn_start, self.btn_pause, self.btn_continue):
+                style.set_role(button, "primary" if button is primary else "normal")
+            self.state_dot.set_kind(self.state)
         if self.state != self._emitted_state:
             self._emitted_state = self.state
             self.state_changed.emit(self.state)
