@@ -88,7 +88,6 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
-from evolab.app import style
 from evolab.app.errors import os_cause, show_error, training_error
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.lab.client import TrainingClient
@@ -793,7 +792,7 @@ class LabView(QWidget):
         self.grow_honest = QLabel(S.LAB_GROW_HINT_HONEST)
         for hint in (self.grow_hint, self.grow_honest):
             hint.setWordWrap(True)
-            style.tone(hint, "ink2")  # 보조 글(학습 안정성 안내와 같은 색, 6.2.0 U2)
+            hint.setStyleSheet("color: #8a93a6;")  # 흐린 글(학습 안정성 안내와 같은 색)
         form.addRow(S.LAB_BRAIN, self.brain_combo)
         form.addRow(S.LAB_GROW_START, self.grow_start)
         form.addRow(S.LAB_GROW_EVERY, self.grow_every)
@@ -878,7 +877,7 @@ class LabView(QWidget):
         self.qualify_trials.setToolTip(S.LAB_QUALIFY_TIP)
         self.stability_hint = QLabel()
         self.stability_hint.setWordWrap(True)
-        style.tone(self.stability_hint, "ink2")  # 보조 글(테마를 따름, 6.2.0 U2)
+        self.stability_hint.setStyleSheet("color: #8a93a6;")  # 흐린 글(밝은·어두운 테마 공통)
         bf.addRow(self.restart_on)
         bf.addRow(S.LAB_RESTART_PATIENCE, self.restart_patience)
         bf.addRow(S.LAB_RESTART_FROM, self.restart_from)

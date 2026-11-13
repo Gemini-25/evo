@@ -86,7 +86,7 @@ class GrowTile(_WatchTile):
         self.plot.showAxis("right")
         right = self.plot.getAxis("right")
         right.setPen(_pen(t.axis, 1))
-        right.setTextPen(_pen(t.tick, 1))
+        right.setTextPen(_pen(t.muted, 1))
         right.enableAutoSIPrefix(False)
         right.setWidth(AXIS_WIDTH)
         right.setLabel(S.GROW_TILE_AXIS_LINKS, color=t.ink2)

@@ -7,25 +7,3 @@
 commit a96e3bd82be97960f365dcab1f39aa33e19cb2f5
 episode_v31.py src/evolab/world/physics2d/episode.py 34f373d4614865872f4e76900e2138294d2c874e 6b824529e08e938265fdacd3da040fe51f24c162ec39e1d7b7f2e2d9628082ba 91401e65760f775f96fc148b10ee4d8a04bf12a9b492a90be370289cd829203a
 evaluate_v31.py src/evolab/engine/evaluate.py 3d639fbb5b0ce076afc07c0ab757b843d260a972 198305dbddd19e2e9ca7423afb25315c28c26b843f107f7a249b9dd2f1ba9ce2 19b97a08f6527954b5f421c2dca59745037b31bd149f605c68bcee51f77f4175
-
-# ---- 얼린 출시 나무 (6.2.0 바탕 단계, 스포츠 설계 D52·D56) ----
-# tests/oracle/frozen.py가 읽는다(옛 표를 읽는 tests/test_oracle_sane.py는 frozen으로 시작하는 줄을 건너뛴다).
-# frozen <출시> commit <그 출시 커밋의 해시 40자> file <묶음 파일> <묶음 sha256>
-#   묶음 = `git archive --format=tar <커밋> src/evolab environments | gzip -9 -n`. 관문 G0: df0f20d가 v6.1.0이다(태그는 만들지 않음).
-#   v6.1이 다시 바뀌면(6.1.1) 묶음을 다시 뜨고 이 줄들을 고친 뒤 T1·T3·S1을 다시 돌린다.
-# frozen-env <출시> <그 커밋에 있던 tests/data의 환경 파일> <그 커밋에서의 파일 sha256>
-#   묶음 R의 T1(읽어 다시 저장한 글·해시·검사 글 목록이 얼린 쪽과 같다)이 이 목록과 내장 예제 6개를 돈다.
-frozen v6.1.0 commit df0f20d4e404cf1c5268a77729a81b51cf665874 file v6.1.0-src.tar.gz 24b0694f5ae1df0d3a8ac27cdae4fe2757cab4f4b2c705f4a2b90d4d5751e2ee
-frozen-env v6.1.0 tests/data/v10_run_ga/run/envs/v000.evoenv 3514f9de1d9d71eb3b41f51c1f95f5a81ce5ede2607b9617393672653053a84c
-frozen-env v6.1.0 tests/data/v11_run_restart/run/envs/v000.evoenv 3514f9de1d9d71eb3b41f51c1f95f5a81ce5ede2607b9617393672653053a84c
-frozen-env v6.1.0 tests/data/v1_dump/hill_car.json 66f80692c15072a1b061ba3267d6f2f9290bb998fefa7a878c0439b855b2b1cf
-frozen-env v6.1.0 tests/data/v1_dump/lander.json defddd09c17996a858e43fe0d06a725a5de25d4ddc75e993c6966e170eca926e
-frozen-env v6.1.0 tests/data/v1_dump/track_car.json b31056b640eafeb94549c20ec595e1a2927582b02e5a789923a60f7111a23d1a
-frozen-env v6.1.0 tests/data/v1_dump/v10_run_ga.json defddd09c17996a858e43fe0d06a725a5de25d4ddc75e993c6966e170eca926e
-frozen-env v6.1.0 tests/data/v1_dump/v11_run_restart.json defddd09c17996a858e43fe0d06a725a5de25d4ddc75e993c6966e170eca926e
-frozen-env v6.1.0 tests/data/v2_dump/all_v2_features.json b1b24713be0d7a0b7d1e944f518e90a1eda7afe94b337704b219b6fcba7acd29
-frozen-env v6.1.0 tests/data/v2_dump/glider.json 71f877ad3fd2770235f76cb785b68ad38499c2d7a1267f8bc8ad2e0552e16c63
-frozen-env v6.1.0 tests/data/v2_dump/jump.json c34c28091c4c0d35dde5c5b20602b51e4b19f6661381b6f1bb8f70b4a7cf8fa1
-frozen-env v6.1.0 tests/data/v2_structure/wheels_fixed1.evoenv 9253869aa3b8b4d21979a4ec6d6d4fb88f08b8220f6d6eaefca986b9e4b62de4
-frozen-env v6.1.0 tests/data/v2_structure/wheels_fixed2.evoenv b8da14bb39865a9ebf124011e7d0fef57ef4b73876b2022d8995fe0a5fccccde
-frozen-env v6.1.0 tests/data/v61_grow_run/run/envs/v000.evoenv 3514f9de1d9d71eb3b41f51c1f95f5a81ce5ede2607b9617393672653053a84c

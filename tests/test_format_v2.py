@@ -167,13 +167,6 @@ def _pop_last(section: str) -> Callable[[dict[str, Any]], None]:
     return apply
 
 
-def _pop_key(key: str) -> Callable[[dict[str, Any]], None]:
-    """맨 위 칸을 지운다(없는 칸 = 기본값: BASE에는 world가 없다). 정규 글의 사전에서 끌 때는 기본 world로 되돌린다."""
-    def apply(d: dict[str, Any]) -> None:
-        d.pop(key, None)
-    return apply
-
-
 def _append_shape(item: dict[str, Any]) -> Callable[[dict[str, Any]], None]:
     def apply(d: dict[str, Any]) -> None:
         d["bodies"][HULL]["shapes"].append(copy.deepcopy(item))
@@ -225,14 +218,6 @@ CASES: dict[tuple[Any, ...], tuple[Callable[[dict[str, Any]], None], Callable[[d
     (m.PathMotion,): (_set(("bodies", LIFT, "motion"), PATH), _set(("bodies", LIFT, "motion"), None)),
     (m.WaveMotion,): (_set(("bodies", LIFT, "motion"), WAVE), _set(("bodies", LIFT, "motion"), None)),
     (m.Body, "exists"): (_add_pod, _remove_pod),
-    # 형식 4(6.2.0): 세계 종류·바닥 마찰, 밀기 구동기, 균형 보조. 읽기·쓰기·형식 번호만 본다(검사와 런타임은 tests/test_format_v4.py)
-    (m.World, "view"): (_set(("world",), {"view": "top", "gravity": [0.0, 0.0]}), _pop_key("world")),
-    (m.World, "damping"): (_set(("world",), {"damping": 0.5}), _pop_key("world")),
-    (m.Move,): (_append("actuators", {"kind": "move", "id": "push", "body": "hull", "max_force": 40.0, "max_speed": 3.0}),
-                _pop_last("actuators")),
-    (m.Balance,): (_append("actuators", {"kind": "balance", "id": "bal", "body": "hull", "stiffness": 100.0,
-                                         "damping": 12.5, "max_torque": 100.0}),
-                   _pop_last("actuators")),
 }
 
 
@@ -282,11 +267,8 @@ def test_t3_one_v2_feature_makes_a_version_2_file(key: tuple[Any, ...]) -> None:
         if cls is not None:
             assert ("density" in keys) == (FIELD_SINCE[(cls, "density")] <= since)
     for (cls, name), v in FIELD_SINCE.items():
-        key = cls.model_fields[name].alias or name
-        if cls is m.World:  # 세계 칸은 제자리에서 본다("damping"은 관절의 옛 칸 이름이기도 해서 글 전체에서 찾을 수 없다)
-            assert (key in saved["world"]) == (v <= since), key
-        elif v > since:
-            assert f'"{key}"' not in text
+        if v > since:
+            assert f'"{cls.model_fields[name].alias or name}"' not in text
     # 다시 읽으면 같은 모델, 다시 쓰면 같은 글
     again = parse_env(text)
     assert again == env
@@ -385,11 +367,11 @@ def test_t6_newer_version_is_refused_with_the_update_message() -> None:
     with pytest.raises(EnvFileError) as exc:
         parse_env(data)
     assert exc.value.issues[0].message == S.SPEC_NEWER_VERSION.format(version=m.CURRENT_VERSION + 1)
-    assert f"(파일 버전 {m.CURRENT_VERSION + 1})" in exc.value.issues[0].message
+    assert "(파일 버전 4)" in exc.value.issues[0].message
 
 
 def test_t6_older_versions_are_migrated_without_changing_the_dict() -> None:
-    assert m.CURRENT_VERSION == 4  # 6.2.0: 형식 4(세계 종류·바닥 마찰·밀기·균형 보조). 6.3.0이 5로 올린다
+    assert m.CURRENT_VERSION == 3
     assert sorted(MIGRATIONS) == list(range(1, m.CURRENT_VERSION))
     original = json.loads((DUMP / "lander.json").read_text(encoding="utf-8"))
     for v, step in MIGRATIONS.items():

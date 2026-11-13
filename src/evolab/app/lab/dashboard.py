@@ -45,6 +45,7 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QPaintEvent,
+    QPalette,
     QPen,
     QWheelEvent,
 )
@@ -71,7 +72,6 @@ from PySide6.QtWidgets import (
 from evolab import paths
 from evolab.app import strings as S
 from evolab.app.lab.history import GUI_PRIORITY, favor_gui_thread
-from evolab.app.style import DARK, LIGHT, Theme, fmt_score, theme_for
 
 if TYPE_CHECKING:
     from evolab.app.lab.history import RunHistory
@@ -132,8 +132,44 @@ _NAN = math.nan
 
 
 # ---------------------------------------------------------------------------
-# 색: 그래프 색 묶음은 app/style.py가 주인이다(6.2.0 U1). 여기서는 같은 이름으로 다시 내보낸다
-# (테스트와 tests/data/v60_snapshot/brain_view.py가 dashboard에서 불러오고 같은 객체인지 본다).
+# 색 (밝은 화면·어두운 화면 각각 고른 값. 범주 색은 정해진 순서로만 쓴다)
+@dataclass(frozen=True)
+class Theme:
+    surface: str
+    ink: str
+    ink2: str
+    muted: str
+    grid: str
+    axis: str
+    series: tuple[str, ...]
+    ramp: tuple[str, ...]  # 순차 색(히트맵): 바탕에서 멀어지는 순서
+
+
+LIGHT = Theme(
+    surface="#fcfcfb",
+    ink="#0b0b0b",
+    ink2="#52514e",
+    muted="#898781",
+    grid="#e1e0d9",
+    axis="#c3c2b7",
+    series=("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
+    ramp=("#cde2fb", "#86b6ef", "#3987e5", "#256abf", "#184f95", "#0d366b"),
+)
+DARK = Theme(
+    surface="#1a1a19",
+    ink="#f0efec",
+    ink2="#c3c2b7",
+    muted="#898781",
+    grid="#2c2c2a",
+    axis="#383835",
+    series=("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"),
+    ramp=("#104281", "#1c5cab", "#2a78d6", "#5598e7", "#9ec5f4", "#cde2fb"),
+)
+
+
+def theme_for(widget: QWidget) -> Theme:
+    """창 색(윈도우 밝은/어두운 모드)에 맞는 색 묶음."""
+    return DARK if widget.palette().color(QPalette.ColorRole.Window).lightness() < 128 else LIGHT
 
 
 def _qcolor(color: str, alpha: int | None = None) -> QColor:
@@ -250,8 +286,20 @@ def parse_scores(value: Any) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
-fmt_value = fmt_score
-"""읽기 쉬운 숫자 글자(NaN은 '-'). app/style.py의 fmt_score와 같은 함수(6.2.0 U1)."""
+def fmt_value(v: float) -> str:
+    """읽기 쉬운 숫자 글자. NaN은 '-'."""
+    if not math.isfinite(v):
+        return "-"
+    a = abs(v)
+    if a >= 1000:
+        return f"{v:,.0f}"
+    if a >= 100:
+        return f"{v:.1f}"
+    if a >= 1:
+        return f"{v:.2f}"
+    if a == 0:
+        return "0"
+    return f"{v:.3g}"
 
 
 def _split_setting(value: Any) -> list[str]:
@@ -625,7 +673,7 @@ class _Tile(QFrame):
         for name in ("left", "bottom"):
             ax = plot.getAxis(name)
             ax.setPen(_pen(t.axis, 1))
-            ax.setTextPen(_pen(t.tick, 1))
+            ax.setTextPen(_pen(t.muted, 1))
             ax.enableAutoSIPrefix(False)
         plot.getAxis("left").setWidth(AXIS_WIDTH)
         plot.setLabel("left", y_label, color=t.ink2)
@@ -978,7 +1026,7 @@ class _HeatmapTile(_Tile):
             colorMapMenu=False,
         )
         self.bar.axis.setPen(_pen(t.axis, 1))
-        self.bar.axis.setTextPen(_pen(t.tick, 1))
+        self.bar.axis.setTextPen(_pen(t.muted, 1))
         self.bar.setImageItem(self.image, insert_in=self.plot)
         self._first_gen = _NAN
         self._hover_text = ""

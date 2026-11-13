@@ -271,7 +271,7 @@ POLICY_BODY_RANGE_HUGE: Final = "몸 유전자 '{id}'의 범위({low} ~ {high})�
 LEARNER_ERR_POPSIZE: Final = "개체 수는 2 이상의 정수여야 합니다 (지금 {value})."
 LEARNER_ERR_SIGMA: Final = "초기 시그마는 0보다 큰 유한한 숫자여야 합니다 (지금 {value})."
 LEARNER_ERR_DIAGONAL_THRESHOLD: Final = "대각 공분산 전환 차원은 0 이상의 정수여야 합니다 (지금 {value})."
-LEARNER_ERR_IPOP: Final = "IPOP(개체 수를 2배로 늘려 다시 찾기) 설정은 켜기 또는 끄기여야 합니다 (지금 {value})."
+LEARNER_ERR_IPOP: Final = "재시작(IPOP) 설정은 켜기 또는 끄기여야 합니다 (지금 {value})."
 LEARNER_ERR_SEED: Final = "학습 방법 시드는 0 이상 2³² 미만의 정수여야 합니다 (지금 {value})."
 LEARNER_ERR_BOUNDED_DIMS: Final = "경계를 두는 차원 수는 0 이상의 정수여야 합니다 (지금 {value})."
 LEARNER_ERR_BOUNDED_DIMS_TOO_MANY: Final = "경계를 두는 차원 수({value})가 유전자 차원({dim})보다 큽니다."
@@ -446,7 +446,7 @@ REC_COL_MEMO: Final = "메모"
 REC_REFRESH: Final = "새로 고침"
 REC_OPEN: Final = "열기"
 REC_OPEN_TIP: Final = "통계와 챔피언 재생을 봅니다(목록에서 두 번 눌러도 열립니다)."
-REC_RESUME: Final = "이어서 학습"  # 6.2.0: 「이어하기」였다(실험실 LAB_CONTINUE와 같은 일은 같은 말)
+REC_RESUME: Final = "이어하기"
 REC_RESUME_TIP: Final = "남아 있는 체크포인트에서 학습을 이어 갑니다. 최신이 아닌 체크포인트를 고르면 새 실행으로 분기합니다."
 REC_CLONE: Final = "복제해서 새 실행"
 REC_CLONE_TIP: Final = "이 실행의 환경과 학습 설정으로 새 실행을 시작합니다."
@@ -503,9 +503,9 @@ LAB_APPLY: Final = "설정 적용"
 LAB_APPLY_TIP: Final = "멈춘 상태에서 정지 조건, 시험 횟수, 자동 재시작 설정을 바꿉니다."
 LAB_CONTROL_GROUP: Final = "진행"
 LAB_START: Final = "▶ 학습 시작"  # v3.0(설계 D17): 원래 「새로 시작」(「정체하면 새로 시작」 칸과 헷갈림)
-LAB_PAUSE: Final = "잠시 멈춤"
-LAB_CONTINUE: Final = "이어서 학습"
-LAB_STEP: Final = "한 세대만 더"
+LAB_PAUSE: Final = "멈춤"
+LAB_CONTINUE: Final = "이어서"
+LAB_STEP: Final = "한 세대만"
 LAB_END: Final = "학습 끝내기"
 LAB_VIEW_GROUP: Final = "보기"
 LAB_SPECTATE: Final = "관전"
@@ -518,14 +518,14 @@ LAB_VERSUS: Final = "1세대 대표와 지금 챔피언"
 LAB_LIVE: Final = "실시간 보기"
 LAB_STATUS_IDLE: Final = "학습 전"
 LAB_STATUS: Final = "{state} · {gen}세대 · 시험 {evals:,}회 · 챔피언(검증) {champ}"
-LAB_STATE_NAMES: Final = {"running": "학습 중", "paused": "잠시 멈춤", "finished": "조건이 차서 멈춤", "starting": "시작하는 중",
-                          "idle": "학습 전", "closed": "저장됨"}
+LAB_STATE_NAMES: Final = {"running": "학습 중", "paused": "멈춤", "finished": "끝남", "starting": "시작하는 중", "idle": "학습 전",
+                          "closed": "학습 프로세스 없음"}
 LAB_STOPPED_BECAUSE: Final = "학습 끝: {reason}"
-LAB_HUD_LIVE: Final = "{gen}세대 · {t:.1f}초 · {speed}배"
-LAB_HUD_REPLAY: Final = "{label} · 다시 보기 · {t:.1f}초"
-LAB_HUD_FAST: Final = "고속 · {gen}세대까지 학습 · 챔피언 재생 {t:.1f}초"
+LAB_HUD_LIVE: Final = "{gen}세대 · 시험 0번 · {t:.1f}초 · {speed}배"
+LAB_HUD_REPLAY: Final = "{label} · 전시 시드 · {t:.1f}초"
+LAB_HUD_FAST: Final = "고속 모드 · {gen}세대 챔피언 · 전시 시드 · {t:.1f}초"
 LAB_LABEL_REP: Final = "{gen}세대 대표"
-LAB_LABEL_CHAMPION: Final = "지금 챔피언 ({gen}세대에 나옴)"
+LAB_LABEL_CHAMPION: Final = "지금 챔피언 ({gen}세대)"
 LAB_NO_CHAMPION: Final = "아직 챔피언이 없습니다(첫 검증 전)."
 LAB_ERROR_TITLE: Final = "학습 오류"
 LAB_CHANGE_FAILED: Final = "바꾸지 못했습니다"
@@ -541,8 +541,7 @@ LAB_INSPECT_LAYER: Final = "층 {k} ({n}개)"
 LAB_INSPECT_OUTPUTS: Final = "출력"
 LAB_INSPECT_CLOSE: Final = "닫기"
 LAB_INSPECT_TIME: Final = "{t:.2f}초 / {total:.2f}초"
-LAB_FINISHED_INFO: Final = ("학습이 끝났습니다 ({reason}). 정지 조건을 바꾸고 '" + LAB_APPLY + "' 단추, '" + LAB_CONTINUE
-                            + "' 단추를 차례로 누르면 계속할 수 있습니다.")
+LAB_FINISHED_INFO: Final = "학습이 끝났습니다 ({reason}). 정지 조건을 바꾸고 '설정 적용' 뒤 '이어서'로 계속할 수 있습니다."
 # M3 records (추가)
 REC_STATS_BROKEN: Final = "통계 파일을 읽을 수 없습니다: {path} ({detail})"
 
@@ -654,10 +653,10 @@ VIDEO_FILTER: Final = "GIF 영상 (*.gif)"
 VIDEO_PROGRESS: Final = "영상 만드는 중…"
 VIDEO_CANCEL: Final = "취소"
 VIDEO_DONE: Final = "영상을 저장했습니다: {path}"
-VIDEO_NOTHING: Final = "먼저 타임라인에서 세대 대표를 재생하거나 '" + LAB_VERSUS + "'을 누르세요."
+VIDEO_NOTHING: Final = "먼저 타임라인에서 세대 대표를 재생하거나 '1세대 대표와 지금 챔피언'을 누르세요."
 
 # M6 실험실 방법별 설정 (lead)
-LAB_IPOP: Final = "개체 수를 2배로 늘려 다시 찾기 (IPOP)"  # 6.2.0: 긴 설명은 HELP_TIPS["lab.ipop"]
+LAB_IPOP: Final = "pycma 종료 조건이 차면 개체 수 2배로 다시 시작(IPOP, CMA-ES만)"
 LAB_GA_ELITES: Final = "엘리트 수"
 LAB_GA_CROSSOVER: Final = "교차 확률"
 LAB_GA_MUT_RATE: Final = "돌연변이 확률"
@@ -767,9 +766,9 @@ EDC_FIT: Final = "전체 보기"
 EDC_SNAP: Final = "격자 맞춤"
 EDC_SNAP_UNIT: Final = " m"
 EDC_SNAP_TIP: Final = "점과 이동을 격자에 맞춥니다. 끄는 동안 Alt를 누르면 잠시 끕니다."
-EDC_OWNER_LABEL: Final = "새로 그리는 것"  # 6.2.0: 「새 물체:」였다
-EDC_OWNER_AGENT: Final = "에이전트(몸)"
-EDC_OWNER_WORLD: Final = "세계(땅·벽·공)"
+EDC_OWNER_LABEL: Final = "새 물체:"
+EDC_OWNER_AGENT: Final = "에이전트"
+EDC_OWNER_WORLD: Final = "세계"
 EDC_PREVIEW_PARTIAL: Final = "검사 오류가 있어 오류가 난 부품은 숫자만으로 그렸습니다(수식은 0으로 볼 수 있음)."
 EDC_PREVIEW_BUILD_FAILED: Final = "미리보기 세계를 만들지 못해 숫자만으로 그렸습니다: {reason}"
 EDC_LOCKED_FORMULA: Final = "위치나 각도가 수식이라 끌 수 없습니다. 속성 패널에서 고치세요."
@@ -916,7 +915,7 @@ CMP_REPEAT_PAUSED: Final = "평가 오류로 학습이 멈췄습니다."
 CMP_REPEAT_START_FAILED: Final = "학습 프로세스를 시작하지 못했습니다: {reason}"
 CMP_REPEAT_TITLE: Final = "반복 실행"
 CMP_REPEAT_NOTE: Final = (
-    "같은 설정을 시드만 바꿔 여러 번 차례로 학습합니다(한 번에 하나씩, 관전 없이). 실행들은 한 묶음으로 기록되어 "
+    "같은 설정을 시드만 바꿔 N번 차례로 학습합니다(한 번에 하나씩, 관전 없이). 실행들은 한 묶음으로 기록되어 "
     "비교 화면에 평균 선과 최소~최대 띠로 나옵니다."
 )
 CMP_REPEAT_ENV: Final = "환경"
@@ -947,6 +946,7 @@ CMP_RECORDS_BUTTON_TIP: Final = "고른 실행들을 비교 화면에서 한 그
 
 # 실험실 ↔ 에디터 (lead)
 LAB_ENV_EDIT: Final = "에디터에서 고치기"
+LAB_ENV_EDIT_TIP: Final = "이 환경을 에디터에서 엽니다. 멈춘 학습이면 고친 뒤 '실험실에 보내기'로 이어서 학습합니다."
 LAB_ENV_FROM_EDITOR: Final = "에디터에서 보낸 환경"
 # M5a 속성 패널과 아래 탭 (EDP: app/editor/forms.py, properties.py, tabs.py)
 EDP_FIELD_NAMES: Final = {
@@ -1012,18 +1012,12 @@ EDP_FIELD_NAMES: Final = {
     "Body.type": "움직임 종류",
     # v2.1 몸 구조 진화
     "exists": "있음",
-    # 6.2.0 형식 4: 세계 종류·바닥 마찰, 밀기(이동) 구동기 Move, 균형 보조 Balance
-    "World.view": "세계 종류", "World.damping": "바닥 마찰(감쇠)",
-    "Move.mode": "미는 방식", "Move.max_force": "미는 힘", "Move.max_speed": "최고 속도", "Move.max_turn": "도는 속도",
-    "keys_up": "위쪽 키", "keys_down": "아래쪽 키",
-    "Balance.stiffness": "세우는 힘", "Balance.damping": "흔들림 줄임", "Balance.max_torque": "최대 보조",
-    "Balance.target": "세울 각도",
 }
 EDP_FIELD_TIPS: Final = {
     # 칸 도움말(모델 설명 앞에 붙는다). "모델.칸"이 있으면 그것이 먼저다.
     "id": "다른 칸과 수식에서 이 부품을 가리키는 이름입니다.",
     "label": "화면에 보이는 이름입니다.",
-    "dt": "물리 시간 간격(초). 기본 1/60초(칸에는 0.0166…으로 보입니다).",
+    "dt": "물리 시간 간격(초). 기본 1/60초.",
     "max_time": "이 시간이 지나면 timeout(시간 초과) 사건으로 끝납니다.",
     "gravity": "중력 가속도 (x, y), m/s².",
     "keys": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W). R, N은 창 제어용이라 쓸 수 없고, Space는 점프 추진기에만 쓸 수 있습니다.",
@@ -1106,21 +1100,6 @@ EDP_FIELD_TIPS: Final = {
     "Aero.body": "공기힘을 받는 에이전트 물체입니다. 이 물체의 다각형 모양 테두리가 공기를 받습니다.",
     # v2.1 몸 구조 진화
     "exists": "0.5보다 크면 이 물체를 만듭니다. 진화를 켜면 생기고 없어지는 것까지 진화합니다. 없으면 붙은 관절·구동기·센서도 없습니다.",
-    # 6.2.0 형식 4
-    "World.view": "옆에서 본 세계: 중력이 있습니다. 위에서 본 세계: 중력 없이 바닥 위를 미끄러집니다(축구, 숨바꼭질).",
-    "World.damping": "1초 뒤에 남는 속도의 비율(0보다 크고 1 이하). 1이면 줄지 않습니다. 위에서 본 세계의 바닥 마찰 구실을 합니다.",
-    "Move.body": "미는 에이전트 물체입니다(움직이는 물체만).",
-    "Move.mode": "앞뒤좌우: 두 방향으로 밉니다. 좌우만: 옆에서 본 세계의 걷는 받침. 방향 돌리기: 앞으로 밀고 몸을 돌립니다.",
-    "Move.max_force": "출력이 1일 때의 힘(N).",
-    "Move.max_speed": "이 속도에서 더 빨라지지 않습니다(m/s).",
-    "Move.max_turn": "방향 돌리기에서 출력이 1일 때 도는 속도(rad/s).",
-    "keys_up": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Up, W).",
-    "keys_down": "직접 조종 키 이름을 쉼표로 나눠 씁니다(예: Down, S).",
-    "Balance.body": "보조가 세워 주는 에이전트 물체입니다(보통 몸통).",
-    "Balance.stiffness": "몸이 기울면 바로 세우는 보조의 세기(N·m/rad). 진화가 걷기를 더 빨리 찾게 돕습니다. 0이면 끕니다.",
-    "Balance.damping": "도는 속도를 줄이는 정도(N·m·s/rad). 보통 세우는 힘의 1/8.",
-    "Balance.max_torque": "보조가 낼 수 있는 가장 큰 토크(N·m). 작게 하면 크게 기울었을 때는 돕지 못합니다.",
-    "Balance.target": "보조가 맞추려는 몸 각도(라디안). 0은 똑바로 선 자세.",
 }
 EDP_VALUE_NAMES: Final = {
     # 고르기 칸의 값 -> 화면 이름. "칸.값"이 있으면 그것이 먼저다.
@@ -1130,10 +1109,6 @@ EDP_VALUE_NAMES: Final = {
     "agent": "에이전트", "world": "세계", "dynamic": "움직임", "static": "고정", "kinematic": "정해진 움직임",
     "pivot": "회전", "weld": "고정", "rot_spring": "회전 스프링", "spring": "거리 스프링",
     "fuel_tank": "연료 탱크", "thruster": "추진기", "vehicle": "차량 구동기", "motor": "모터",
-    # 6.2.0 형식 4: 구동기 둘과 고르기 칸의 값(칸 이름을 붙인 키: 설계 3.4)
-    "move": "밀기(이동)", "balance": "균형 보조",
-    "mode.xy": "앞뒤좌우", "mode.x": "좌우만", "mode.heading": "방향 돌리기",
-    "view.side": "옆에서 본 세계", "view.top": "위에서 본 세계",
     "body_state": "몸 상태", "target": "목표 위치", "contact": "접촉", "joint_angle": "관절 각도",
     "fuel": "남은 연료", "time_left": "남은 시간", "rays": "레이",
     "frame.world": "세계 좌표", "frame.body": "물체 좌표",
@@ -1211,17 +1186,17 @@ EDP_PANEL_ID: Final = "이름(id)"
 EDP_PANEL_LABEL: Final = "표시 이름"
 EDP_PANEL_DELETE: Final = "지우기"
 EDP_PANEL_DELETE_TIP: Final = "이 부품을 지웁니다(되돌리기로 살릴 수 있습니다)."
-EDP_PANEL_ISSUES: Final = "이 부품의 문제"
+EDP_PANEL_ISSUES: Final = "이 부품의 검사 결과"
 EDP_TAB_WORLD: Final = "세계 설정"
-EDP_TAB_EVENTS: Final = "사건·종료 조건 (고급)"
-EDP_TAB_SCORING: Final = "점수 블록과 수식 (고급)"
+EDP_TAB_EVENTS: Final = "사건·종료 조건"
+EDP_TAB_SCORING: Final = "점수 블록과 수식"
 EDP_TAB_RANDOM: Final = "랜덤 범위"
 EDP_TAB_GENERATORS: Final = "생성기"
 EDP_TAB_EVAL: Final = "평가 설정"
 EDP_TAB_BRAIN: Final = "뇌 설정"
 EDP_TAB_PARAMS: Final = "매개변수"
-EDP_TAB_ISSUES: Final = "문제 목록"  # 6.2.0: 「검사 결과」였다
-EDP_TAB_ISSUES_COUNT: Final = "문제 목록 ({n})"
+EDP_TAB_ISSUES: Final = "검사 결과"
+EDP_TAB_ISSUES_COUNT: Final = "검사 결과 ({n})"
 EDP_GROUP_ENV: Final = "환경"
 EDP_GROUP_WORLD: Final = "세계"
 EDP_GROUP_SPAWN: Final = "시작 위치 (에이전트 좌표의 원점)"
@@ -1245,13 +1220,12 @@ EDP_BRAIN_NET: Final = "신경망"
 EDP_BRAIN_PARAMS: Final = "신경망 {shape} · 뇌 파라미터 {brain}개 · 몸 유전자 {body}개 · 유전자 차원 {dim}"
 EDP_BRAIN_CHANNEL: Final = "{name}  ({label})"
 EDP_BRAIN_PARAMS_NONE: Final = "검사 오류가 있어 파라미터 수를 계산할 수 없습니다."
-EDP_BRAIN_NO_CHANNELS: Final = ("파일 구조에 오류가 있어 채널 목록을 만들 수 없습니다. 「" + EDP_TAB_ISSUES
-                                + "」 탭을 보세요.")
+EDP_BRAIN_NO_CHANNELS: Final = "파일 구조에 오류가 있어 채널 목록을 만들 수 없습니다. 검사 결과 탭을 보세요."
 EDP_BRAIN_UNKNOWN: Final = "{name} (없는 채널)"
-EDP_ISSUES_SEVERITY: Final = {"error": "오류", "warning": "경고", "info": "살펴볼 것"}  # 6.2.0: 「안내」 → 「살펴볼 것」
-EDP_ISSUES_HEADERS: Final = ("종류", "어디", "내용", "고치기")  # 6.2.0: 넷째 열(고치기 단추는 묶음 ED2)
+EDP_ISSUES_SEVERITY: Final = {"error": "오류", "warning": "경고", "info": "안내"}
+EDP_ISSUES_HEADERS: Final = ("종류", "위치", "내용")
 EDP_ISSUES_NONE: Final = "문제가 없습니다."
-EDP_ISSUES_HINT: Final = "「고치기」를 누르면 바로 고칩니다(되돌리기 됨). 줄을 두 번 누르면 그 부품으로 갑니다."
+EDP_ISSUES_HINT: Final = "두 번 누르면 그 부품을 고르고 화면을 옮깁니다."
 EDP_WHERE_FILE: Final = "파일 전체"
 EDP_WHERE_REF: Final = "{section} '{id}' ({where})"
 EDP_WHERE_PATH: Final = "{section} ({where})"
@@ -1270,7 +1244,7 @@ ED_BUILTIN_LANDER: Final = "달 착륙선"
 ED_BUILTIN_TRACK: Final = "트랙 자동차"
 ED_BUILTIN_HILL: Final = "언덕 넘는 자동차"
 ED_COORDS: Final = "x {x:.2f} · y {y:.2f} m"
-ED_NEW: Final = "빈 환경"  # 6.2.0: 「새로 만들기」였다(「새 프리셋…」 = ED_NEW_PRESET과 나란히 놓인다. Ctrl+N은 그대로 이것)
+ED_NEW: Final = "새로 만들기"
 ED_OPEN: Final = "열기…"
 ED_SAVE: Final = "저장"
 ED_SAVE_AS: Final = "다른 이름으로 저장…"
@@ -1281,17 +1255,15 @@ ED_COPY: Final = "복사"
 ED_PASTE: Final = "붙여넣기"
 ED_PLAY: Final = "직접 조종"
 ED_TO_LAB: Final = "실험실로 보내기"
-# 실험실 「에디터에서 고치기」 단추의 풍선(LAB_ENV_EDIT 옆에 있었다): 단추 이름을 이어 붙이려고 ED_TO_LAB 뒤로 옮김(6.2.0)
-LAB_ENV_EDIT_TIP: Final = "이 환경을 에디터에서 엽니다. 멈춘 학습이면 고친 뒤 '" + ED_TO_LAB + "'로 이어서 학습합니다."
-ED_STATUS: Final = "오류 {errors}개 · 경고 {warnings}개 · 살펴볼 것 {infos}개 (아래 「문제 목록」 탭)"
-ED_STATUS_OK: Final = "문제 없음"
+ED_STATUS: Final = "검사: 오류 {errors}개, 경고 {warnings}개 (아래 '검사 결과' 탭)"
+ED_STATUS_OK: Final = "검사: 문제 없음"
 ED_UNSAVED_TITLE: Final = "저장하지 않은 고침"
 ED_UNSAVED: Final = "'{name}'에 저장하지 않은 고침이 있습니다. 저장할까요?"
 ED_OPEN_FAILED: Final = "환경 파일을 열 수 없습니다"
 ED_SAVE_FAILED: Final = "저장하지 못했습니다"
 ED_PASTE_NOTHING: Final = "붙여 넣을 부품이 없습니다(진화 실험실에서 복사한 부품만 붙여 넣을 수 있습니다)."
-ED_HAS_ERRORS: Final = "고쳐야 할 것이 있습니다. 아래 「문제 목록」 탭에서 「고치기」를 누르세요."
-MAIN_ENV_SENT: Final = "에디터에서 고친 환경을 멈춘 학습에 보냈습니다. 적용되면 '" + LAB_CONTINUE + "'을 누르세요."
+ED_HAS_ERRORS: Final = "환경에 오류가 있습니다. 아래 '검사 결과' 탭을 보고 고친 뒤 다시 하세요."
+MAIN_ENV_SENT: Final = "에디터에서 고친 환경을 멈춘 학습에 보냈습니다. 적용되면 '이어서'를 누르세요."
 SPEC_CHECKPOINTS_LOOP_MIN: Final = "순환 체크포인트 '{id}'에는 선이 3개 이상 있어야 합니다(앞뒤로 흔들어 바퀴를 세지 못하게)."
 
 # 설정 (lead)
@@ -1299,7 +1271,7 @@ MENU_SETTINGS: Final = "설정"
 MENU_DATA_DIR: Final = "데이터 폴더 바꾸기…"
 MENU_DATA_DIR_RESET: Final = "데이터 폴더를 기본(문서\\진화실험실)으로"
 MAIN_DATA_DIR_SET: Final = "데이터 폴더: {path} (새 실행부터 이 폴더에 저장합니다. 예전 실행은 그대로 둡니다)"
-LAB_OTHER_PLATFORM: Final = "다른 PC·버전에서 만든 실행입니다({what}). 이어서 학습해도 비트 단위 재현은 보장되지 않습니다."
+LAB_OTHER_PLATFORM: Final = "이 실행은 다른 PC나 다른 버전에서 만들어졌습니다({what}). 이어서 학습할 수 있지만 비트 단위 재현은 보장되지 않습니다."
 REC_BUNDLE: Final = "재현 묶음…"
 REC_BUNDLE_TIP: Final = "이 실행을 같은 조건으로 다시 돌릴 수 있는 zip(설정, 시드, 환경 버전, 변경 기록)을 만듭니다."
 REC_CSV: Final = "통계 CSV…"
@@ -1311,8 +1283,7 @@ REC_CSV_FILTER: Final = "CSV (*.csv)"
 
 # 리뷰 수정 lab (실험실·영상·주 창)
 RVL_RESUME_BUSY: Final = "이 실행은 지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중이라 이어서 학습할 수 없습니다. 그 학습이 끝난 뒤 다시 하세요."
-RVL_CONTINUE_BUSY_TIP: Final = ("지금 다른 곳(비교 화면의 " + CMP_REPEAT_TITLE + " 등)에서 학습 중인 실행이라 이어서 학습할 수 없습니다. "
-                                "타임라인과 '" + LAB_VERSUS + "'으로 보기만 할 수 있습니다.")
+RVL_CONTINUE_BUSY_TIP: Final = "지금 다른 곳(비교 화면의 반복 실행 등)에서 학습 중인 실행이라 이어서 학습할 수 없습니다. 타임라인과 '1세대 대표와 지금 챔피언'으로 보기만 할 수 있습니다."
 RVL_SCENE_FAILED: Final = "이 세대의 관전 장면을 만들지 못해 건너뜁니다: {reason}"
 
 # 리뷰 수정 environment editor
@@ -1557,8 +1528,8 @@ ACT_NONE: Final = "이 세대에는 행동 기록이 없습니다."
 
 # 실험실 타임라인 (app/lab/view.py)
 LAB_TIMELINE_OF: Final = "세대 {gen} / {total}"
-LAB_TIMELINE_TIP: Final = ("보는 세대를 고릅니다. '" + DASH_PAGES["fun"] + "' 그래프가 이 세대를 보여 주고, '" + LAB_TIMELINE_PLAY
-                           + "'은 이 세대 대표를 다시 돌립니다. 맨 오른쪽에 두면 새 세대를 따라갑니다.")
+LAB_TIMELINE_TIP: Final = ("보는 세대를 고릅니다. '보는 재미' 그래프가 이 세대를 보여 주고, '이 세대 대표 재생'은 이 세대 대표를 "
+                           "다시 돌립니다. 맨 오른쪽에 두면 새 세대를 따라갑니다.")
 LAB_FLIP: Final = "세대 넘겨 보기"
 LAB_FLIP_TIP: Final = ("슬라이더를 자동으로 한 세대씩 넘기며 '보는 재미' 그래프가 어떻게 바뀌는지 보여 줍니다. 전체를 20초 "
                        "안팎에 넘기고, 맨 끝에서 누르면 1세대부터 시작합니다.")
@@ -1575,7 +1546,7 @@ RACE_COURSE_ITEM: Final = "코스 {n}"
 RACE_COURSE_TIP: Final = ("모든 칸이 같은 시작 조건(시드)에서 달립니다. 코스 1~32는 챔피언을 고를 때 쓰지 않은 비교 평가 "
                           "시드라 어느 칸에도 유리하지 않습니다.")
 RACE_NEXT_COURSE: Final = "다른 코스"
-RACE_WHO_LABEL: Final = "출전"  # 6.2.0: 「누구를」이었다
+RACE_WHO_LABEL: Final = "누구를"
 RACE_WHO: Final = {"last": "마지막 챔피언", "budget": "같은 학습 시험 수일 때의 챔피언"}
 RACE_WHO_TIP: Final = ("같은 학습 시험 수: 가장 짧게 학습한 실행의 누적 학습 시험({trials:,}회) 시점에서 실행마다 그때의 "
                        "챔피언끼리 겨룹니다(학습 방법끼리 공정하게).")
@@ -1906,8 +1877,7 @@ WHATS_THIS_NONE: Final = "이 부분에는 따로 설명이 없습니다. 「{pa
 WHATS_THIS_MORE: Final = "도움말에서 더 보기"
 HELP_GLOSSARY_TERMS: Final = ("세대", "개체", "집단", "유전자", "몸 수치", "몸 구조", "뇌", "뉴런", "시험", "시드", "세대 대표",
                               "챔피언", "검증", "관전", "고속", "CMA-ES", "유전 알고리즘", "담금질", "체크포인트", "관찰 기록",
-                              "재현 묶음", "누적 시험 횟수",
-                              "프리셋", "몸 틀", "규칙", "위에서 본 세계", "균형 보조")  # v6.1: 「뉴런」. 6.2.0: 끝의 다섯
+                              "재현 묶음", "누적 시험 횟수")  # v6.1: 「뉴런」
 
 # 도움말 쪽: id → (제목, Markdown). 「…」 안에는 {{상수}}·{{사전.키}} 자리만 쓴다(테스트). 쪽 순서 = 목록 순서.
 HELP_PAGES: Final = {
@@ -2069,11 +2039,10 @@ HELP_PAGES: Final = {
 
 ## 처음 만들 때
 
-1. 「{{ED_NEW_PRESET}}」 단추로 종목이나 빈 세계를 고르고 몸·경기장·규칙을 고릅니다. [새 프리셋 만들기 도움말](evolab://help/preset)
-2. 아래 「{{EDP_TAB_ISSUES}}」 탭에 고칠 것이 있으면 「{{FIX_BUTTON}}」 단추를 누릅니다.
-3. 「{{ED_PLAY}}」 단추로 몰아 본 뒤 「{{ED_TO_LAB}}」 단추로 실험실에 보냅니다.
-
-이미 있는 예제를 고치려면 「{{ED_FROM_BUILTIN}}」 단추를 씁니다.
+1. 「{{ED_FROM_BUILTIN}}」 단추로 비슷한 예제를 엽니다.
+2. 한두 군데만 고칩니다(예: 착륙선의 중력, 언덕의 높이).
+3. 「{{EDP_TAB_ISSUES}}」 탭에 오류가 없는지 봅니다.
+4. 「{{ED_PLAY}}」 단추로 몰아 본 뒤 「{{ED_TO_LAB}}」 단추로 실험실에 보냅니다.
 
 ## 도구와 캔버스
 
@@ -2086,18 +2055,9 @@ HELP_PAGES: Final = {
 오른쪽 속성 칸 위에 마우스를 올리면 설명이 나옵니다. 숫자 옆 진화 표시를 켜면 그 값이 몸 수치가 되어 학습 중에 바뀝니다.
 숫자 칸에 =로 시작하는 수식을 쓸 수 있습니다(예: =p.leg_len / 2).
 
-## {{EDP_TAB_RULES}}
-
-무엇을 하면 점수를 얻고 언제 끝나는지를 문장으로 정합니다. 이 탭이나 새 프리셋 창에서 만든 규칙은 빈칸만 고르면 됩니다.
-고급 탭에서 손으로 만든 것은 읽기만 하고 「{{RULES_TO_ADVANCED}}」 단추로 그 탭에 갑니다.
-
 ## {{EDP_TAB_WORLD}}
 
 중력, 경계, 시간 간격 같은 세계 전체의 값입니다.
-
-## {{EDP_WORLD_KIND}}
-
-옆에서 본 세계는 중력이 아래로 당기고, 위에서 본 세계는 중력 없이 바닥 마찰로 멈춥니다. 바꾸면 중력과 바닥 마찰이 함께 바뀝니다.
 
 ## {{EDP_TAB_EVENTS}}
 
@@ -2134,46 +2094,7 @@ HELP_PAGES: Final = {
 
 ## {{EDP_TAB_ISSUES}}
 
-고쳐야 할 것과 살펴볼 것입니다. 「{{FIX_BUTTON}}」 단추를 누르면 바로 고치고, 줄을 두 번 누르면 그 부품으로 갑니다.
-잘못 고쳤으면 Ctrl+Z로 되돌립니다.
-"""),
-"preset": ("새 프리셋 만들기", """# 새 프리셋 만들기
-
-몇 번만 고르면 학습을 시작할 수 있는 프리셋이 만들어집니다. 프리셋은 실험 환경 하나(파일 하나)입니다.
-「{{ED_NEW_PRESET}}」 단추로 엽니다.
-
-## 다섯 단계
-
-1. **무엇을 만들까요**: 달리기 같은 종목 틀이나 빈 세계를 고릅니다. 종목 틀은 뒤 단계가 미리 채워져 있습니다.
-2. **몸**: 뇌가 움직일 몸입니다. 슬라이더로 크기와 힘을 바꿉니다.
-3. **경기장과 물건**: 땅, 벽, 공, 골대를 켜고 끕니다.
-4. **규칙과 점수**: 문장의 빈칸만 고릅니다. 학습은 이 점수를 높이는 쪽으로만 갑니다.
-5. **해 보기**: 「{{PRESET_BTN_PLAY}}」 단추로 직접 몰아 보고 「{{ED_TO_LAB}}」 단추로 보냅니다.
-
-## 아래 줄의 단추
-
-「{{PRESET_BTN_PLAY}}」 단추와 「{{PRESET_BTN_EDIT}}」 단추는 어느 단계에서든 누를 수 있습니다.
-「{{ED_TO_LAB}}」 단추는 학습을 시작할 수 있을 때 켜집니다. 꺼져 있으면 상태 줄에 까닭과 고치는 단추가 나옵니다.
-
-## 몸 틀과 슬라이더
-
-몸 틀은 물체·관절·모터·센서가 이미 이어진 묶음입니다. 두 발 막대 사람의 「{{TPL_PARAM_LABELS.balance}}」 체크는 몸통이 기울면
-세워 주는 보조를 켭니다. 끄면 걷기를 찾는 데 더 오래 걸립니다.
-
-## 만든 뒤에 고치기
-
-「{{PRESET_BTN_EDIT}}」 단추로 에디터에 열면 부품을 하나하나 고칠 수 있습니다. 에디터의 「{{EDC_GROUP_TEMPLATES}}」 묶음에서
-같은 몸 틀과 물건을 더 넣을 수 있고, 「{{EDP_TAB_RULES}}」 탭에서 같은 규칙을 고칩니다.
-
-## 저장되는 곳
-
-보내거나 에디터로 넘기면 내 환경 폴더에 프리셋 이름으로 저장되고 실험실 환경 목록의 「{{LAB_ENV_GROUPS.mine}}」 묶음에 나옵니다.
-같은 이름이 있으면 이름 뒤에 번호가 붙습니다.
-
-## 잘 안 배울 때
-
-- 사람이 직접 해도 점수를 낼 수 없으면 뇌도 어렵습니다. 규칙을 쉽게(제한 시간을 길게, 목표를 가깝게) 해 보세요.
-- 무작위 뇌들의 점수가 모두 같다는 알림이 나오면 점수 규칙이 몸의 움직임과 이어져 있는지 보세요.
+파일의 문제와 경고입니다. 줄을 누르면 그 부품으로 갑니다.
 """),
 "play": ("직접 조종", """# 직접 조종
 
@@ -2283,10 +2204,6 @@ HELP_PAGES: Final = {
 ## 바퀴 고르는 언덕차
 
 바퀴 자리 네 곳 중 어디에 몇 개를 달지와 바퀴 크기, 차체 모양이 함께 진화합니다. 몸 구조가 바뀌는 진화를 보는 예제입니다.
-
-## 달리기
-
-두 발 막대 사람이 넘어지지 않고 오른쪽으로 멀리 가는 프리셋입니다. 점수는 달린 거리이고 넘어지면 끝납니다.
 """),
 "trouble": ("문제가 생겼을 때", """# 문제가 생겼을 때
 
@@ -2348,11 +2265,6 @@ OneDrive로 옮겨진 문서 폴더는 실행 기록이 많으면 동기화가 �
 - **체크포인트**: 이어 하기 위해 저장한 학습 상태.
 - **관찰 기록**: 그래프를 그리려고 세대마다 남기는 집단의 기록. 학습 결과에는 영향이 없습니다.
 - **재현 묶음**: 같은 실험을 다시 돌릴 수 있는 zip 파일.
-- **프리셋**: 학습을 시작할 수 있게 채워진 실험 환경 하나(파일 하나). 「{{PRESET_TITLE}}」 창이나 에디터로 만듭니다.
-- **몸 틀**: 물체·관절·모터·센서가 이미 이어진 몸 묶음. 고르면 한 번에 들어갑니다.
-- **규칙**: 무엇을 하면 점수를 얻고 언제 끝나는지를 문장으로 적은 것.
-- **위에서 본 세계**: 바닥을 위에서 내려다보는 세계. 중력이 없고 밀린 물체는 바닥 마찰로 멈춥니다.
-- **균형 보조**: 몸통이 기울면 바로 세워 주는 보이지 않는 도움. 진화가 걷기를 더 빨리 찾게 합니다.
 """),
 "install": ("설치와 제거", """# 설치와 제거
 
@@ -2438,10 +2350,10 @@ HELP_TIPS: Final = {
 HINT_LAB_IDLE_TITLE: Final = "학습할 준비가 됐습니다"
 HINT_LAB_IDLE: Final = "「{start}」을 누르면 {env} {pop}개가 동시에 연습을 시작합니다."
 HINT_LAB_TOUR: Final = "처음이라면 따라 하기로 시작"
-HINT_DASH_EMPTY: Final = "첫 세대가 끝나면 여기에 그래프가 그려집니다."
+HINT_DASH_EMPTY: Final = "학습을 시작하면 세대마다 여기에 그래프가 그려집니다."
 HINT_DASH_ONE: Final = "1세대만 끝났습니다. 2세대부터 선으로 이어집니다."
-HINT_EDITOR_EMPTY: Final = ("「{preset}」로 몇 번만 고르면 학습을 시작할 수 있는 프리셋이 만들어집니다. 직접 그리려면 왼쪽 "
-                            "「{shapes}」에서 도구를 고르고, 예제를 고쳐 보려면 「{builtin}」을 누르세요.")
+HINT_EDITOR_EMPTY: Final = ("왼쪽 「{shapes}」에서 도구를 골라 캔버스에 끌어 그리세요. 처음이라면 「{builtin}」으로 예제를 불러와 "
+                            "고쳐 보는 것이 쉽습니다.")
 
 # ---- 오류 문구 (app/errors.py) ----
 ERR_NEXT_LABEL: Final = "다음에 할 일"
@@ -2700,7 +2612,7 @@ LAB_PACE_TIP: Final = ("학습 먼저: 학습은 쉬지 않고, 재생이 끝날
                        "건너뛴 세대도 기록과 그래프에 모두 남고 타임라인으로 다시 볼 수 있습니다.\n"
                        "세대마다 다 보기: 모든 세대를 차례로 보여 주고, 재생이 끝날 때까지 학습이 기다립니다. "
                        "1배속이면 학습이 몇 배 느려집니다.")
-LAB_HUD_LIVE_SKIP: Final = LAB_HUD_LIVE + " · 학습은 {latest}세대까지"
+LAB_HUD_LIVE_SKIP: Final = "{gen}세대 · 시험 0번 · {t:.1f}초 · {speed}배 · 학습은 {latest}세대까지"
 LAB_PACE_WAIT_HINT: Final = ("학습이 재생을 기다리느라 약 {times:.1f}배 느려졌습니다. "
                              "「관전 방식」을 「학습 먼저」로 바꾸면 학습이 쉬지 않습니다.")
 LAB_PACE_CHANGED_NOTICE: Final = ("관전 방식이 「학습 먼저」로 바뀌었습니다. 학습은 쉬지 않고 화면은 가장 새 세대를 보여 줍니다. "
@@ -2766,7 +2678,7 @@ LAB_STATUS_GROWN: Final = "{gen}세대: 뇌가 자랐습니다 — 뉴런 {old} 
 # ---- 학습기·명령줄 (engine/trainer.py, cli.py, engine/commands.py) ----
 TRAIN_GROW_NO_HIDDEN: Final = ("이 환경의 뇌에는 은닉층이 없어서 「자라는 뇌」로 학습할 수 없습니다. 크기 고정으로 학습하거나 "
                                "에디터 「뇌 설정」에서 은닉층을 더하세요.")
-TRAIN_GROW_NO_IPOP: Final = ("자라는 뇌는 「" + LAB_IPOP + "」 설정과 함께 쓸 수 없습니다. "
+TRAIN_GROW_NO_IPOP: Final = ("자라는 뇌는 IPOP(pycma 종료 조건이 차면 개체 수를 2배로 늘려 다시 시작)과 함께 쓸 수 없습니다. "
                              "둘 중 하나만 고르세요.")
 TRAIN_GROW_SUMMARY: Final = "자라는 뇌: 뉴런 {start}개 → {full}개, {every}세대마다 두 배"
 CLI_HELP_GROW_START: Final = "자라는 뇌(--method grow)의 은닉층마다 처음 뉴런 수(기본 2)"
@@ -2866,324 +2778,3 @@ DASH_MARK_GROW_FROM: Final = "{gen}세대 끝: 뇌가 자람(자라기 전 뉴�
 # 그래서 처음 4·간격 10을 기본으로 삼지 않고(7(a) 실패) 기본값 2·10과 「크기 고정」 기본을 그대로 둔다. 숫자를 바꾸려면
 # 다시 재야 한다(tests/test_grow_screens.py가 두 글의 숫자를 지킨다).
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 6.2.0 프리셋 만들기 (바탕 0단계: 최종 설계 3.5의 문자열 장부 「6.2.0」 줄 195개 + 도움말 초안). 형식 4(위에서 본 세계·바닥 마찰·
-# 밀기·균형 보조), 「새 프리셋」 창, 틀 보관함, 「규칙」 탭, 「문제 목록」과 고치기, 실험실 「내 프리셋」. 종목 글(SPORT_BLURBS,
-# HINT_LAB_IDLE_SPORT의 달리기 줄, 도움말 「달리기」 절의 잰 값 문장)은 통합 단계가 잰 값으로 쓴다(설계 D47).
-# 위 제자리에서 바꾼 것(같은 이름을 두 번 쓰지 않음):
-# - 장부의 값 바꿈: ED_NEW, EDC_OWNER_LABEL·EDC_OWNER_AGENT·EDC_OWNER_WORLD, EDP_TAB_ISSUES·EDP_TAB_ISSUES_COUNT·EDP_TAB_EVENTS·
-#   EDP_TAB_SCORING, EDP_ISSUES_HEADERS·EDP_ISSUES_HINT·EDP_ISSUES_SEVERITY, EDP_PANEL_ISSUES, ED_STATUS({infos}를 더함)·ED_STATUS_OK,
-#   ED_HAS_ERRORS, HINT_EDITOR_EMPTY({preset}을 더함). 같은 탭 이름을 적던 EDP_BRAIN_NO_CHANNELS는 EDP_TAB_ISSUES를 이어 붙임.
-# - 사전: EDP_FIELD_NAMES·EDP_FIELD_TIPS(World.view·World.damping·Move.*·Balance.*·keys_up·keys_down), EDP_VALUE_NAMES(move·balance·
-#   mode.*·view.*), HELP_GLOSSARY_TERMS(프리셋·몸 틀·규칙·위에서 본 세계·균형 보조).
-# - HELP_PAGES: 새 쪽 preset(에디터 쪽 바로 뒤, 12 → 13쪽), 「에디터」 쪽의 「처음 만들 때」·「문제 목록」 절과 새 절 둘(규칙·세계 종류),
-#   「내장 예제」 쪽의 「달리기」 머리, 「낱말 풀이」 쪽의 다섯 줄.
-# - 화면 다듬기 U4(polish/plan.md 2.1): LAB_IPOP·TRAIN_GROW_NO_IPOP·LEARNER_ERR_IPOP, LAB_PAUSE·LAB_CONTINUE·LAB_STEP·REC_RESUME,
-#   LAB_STATE_NAMES, LAB_HUD_LIVE·LAB_HUD_LIVE_SKIP·LAB_HUD_REPLAY·LAB_HUD_FAST·LAB_LABEL_CHAMPION, LAB_OTHER_PLATFORM,
-#   HINT_DASH_EMPTY, RACE_WHO_LABEL, CMP_REPEAT_NOTE, 단추 이름을 글자로 적던 글(VIDEO_NOTHING·RVL_CONTINUE_BUSY_TIP·LAB_ENV_EDIT_TIP·
-#   LAB_TIMELINE_TIP·LAB_FINISHED_INFO·MAIN_ENV_SENT)은 그 이름 상수를 이어 붙임.
-# HELP_TIPS에는 아직 더하지 않았다: 키가 연결표(app/help/anchors.py)에 있어야 하고 연결표의 위젯은 W·ED1·ED2·Hb가 만든다. 묶음 H가
-# 연결표와 함께 제자리에 더할 키와 값 = "editor.new_preset": ED_NEW_PRESET_TIP, "editor.rules": RULES_ADD_TIP, "editor.issues":
-# EDP_ISSUES_HINT, "editor.owner_agent": EDC_OWNER_AGENT_TIP, "editor.owner_world": EDC_OWNER_WORLD_TIP, "editor.world_kind":
-# EDP_WORLD_KIND_TIP, "preset.steps": PRESET_STEPS_TIP, "preset.preview": PRESET_PREVIEW_TIP, "preset.name": PRESET_NAME_TIP,
-# "preset.edit": PRESET_BTN_EDIT_TIP, "preset.play": PRESET_BTN_PLAY_TIP, "preset.lab": PRESET_BTN_LAB_TIP, "lab.new_preset": ED_NEW_PRESET_TIP.
-# 묶음은 이 블록 뒤에 제 이름의 블록을 덧붙인다(값을 바꿀 때는 제자리에서).
-# ---------------------------------------------------------------------------
-# ---- 형식 4 검사 (spec/compiled.py: 묶음 R이 Issue.code와 함께 쓴다) ----
-SPEC_TOP_GRAVITY: Final = "위에서 본 세계에는 중력이 없어야 합니다. 중력을 (0, 0)으로 두세요."
-SPEC_TOP_PART: Final = "'{id}'({kind})는 옆에서 본 세계용 부품입니다. 위에서 본 세계에서는 뜻대로 움직이지 않을 수 있습니다."
-SPEC_TOP_NO_DAMPING: Final = ("위에서 본 세계인데 바닥 마찰이 없어 한 번 밀린 물체가 멈추지 않습니다. 세계의 바닥 마찰(감쇠)을 "
-                              "1보다 작게 하거나 물체에 항력을 주세요.")
-SPEC_MOVE_SPEED: Final = "밀기 '{id}'의 최고 속도는 0보다 커야 합니다."
-
-# ---- 에디터 메뉴·도구 줄 (app/editor/view.py) ----
-ED_NEW_PRESET: Final = "새 프리셋…"
-ED_NEW_PRESET_TIP: Final = "종목이나 빈 세계를 고르고 몸·경기장·규칙을 골라 새 프리셋을 만듭니다."
-MENU_FILE: Final = "파일"
-ED_BUILTIN_RUNNING: Final = "달리기"
-
-# ---- 「새 프리셋」 창 (app/preset/*) ----
-PRESET_TITLE: Final = "새 프리셋 만들기"
-PRESET_STEPS: Final = ("① 무엇을 만들까요", "② 몸", "③ 경기장과 물건", "④ 규칙과 점수", "⑤ 해 보기")
-PRESET_STEP_TIPS: Final = ("종목 틀이나 빈 세계에서 시작합니다.", "뇌가 움직일 몸을 고릅니다.", "땅, 벽, 공 같은 것을 놓습니다.",
-                           "무엇을 하면 점수를 얻고 언제 끝나는지 정합니다.", "키보드로 직접 해 보고 실험실로 보냅니다.")
-PRESET_STEPS_TIP: Final = "단계를 눌러 아무 때나 건너뛸 수 있습니다."
-PRESET_STEP_DONE: Final = "✔ {step}"
-PRESET_STEP_CHANGED_TIP: Final = "종목 틀의 처음 값에서 바꾼 단계입니다."
-PRESET_NAME: Final = "이름"
-PRESET_NAME_TIP: Final = "프리셋의 이름입니다. 실험실의 환경 목록과 기록에 이 이름으로 나옵니다."
-PRESET_NAME_DEFAULT: Final = "내 {sport}"
-PRESET_NAME_FALLBACK: Final = "내 프리셋"
-PRESET_NAME_NUMBERED: Final = "{name} {n}"
-PRESET_PREVIEW: Final = "미리보기 (끌어서 옮기고, 휠로 확대)"
-PRESET_PREVIEW_TIP: Final = "지금 고른 대로 만든 프리셋입니다. 고를 때마다 바로 바뀝니다."
-PRESET_PAGE_START: Final = "무엇을 만들까요?"
-PRESET_PAGE_START_SUB: Final = "종목 틀에서 시작하면 뒤 단계가 미리 채워져 있습니다. 뒤에서 무엇이든 바꿀 수 있습니다."
-PRESET_PAGE_BODY: Final = "어떤 몸으로 할까요?"
-PRESET_PAGE_BODY_SUB: Final = "몸 틀을 고르면 관절·모터·센서·뇌 연결까지 한 번에 들어갑니다."
-PRESET_PAGE_ARENA: Final = "경기장에 무엇을 둘까요?"
-PRESET_PAGE_ARENA_SUB: Final = "켠 것만 들어갑니다. 빠지면 안 되는 것은 꺼지지 않습니다."
-PRESET_PAGE_RULES: Final = "어떻게 하면 점수를 얻나요?"
-PRESET_PAGE_RULES_SUB: Final = "문장의 빈칸만 고르세요. 사건·종료 조건·점수 블록은 알아서 만들어집니다."
-PRESET_PAGE_TRY: Final = "직접 해 보고 보내기"
-PRESET_PAGE_TRY_SUB: Final = "먼저 키보드로 몰아 보세요. 사람이 아예 할 수 없는 일은 진화도 오래 걸립니다."
-PRESET_START_BLANK_SIDE: Final = "빈 세계: 옆에서 본"
-PRESET_START_BLANK_SIDE_SUB: Final = "중력이 있고 땅 위에 서는 세계"
-PRESET_START_BLANK_TOP: Final = "빈 세계: 위에서 본"
-PRESET_START_BLANK_TOP_SUB: Final = "바닥을 내려다보는 세계(중력 없음)"
-PRESET_START_DRILL: Final = "공 넣기 연습"
-PRESET_START_DRILL_SUB: Final = "원형 선수 혼자 공을 골에 밀어 넣습니다"
-PRESET_BADGE_EXPERIMENTAL: Final = "실험"
-PRESET_BADGE_EXPERIMENTAL_TIP: Final = "아직 기준만큼 배우지 못합니다. 시드에 따라 잘 안 될 수 있습니다."
-PRESET_MORE_PARAMS: Final = "더 보기"
-PRESET_MORE_PARAMS_TIP: Final = "이 틀의 나머지 값을 보입니다."
-PRESET_PROP_LOCKED_TIP: Final = "이 프리셋에 꼭 있어야 하는 것이라 끌 수 없습니다({why})."
-PRESET_RULE_SUMMARY: Final = "점수 = {formula}"
-PRESET_RULE_SUMMARY_TIP: Final = "지금 켠 규칙으로 점수가 어떻게 매겨지는지 한 줄로 적은 것입니다."
-PRESET_SUMMARY: Final = ("<b>{name}</b><br>몸 부품 {bodies}개 · 관절 {joints}개 · 모터·추진기 {actuators}개 · 센서 {sensors}개<br>"
-                         "뇌: 보는 것 {inputs} → {hidden} → 움직이는 것 {outputs}<br>제한 시간 {seconds:g}초")
-PRESET_KEYS_TITLE: Final = "조종 키"
-PRESET_STATUS_OK: Final = "✔ 학습을 시작할 수 있습니다 · 보는 것 {inputs}개 · 움직이는 것 {outputs}개"
-PRESET_STATUS_BODY_ONLY: Final = "✔ 학습을 시작할 수 있습니다 · 뇌 없이 몸 수치 {genes}개가 진화합니다"
-PRESET_STATUS_BAD: Final = "✖ 고칠 것 {n}개: {first}"  # 생기면 안 되는 상태(테스트가 지킴). 생기면 까닭을 보임
-PRESET_STATUS_ADJUSTED: Final = "{what}"  # recipe.adjust가 바꾼 것 한 줄
-PRESET_ADJUST_BODY: Final = "세계를 바꿔 몸을 「{body}」(으)로 바꿨습니다."
-PRESET_ADJUST_RULE_OFF: Final = "「{rule}」 규칙은 이 장면에서 쓸 수 없어 껐습니다({why})."
-PRESET_ADJUST_PROP_ON: Final = "「{rule}」 규칙에 필요해서 「{prop}」을(를) 넣었습니다."
-# 「늘 올바른 파일」의 세 층(설계 D38): L2 = 「실험실로 보내기」의 관문(PRESET_ALIVE_*), L3 = 알림뿐(PRESET_PROBE_*)
-PRESET_ALIVE_INSTANT: Final = "시작하자마자 끝납니다. 「{rule}」 규칙이 처음부터 참입니다."
-PRESET_ALIVE_NO_SCORE: Final = "선수의 움직임에 따라 달라지는 점수 규칙이 없어 아직 보낼 수 없습니다."
-PRESET_ALIVE_NO_IO: Final = "뇌가 볼 것이나 움직일 것이 없어 아직 보낼 수 없습니다."
-PRESET_ALIVE_STILL_END: Final = "가만히 두면 {t:.1f}초에 끝납니다({end}). 보낼 수는 있습니다."
-PRESET_ALIVE_FIXES: Final = {"add_rule": "점수 규칙 더하기", "move_part": "시작 자리 옮기기"}
-PRESET_PROBE_RUNNING: Final = "학습할 수 있는지 확인 중…"
-PRESET_PROBE_OK: Final = "✔ 무작위 뇌 {n}개의 점수가 서로 다릅니다(학습할 것이 있습니다)."
-PRESET_PROBE_FLAT: Final = "무작위 뇌 {n}개의 점수가 모두 같습니다. 보낼 수는 있지만 배울 것이 없을 수 있습니다."
-PRESET_PROBE_BUILD: Final = "이 몸은 조립되지 않습니다. 크기를 조금 바꿔 보세요."
-PRESET_BTN_EDIT: Final = "에디터에서 다듬기"
-PRESET_BTN_EDIT_TIP: Final = "지금 프리셋을 에디터에 엽니다. 부품을 하나하나 고칠 수 있습니다."
-PRESET_BTN_PLAY: Final = "직접 해 보기"
-PRESET_BTN_PLAY_TIP: Final = "지금 프리셋을 키보드로 몰아 봅니다. 이 창은 그대로 남고 저장하지 않습니다."
-# 「실험실로 보내기」 단추의 글은 ED_TO_LAB 하나를 함께 쓴다(같은 글의 상수는 하나: 설계 3.4)
-PRESET_BTN_LAB_TIP: Final = "지금 프리셋을 실험실에 보냅니다. 「" + LAB_START + "」을 누르면 학습이 시작됩니다."
-PRESET_BTN_BACK: Final = "◀ 이전"
-PRESET_BTN_NEXT: Final = "다음 ▶"
-PRESET_BTN_RESET_STEP: Final = "이 단계 처음 값으로"
-PRESET_BTN_RESET_STEP_TIP: Final = "이 단계에서 고른 것을 종목 틀의 처음 값으로 되돌립니다."
-PRESET_SAVED: Final = "프리셋을 저장했습니다: {path}"
-PRESET_SAVE_FAILED: Final = "프리셋을 저장하지 못했습니다({reason}). 창은 그대로 두었습니다."
-PRESET_DISCARD: Final = "만들던 프리셋을 버릴까요?"
-PRESET_COACH: Final = ("카드를 고르면 가운데 미리보기가 바로 바뀝니다.",
-                       "아래 단추들은 어느 단계에서든 누를 수 있습니다. 보내기 단추는 학습을 시작할 수 있을 때 켜집니다.",
-                       "더 고치고 싶으면 에디터에서 부품을 하나하나 다듬을 수 있습니다.")
-SETTINGS_PRESET_USAGE_LOG: Final = "「새 프리셋」 창의 쓰임 기록 남기기"
-SETTINGS_PRESET_USAGE_LOG_TIP: Final = "단계마다 걸린 시간과 되돌아간 횟수를 이 PC에만 적습니다. 이름·경로·프리셋 내용은 적지 않습니다."
-
-# ---- 조리법 (presets/recipe.py) ----
-RECIPE_ERR_FORMAT: Final = "이 프리셋의 안내 정보(조리법)를 읽을 수 없습니다: {reason}"
-RECIPE_ERR_NEWER: Final = "더 새로운 프로그램에서 만든 조리법입니다 (조리법 판 {version})."
-RECIPE_ERR_TEMPLATE: Final = "조리법이 가리키는 틀 「{id}」이(가) 없습니다."
-
-# ---- 틀 (presets/template.py, library.py, app/preset/cards.py, app/editor/palette.py·tools.py) ----
-EDC_GROUP_TEMPLATES: Final = "틀"
-EDC_TOOL_TPL_BODY: Final = "몸 틀…"
-EDC_TOOL_TPL_PROP: Final = "물건…"
-EDC_HINT_TPL_BODY: Final = "두 발 막대 사람 같은 몸을 관절·모터·센서까지 한 번에 넣습니다."
-EDC_HINT_TPL_PROP: Final = "땅, 벽, 공, 골대 같은 물건을 넣습니다."
-TPL_PICKER_TITLE: Final = {"body": "몸 틀 고르기", "prop": "물건 고르기", "arena": "경기장 고르기"}
-TPL_BUILTIN: Final = "내장"
-TPL_MINE: Final = "내 틀"
-TPL_CARD_TIP: Final = "{name}\n{description}"
-TPL_PARAM_VALUE: Final = "{value:.2f}{unit}"
-# 내장 틀의 화면 글은 틀 파일이 id로 가리킨다(설계 D55): name_id → TPL_NAMES·TPL_BLURBS, 슬라이더의 label_id → TPL_PARAM_LABELS·TPL_PARAM_TIPS
-TPL_NAMES: Final = {"biped": "두 발 막대 사람", "disc": "원형 선수", "ground_flat": "평평한 땅", "wall": "벽", "ball": "공",
-                    "goal": "골대", "track_side": "달리기 길", "yard_top": "빈 마당"}
-TPL_BLURBS: Final = {"biped": "관절 여섯 개로 걷는 몸", "disc": "바닥을 밀며 다니는 둥근 몸", "ground_flat": "넘어지면 닿는 땅",
-                     "wall": "막는 벽", "ball": "밀면 굴러가는 공", "goal": "공이 들어가는 골대",
-                     "track_side": "오른쪽으로 길게 뻗은 길", "yard_top": "벽으로 둘러싼 빈 마당"}
-TPL_PARAM_LABELS: Final = {"size": "크기", "power": "힘", "balance": "균형 보조", "length": "길이", "width": "폭", "height": "높이",
-                           "bounce": "튀는 정도"}
-TPL_PARAM_TIPS: Final = {
-    "size": "전체 크기입니다. 크면 무겁고 느립니다.", "power": "모터와 밀기의 힘입니다. 너무 세면 몸이 튑니다.",
-    "balance": "몸통이 기울면 바로 세워 주는 보조입니다. 켜면 걷기를 더 빨리 찾습니다.",
-    "length": "가로 길이입니다.", "width": "세로 폭입니다.", "height": "높이입니다.", "bounce": "튀는 정도입니다. 0이면 튀지 않습니다.",
-}
-TPL_MIRROR: Final = "좌우 뒤집어 넣기"
-TPL_MIRROR_TIP: Final = "왼쪽을 보는 몸으로 넣습니다."
-TPL_INSERT: Final = "넣기"
-TPL_INSERT_TIP: Final = "누른 뒤 캔버스에서 놓을 자리를 누르세요."
-TPL_INSERT_HINT: Final = "「{name}」을(를) 놓을 자리를 누르세요. Esc: 취소."
-TPL_INSERTED: Final = "「{name}」을(를) 넣었습니다: 물체 {bodies}개, 관절 {joints}개, 모터·추진기 {actuators}개, 센서 {sensors}개."
-TPL_UNDO_INSERT: Final = "틀 넣기: {name}"
-TPL_NEEDS: Final = "먼저 「{what}」이(가) 있어야 합니다."
-TPL_NEEDS_ADD: Final = "「{what}」도 함께 넣기"
-TPL_NEEDS_ADD_TIP: Final = "이 틀이 닿거나 보는 대상입니다. 함께 넣으면 바로 이어집니다."
-TPL_WRONG_WORLD: Final = "이 틀은 {world}용입니다."
-TPL_WORLD_NAMES: Final = {"side": "옆에서 본 세계", "top": "위에서 본 세계", "any": "어느 세계나"}
-TPL_ERR_FORMAT: Final = "틀 파일을 읽을 수 없습니다: {reason}"
-TPL_ERR_NEWER: Final = "더 새로운 프로그램에서 만든 틀입니다 (틀 판 {version})."
-TPL_ERR_FIELD: Final = "틀의 「{where}」 칸이 잘못됐습니다: {reason}"
-TPL_ERR_REF: Final = "틀 안에 없는 「{name}」을(를) 가리킵니다 ({where})."
-TPL_ERR_SLOT: Final = "빈자리 「{name}」이(가) 빈자리 표에 없습니다."
-TPL_ERR_PARAM_RANGE: Final = "슬라이더 「{id}」의 범위가 잘못됐습니다 (최솟값 ≤ 기본값 ≤ 최댓값이어야 합니다)."
-TPL_ERR_EXPAND: Final = "슬라이더 값이 {which}일 때 만들 수 없는 부품이 있습니다: {reason}"
-TPL_LIB_PROBLEMS: Final = "읽지 못한 내 틀 {n}개가 있습니다. 카드에 마우스를 올리면 까닭이 나옵니다."
-
-# ---- 에디터 캔버스·팔레트: 「새로 그리는 것」 두 단추, 밀기 도구 (app/editor/palette.py, canvas.py, tools.py) ----
-EDC_OWNER_AGENT_TIP: Final = "뇌가 움직이는 몸의 부품입니다. 관절로 서로 이어야 합니다."
-EDC_OWNER_WORLD_TIP: Final = "땅, 벽, 공처럼 뇌가 움직이지 않는 것입니다."
-EDC_WORLD_MOTION: Final = {"static": "고정 (땅·벽)", "dynamic": "움직임 (공·상자)"}
-EDC_WORLD_MOTION_TIP: Final = "고정: 제자리에 박혀 있습니다. 움직임: 밀리고 굴러갑니다."
-EDC_CURSOR_OWNER: Final = {"agent": "에이전트", "world": "세계"}
-EDC_TOOL_MOVE: Final = "밀기(이동)"
-EDC_HINT_MOVE: Final = "에이전트의 움직이는 물체를 누르면 그 물체를 미는 구동기가 붙습니다. 방향키가 비어 있으면 방향키를 받습니다."
-
-# ---- 세계 종류 (app/editor/forms.py·tabs.py: 세계 종류 + 중력 + 바닥 마찰을 한 단계로) ----
-EDP_WORLD_KIND: Final = "세계 종류"
-EDP_WORLD_KINDS: Final = {"side": "옆에서 본 세계", "top": "위에서 본 세계", "custom": "직접 정함"}
-EDP_WORLD_KIND_TIPS: Final = {"side": "중력이 아래로 당깁니다. 땅 위에 서고 걷고 뜁니다.",
-                              "top": "바닥을 위에서 내려다봅니다. 중력이 없고 바닥 마찰로 멈춥니다.",
-                              "custom": "중력을 손으로 적은 세계입니다."}
-EDP_WORLD_KIND_TIP: Final = "옆에서 본 세계인지 위에서 본 세계인지 고릅니다. 중력과 바닥 마찰이 함께 바뀝니다."
-EDP_UNDO_WORLD_KIND: Final = "세계 종류 바꾸기"
-
-# ---- 「규칙」 탭과 규칙 표 (presets/rules.py, app/editor/rules_tab.py, app/preset/*) ----
-EDP_TAB_RULES: Final = "규칙"
-RULES_ADD: Final = "＋ 규칙 더하기"
-RULES_ADD_TIP: Final = "무엇을 하면 점수를 얻고 언제 끝나는지를 쉬운 말로 더합니다."
-RULES_REMOVE_TIP: Final = "이 규칙을 뺍니다."
-RULES_EMPTY: Final = "아직 규칙이 없습니다. 「" + RULES_ADD + "」로 무엇을 하면 점수를 얻는지 정하세요."
-RULES_ADVANCED: Final = "고급 탭에 있는 규칙 {n}개"
-RULES_ADVANCED_TIP: Final = "문장으로 보일 수 없는 사건·종료 조건·점수 블록입니다. 누르면 고급 탭으로 갑니다."
-RULES_FORMULA_NOTE: Final = "이 환경은 점수 수식을 씁니다(「" + EDP_TAB_SCORING + "」 탭). 수식이 있으면 수식이 점수를 정합니다."
-RULES_NEEDS: Final = "{what}이(가) 있어야 합니다."
-RULES_READONLY_TIP: Final = "고급 탭에서 만든 규칙이라 여기서는 읽기만 합니다."
-RULES_TO_ADVANCED: Final = "고급에서 고치기"
-RULES_FIXED_TIP: Final = "제한 시간은 늘 있는 규칙이라 뺄 수 없습니다. 숫자만 고칩니다."
-RULES_UNDO_ADD: Final = "규칙 더하기"
-RULES_UNDO_REMOVE: Final = "규칙 빼기"
-RULES_UNDO_SET: Final = "규칙 고치기"
-# 규칙 종류(6.2.0의 열하나. 6.3.0-B가 대전 규칙 넷을 제자리에서 더한다). 문장의 「이(가)」「을(를)」「(으)로」는 presets의 조사 고르기가 채운다
-RULE_TITLES: Final = {
-    "distance": "간 거리만큼 점수", "fall": "넘어지면 끝", "touch_ends": "닿으면 끝", "touch_penalty": "닿아 있으면 감점",
-    "reach": "들어가면 성공", "near": "가까울수록 점수", "time_limit": "제한 시간", "survive": "오래 버틸수록 점수",
-    "upright": "기울수록 감점", "save_energy": "힘을 아끼면 가산점", "out_ends": "밖으로 나가면 끝",
-}
-RULE_SENTENCES: Final = {
-    "distance": "{part}이(가) {direction}으로 간 거리만큼 점수 (1m에 {per_m}점)",
-    "fall": "{parts}이(가) {what}에 닿거나 {root}이(가) {height}m보다 낮아지면 넘어짐 (실패로 끝, {penalty}점 감점)",
-    "touch_ends": "{part}이(가) {what}에 닿으면 {outcome}",
-    "touch_penalty": "{part}이(가) {what}에 닿아 있는 동안 1초에 {per_s}점 감점",
-    "reach": "{part}이(가) {where}에 들어가면 {outcome} (+{bonus}점)",
-    "near": "{thing}이(가) {where}에 가까울수록 점수 (1m에 {per_m}점, {when})",
-    "time_limit": "제한 시간 {seconds}초",
-    "survive": "오래 버틸수록 점수 (1초에 {per_s}점)",
-    "upright": "{part}이(가) 기울수록 감점 (세기 {weight})",
-    "save_energy": "힘을 아끼면 가산점 (세기 {weight})",
-    "out_ends": "경기장 밖으로 나가면 {outcome}",
-}
-RULE_SLOT_TIPS: Final = {
-    "part": "몸의 어느 부분인지 고릅니다.", "parts": "땅에 닿으면 넘어진 것으로 볼 부분들을 고릅니다.",
-    "root": "높이를 잴 부분을 고릅니다(보통 몸통).", "height": "이 높이보다 낮아지면 넘어진 것으로 봅니다(m).",
-    "penalty": "넘어졌을 때 깎는 점수입니다. 0이면 깎지 않습니다.", "what": "무엇에 닿는지 고릅니다(땅, 벽, 공 등).",
-    "where": "어느 영역인지 고릅니다.", "thing": "무엇을 재는지 고릅니다(공, 선수 등).",
-    "direction": "어느 쪽으로 간 거리인지 고릅니다.", "outcome": "그때 시험이 어떻게 끝나는지 고릅니다.",
-    "per_m": "1m마다 몇 점인지 적습니다.", "per_s": "1초마다 몇 점인지 적습니다.", "bonus": "그때 한 번 더하는 점수입니다.",
-    "seconds": "초로 적습니다.", "weight": "클수록 이 규칙이 점수에 크게 듭니다.", "when": "언제의 거리로 잴지 고릅니다.",
-}
-RULE_DIRECTIONS: Final = {"right": "오른쪽", "left": "왼쪽", "up": "위", "down": "아래"}
-RULE_OUTCOMES: Final = {"failure": "끝(실패)", "success": "성공", "neutral": "끝(중립)"}
-RULE_WHEN: Final = {"min": "가장 가까웠을 때", "final": "끝났을 때"}
-RULE_SUMMARY_TERMS: Final = {
-    "distance": "앞으로 간 거리 × {w:g}", "fall": "− 넘어짐 × {w:g}", "near": "− {thing}에서 {where}까지 거리 × {w:g}",
-    "reach": "{where} 도착 {w:g}점", "survive": "버틴 시간 × {w:g}", "upright": "− 기울기 × {w:g}",
-    "save_energy": "− 힘 × {w:g}", "touch_penalty": "− 닿은 시간 × {w:g}", "other": "고급 블록 {n}개",
-}
-RULE_SUMMARY_NONE: Final = "점수 규칙이 없습니다(모든 개체가 0점)."
-
-# ---- 뜻 검사 여섯과 고치기 (app/editor/document.py: editor_checks, app/editor/fixes.py) ----
-ED_CHECK_GROUND_IS_BODY: Final = "「{name}」은(는) 땅처럼 보이는데 에이전트로 되어 있습니다."
-ED_CHECK_SCORE_FAR: Final = "지금은 「{thing}」이(가) 「{where}」에서 멀수록 점수가 오릅니다."
-ED_CHECK_NO_KEYS: Final = "구동기 {n}개는 키가 없어 직접 조종에서 움직일 수 없습니다."
-ED_CHECK_MOTOR_TWICE: Final = "「{joint}」 관절에 모터가 {n}개 달렸습니다."
-ED_CHECK_JOINT_APART: Final = "「{joint}」 관절이 시작부터 어긋나 있습니다 ({gap:.2f}m)."
-ED_CHECK_NEVER_STOPS: Final = "「{name}」은(는) 한번 밀리면 멈추지 않습니다(바닥 마찰이 없습니다)."
-FIX_BUTTON: Final = "고치기"
-FIX_IGNORE: Final = "괜찮습니다"
-FIX_IGNORE_TIP: Final = "이 알림을 이 프리셋에서 다시 보이지 않습니다."
-FIX_DONE: Final = "고쳤습니다: {what} (되돌리기: Ctrl+Z)"
-FIX_LABELS: Final = {
-    "to_world_static": "세계로 바꾸기 (고정)", "to_world_dynamic": "세계로 바꾸기 (움직임)", "to_ground": "땅으로 바꾸기",
-    "near_is_good": "가까울수록 점수가 오르게", "assign_keys": "키 자동 배정", "drop_motor": "하나 지우기",
-    "align_joint": "지금 자리에서 맞추기", "add_floor_friction": "바닥 마찰 넣기", "add_body_template": "몸 틀 넣기…",
-    "add_state_sensor": "몸 상태 센서 달기", "add_rule": "규칙 더하기…", "pick_tag": "있는 것에서 고르기",
-    "tag_body": "「{name}」에 이 태그 붙이기", "pick_ref": "고르기",
-}
-FIX_TIPS: Final = {
-    "to_world_static": "이 물체를 에이전트에서 빼고 움직이지 않는 세계 물체로 만듭니다.",
-    "to_world_dynamic": "이 물체를 에이전트에서 빼고 밀리는 세계 물체로 만듭니다.",
-    "to_ground": "소유를 세계로, 종류를 고정으로 바꾸고 「땅」 태그를 붙입니다.", "near_is_good": "가중치의 부호를 바꿉니다.",
-    "assign_keys": "키가 없는 구동기에 비어 있는 키를 줍니다.", "drop_motor": "나중에 단 모터를 지웁니다.",
-    "align_joint": "두 물체의 지금 자리에 맞춰 앵커를 다시 적습니다(물체는 움직이지 않습니다).",
-    "add_floor_friction": "바닥 마찰을 넣어 밀린 물체가 서서히 멈추게 합니다.", "add_body_template": "몸 틀 보관함을 엽니다.",
-    "add_state_sensor": "몸의 뿌리 물체에 속도·기울기 센서를 답니다.", "add_rule": "「" + EDP_TAB_RULES + "」 탭의 규칙 더하기를 엽니다.",
-    "pick_tag": "이 장면에 있는 태그 가운데 하나로 바꿉니다.", "tag_body": "그 물체에 이 태그를 붙여 대상이 되게 합니다.",
-    "pick_ref": "있는 부품 가운데 하나로 바꿉니다.",
-}
-
-# ---- 실험실: 「내 프리셋」 묶음과 권장 설정 (app/lab/view.py) ----
-LAB_ENV_GROUPS: Final = {"mine": "내 프리셋"}  # 내장 묶음의 이름은 지금의 LAB_ENV_BUILTIN
-LAB_ENV_GROUPS_TIP: Final = {
-    "mine": "「새 프리셋」이나 에디터로 만들어 내 환경 폴더에 저장한 것입니다(내장 예제의 손대지 않은 사본은 빼고).",
-}
-LAB_ENV_EXPERIMENTAL: Final = "{name} · 실험"
-LAB_PRESET_TRAIN_APPLIED: Final = "이 프리셋의 권장 설정을 넣었습니다: {what}"
-
-# ---- 자체 점검·명령줄 (selftest.py, cli.py) ----
-SELFTEST_CHECK_PRESETS: Final = "새 프리셋 (내장 조리법 만들기와 학습 가능 확인)"
-SELFTEST_PRESETS_DETAIL: Final = "조리법 {n}개, 틀 {t}개, 가장 오래 걸린 것 {ms:.0f}ms"
-SELFTEST_ERR_PRESET: Final = "조리법 「{name}」으로 만든 프리셋에 문제가 있습니다: {reason}"
-CLI_HELP_PRESET: Final = "조리법(JSON)으로 환경 파일을 만듭니다."
-
-# ---------------------------------------------------------------------------
-# 6.2.0 화면 다듬기 (바탕 0단계: polish/plan.md U4의 새 상수. 글은 초안이고 쓰는 묶음이 값을 다듬자고 통합에 알린다)
-# 꺼진 까닭은 style.set_enabled(위젯, 켜짐, 까닭)이 위젯의 동적 속성에만 두고 풍선을 띄울 때 보통 풍선 뒤에 붙인다(toolTip()은 그대로).
-# ---------------------------------------------------------------------------
-# ---- 실험실 (app/lab/view.py: Hb, app/lab/canvas.py의 알림 글: PL) ----
-LAB_WHY_NEED_GEN: Final = "한 세대가 끝나면 쓸 수 있습니다."
-LAB_WHY_NEED_TWO: Final = "두 세대가 지나면 쓸 수 있습니다."
-LAB_WHY_LIVE: Final = "지금 실시간으로 보고 있습니다."
-LAB_WHY_PAUSED_ONLY: Final = "학습을 멈춘 뒤에 쓸 수 있습니다."
-LAB_WHY_SPECTATE_ONLY: Final = "「" + LAB_SPECTATE + "」일 때만 쓸 수 있습니다."
-LAB_WHY_FAST_ONLY: Final = "「" + LAB_FAST + "」일 때만 쓸 수 있습니다."
-LAB_WHY_NO_VIDEO: Final = "다시 보기를 한 번 하면 저장할 수 있습니다."
-LAB_NOTICE_FIRST_GEN: Final = "1세대를 계산하는 중입니다… 개체 {pop}개를 시험하고 있습니다."
-LAB_NOTICE_NEXT_GEN: Final = "다음 세대를 계산하는 중입니다…"
-LAB_STATUS_CHAMP_PENDING: Final = "아직 없음"  # LAB_STATUS의 {champ}: 첫 검증 전(「챔피언(검증) 아직 없음」)
-LAB_LABEL_PICKED: Final = "고른 개체"
-LAB_LOCKED_NOTE: Final = "학습 중에는 바꿀 수 없습니다. 새 실행에서 바꿀 수 있습니다."
-LAB_STOP_APPLY_NOTE: Final = "멈춘 뒤 「" + LAB_APPLY + "」을 눌러야 바뀝니다."
-# ---- 대시보드 「학습 그래프」 쪽 타일의 빈 문장 (app/lab/dashboard.py: PL. 「보는 재미」 타일은 저마다의 *_EMPTY 그대로) ----
-DASH_TILE_EMPTY: Final = {
-    "trend": "학습을 시작하면 세대마다 챔피언·평균 점수가 선으로 그려집니다.",
-    "heatmap": "학습을 시작하면 세대마다 집단의 점수가 어디에 몰려 있는지 색으로 칠합니다.",
-    "diversity": "학습을 시작하면 찾는 범위가 얼마나 넓은지와 개체들이 서로 얼마나 다른지를 그립니다.",
-    "blocks": "학습을 시작하면 점수가 어느 항목에서 나오는지 쌓아서 보여 줍니다.",
-    "ends": "학습을 시작하면 시험이 어떻게 끝났는지의 비율을 보여 줍니다.",
-    "perf": "학습을 시작하면 세대마다 걸린 시간과 초당 스텝 수를 그립니다.",
-}
-# ---- 주 창 상태 막대의 꼬리표와 창 제목 (app/main.py: Ha) ----
-MAIN_CHIP: Final = "{state} · {gen}세대"
-MAIN_TITLE_RUN: Final = "{env} · {state} {gen}세대 — {app}"
-# ---- 에디터 도구 줄 (app/editor/view.py: ED2) ----
-ED_WHY_ERRORS: Final = "오류 {n}개를 고치면 쓸 수 있습니다. 아래 「" + EDP_TAB_ISSUES + "」 탭을 보세요."
-# ---- 기록 (app/records/view.py: PC) ----
-REC_WHY_PICK: Final = "목록에서 실행을 고르면 쓸 수 있습니다."
-REC_PICK_NOTE: Final = "목록에서 실행을 고르면 단추가 켜집니다."
-# ---- 직접 조종 (app/play/window.py: Hb, 하면 좋음 U13) ----
-PLAY_WHY_SAVE: Final = "한 판이 끝나면 저장할 수 있습니다."
-# ---- 날짜 (app/style.py: fmt_when. 기록·비교의 시작 시각) ----
-STYLE_WHEN: Final = "{month}월 {day}일 {hour:02d}:{minute:02d}"
-STYLE_WHEN_YEAR: Final = "{year}년 {month}월 {day}일 {hour:02d}:{minute:02d}"

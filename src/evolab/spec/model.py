@@ -16,9 +16,9 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-CURRENT_VERSION = 4
+CURRENT_VERSION = 3
 """환경 파일 형식 번호. 1: v1.x. 2: v2.0(정해진 움직임 물체, 장애물 줄, 점프 추진기, 공기역학, 날개 모양, 모양별 밀도).
-3: v2.1(몸 구조 진화: 물체의 있음 칸 exists). 4: 6.2.0(세계 종류 view, 바닥 마찰 damping, 밀기 구동기 Move, 균형 보조 Balance).
+3: v2.1(몸 구조 진화: 물체의 있음 칸 exists).
 
 칸·종류·값마다 생긴 형식을 spec/io.py의 FIELD_SINCE·KIND_SINCE·VALUE_SINCE에 적고, 저장과 해시는 그 내용을 담을 수
 있는 가장 낮은 형식으로 한다(v1 기능만 쓴 파일은 v1.x가 쓴 글과 글자까지 같다). 새 칸은 반드시 다음 형식 번호로
@@ -55,11 +55,6 @@ class World(_Model):
     """(x_min, y_min, x_max, y_max). 에이전트 물체 중심이 밖으로 나가면 out_of_bounds 사건."""
     contact_debounce: float = Field(default=0.1, ge=0.0, le=1.0)
     """접촉 센서와 contact() 조건은 이 시간 안에 닿았으면 닿은 것으로 본다(튀는 다리의 깜빡임 방지)."""
-    view: Literal["side", "top"] = "side"
-    """세계 종류(형식 4). side: 옆에서 본 세계(중력이 있음). top: 위에서 본 세계(중력 없이 바닥 위를 미끄러짐).
-    물리는 바꾸지 않는다(그리기·에디터·검사만): top이면 중력이 (0, 0)이어야 한다."""
-    damping: float = Field(default=1.0, gt=0.0, le=1.0)
-    """바닥 마찰(감쇠, 형식 4): 1초 뒤에 남는 속도의 비율(0 < d ≤ 1, 선속도·각속도 모두). 1이면 줄지 않는다(옛 뜻)."""
 
 
 class Param(_Model):
@@ -368,52 +363,7 @@ class Aero(_Model):
     """all: 사각형·다각형·방사형·날개 모양 테두리가 모두 공기를 받음. wings: 날개 모양만."""
 
 
-class Move(_Model):
-    """밀기(이동) 구동기(형식 4). 물체를 바닥 위에서 민다(원형 선수, 미끄러지는 받침). 출력 범위 -1..1.
-
-    mode가 xy면 출력 둘 <id>.x, <id>.y(두 방향으로 밂), x면 <id>.x 하나(옆에서 본 세계의 좌우), heading이면
-    <id>.forward(몸 방향으로 밂), <id>.turn(각속도 = 출력 x max_turn). 힘 = 출력 x max_force − (max_force / max_speed) x 속도라서
-    최고 속도가 max_speed다(한 스텝을 지수로 적분).
-    """
-
-    kind: Literal["move"]
-    id: Id
-    label: Label = ""
-    body: Ref
-    mode: Literal["xy", "x", "heading"] = "xy"
-    max_force: Num
-    """출력이 1일 때의 힘(N)."""
-    max_speed: Num
-    """이 속도에서 더 빨라지지 않는다(m/s). 0보다 커야 한다."""
-    max_turn: Num = 6.0
-    """heading에서 출력이 1일 때 도는 속도(rad/s)."""
-    keys_up: list[str] = []
-    keys_down: list[str] = []
-    keys_left: list[str] = []
-    keys_right: list[str] = []
-
-
-class Balance(_Model):
-    """균형 보조(형식 4, 출력 채널 없음). 물체에 바깥 토크를 건다(반작용 없음):
-    토크 = clamp(−stiffness x (각도 − target) − damping x 각속도, ±max_torque). 진화가 걷기를 더 빨리 찾게 돕는다."""
-
-    kind: Literal["balance"]
-    id: Id
-    label: Label = ""
-    body: Ref
-    stiffness: Num
-    """세우는 힘(N·m/rad)."""
-    damping: Num = 0.0
-    """도는 속도를 줄이는 정도(N·m·s/rad)."""
-    max_torque: Num
-    """보조가 낼 수 있는 가장 큰 토크(N·m)."""
-    target: Num = 0.0
-    """보조가 맞추려는 몸 각도(라디안). 0은 똑바로 선 자세."""
-
-
-Actuator = Annotated[
-    Union[FuelTank, Thruster, Vehicle, Motor, Jump, Aero, Move, Balance], Field(discriminator="kind")
-]
+Actuator = Annotated[Union[FuelTank, Thruster, Vehicle, Motor, Jump, Aero], Field(discriminator="kind")]
 
 
 # ---------------------------------------------------------------------------

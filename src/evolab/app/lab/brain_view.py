@@ -37,7 +37,6 @@ from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QHelpEvent, QImag
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from evolab.app import strings as S
-from evolab.app import style
 from evolab.app.lab.dashboard import Dashboard, Theme, _blend, _escape
 from evolab.app.lab.history import GUI_PRIORITY
 from evolab.app.lab.watch_tiles import _WatchTile
@@ -762,8 +761,7 @@ class BrainView(QWidget):
                 QToolTip.hideText()
                 event.ignore()
             else:
-                tip = self.node_tip(*hit)
-                QToolTip.showText(event.globalPos(), style.wrap_tip(tip) or tip, self)  # 긴 풍선은 꺾음(6.2.0 U3)
+                QToolTip.showText(event.globalPos(), self.node_tip(*hit), self)
             return True
         return super().event(event)
 

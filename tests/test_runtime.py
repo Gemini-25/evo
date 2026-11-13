@@ -308,11 +308,19 @@ def test_rot_spring_holds_rest_angle(lander: EnvSpec) -> None:
 
 
 def test_episode_build_cost_is_small(lander: EnvSpec) -> None:
+    """에피소드 하나를 만드는 비용이 작다(시험마다 세계를 새로 만드는 설계의 전제).
+
+    처음 한 번은 재지 않는다(모듈 불러오기·C 함수 찾기 같은 한 번뿐인 일이 섞인다). 20번의 평균이 아니라 중앙값을 본다:
+    윈도우 CI 러너가 잠깐 멈추면 평균이 한두 번의 긴 값에 끌려간다(v6.1 CI에서 평균 52.9ms로 한 번 넘음. 리눅스의 실제 값은 2~3ms)."""
+    import statistics
     import time
 
-    t0 = time.perf_counter()
+    Episode(lander, None, Trial(0))
+    times = []
     for s in range(20):
+        t0 = time.perf_counter()
         Episode(lander, None, Trial(s))
-    per = (time.perf_counter() - t0) / 20
-    print(f"lander episode build: {per * 1000:.2f} ms")
+        times.append(time.perf_counter() - t0)
+    per = statistics.median(times)
+    print(f"lander episode build: median {per * 1000:.2f} ms, max {max(times) * 1000:.2f} ms")
     assert per < 0.05

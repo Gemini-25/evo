@@ -6,21 +6,16 @@
 
 - 주 창: `install(app, window)`가 주 창의 화면(main, 에디터, 실험실, 비교, 기록)에 한 번 붙인다.
 - 따로 뜨는 창(직접 조종, 나란히 경주, 반복 실행, 오류 보고, 내보내기): 앱 이벤트 필터가 그 창의 첫 `Show` 이벤트에서 한 번 붙인다.
-- 같은 앱 필터가 풍선을 띄운다(6.2.0 U3): 긴 풍선은 420px 폭으로 꺾고(`style.wrap_tip`), 꺼진 위젯은 「꺼진 까닭」을 붙이며
-  (`style.tip_text`), 표·목록·나무 칸의 긴 풍선도 꺾는다. `toolTip()`에 든 글은 바꾸지 않는다.
-- 같은 필터가 `ApplicationPaletteChange`에서 `style.refresh_theme()`을 부른다(6.2.0 U1: 꾸민 위젯은 팔레트 바뀜을 받지 못한다).
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QHelpEvent
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QFormLayout, QMainWindow, QToolTip, QWidget
+from PySide6.QtCore import QEvent, QObject
+from PySide6.QtWidgets import QApplication, QFormLayout, QMainWindow, QWidget
 
 from evolab.app import strings as S
-from evolab.app import style
 from evolab.app.help import anchors
 
 MAIN_SCREENS: Final = ("main", *anchors.TAB_SCREENS)
@@ -61,7 +56,7 @@ def apply_tooltips(root: QWidget, screen: str) -> int:
 
 
 class WindowTips(QObject):
-    """앱 이벤트 필터: 따로 뜨는 창이 처음 보일 때 그 창 화면의 풍선 도움말을 붙이고, 풍선을 띄우며(U3), 테마가 바뀌면 다시 입힌다(U1)."""
+    """따로 뜨는 창이 처음 보일 때 그 창 화면의 풍선 도움말을 붙이는 앱 이벤트 필터."""
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -69,37 +64,9 @@ class WindowTips(QObject):
         """(화면, 붙인 수) 차례(테스트용)."""
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        kind = event.type()
-        if kind == QEvent.Type.Show and obj.isWidgetType():
+        if event.type() == QEvent.Type.Show and obj.isWidgetType():
             self.window_shown(obj)  # type: ignore[arg-type]
-        elif kind == QEvent.Type.ToolTip and obj.isWidgetType() and isinstance(event, QHelpEvent):
-            return self.show_tip(obj, event)  # type: ignore[arg-type]
-        elif kind == QEvent.Type.ApplicationPaletteChange:
-            style.refresh_theme()
         return False
-
-    def show_tip(self, widget: QWidget, event: QHelpEvent) -> bool:
-        """풍선 하나를 띄운다. 참이면 이 필터가 띄웠고, 거짓이면 Qt가 하던 대로(짧은 보통 풍선, 빈 풍선은 부모로 올라감).
-
-        ① 위젯 풍선: style.tip_text(보통 풍선, 꺼져 있으면 + 까닭). 한 줄이 420px을 넘으면 싸서, 아니면 까닭이 붙었을 때만 띄운다.
-        ② 표·목록·나무의 뷰포트(위젯 풍선이 빔): 그 칸의 ToolTipRole 글이 길면 싸서 띄운다(칸의 글은 그대로).
-        """
-        text = style.tip_text(widget)
-        if not text:
-            view = widget.parentWidget()
-            if isinstance(view, QAbstractItemView) and widget is view.viewport():
-                index = view.indexAt(event.pos())
-                tip = index.data(Qt.ItemDataRole.ToolTipRole) if index.isValid() else None
-                wrapped = style.wrap_tip(tip) if isinstance(tip, str) else None
-                if wrapped is not None:
-                    QToolTip.showText(event.globalPos(), wrapped, widget, view.visualRect(index))
-                    return True
-            return False
-        wrapped = style.wrap_tip(text)
-        if wrapped is None and text == widget.toolTip():
-            return False
-        QToolTip.showText(event.globalPos(), wrapped or text, widget)
-        return True
 
     def window_shown(self, widget: QWidget) -> None:
         if not widget.isWindow() or widget.property(APPLIED_PROPERTY):

@@ -48,7 +48,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Final, Protocol
 
@@ -86,10 +86,6 @@ RECOMMENDED_RESTART_PATIENCE = 20000
 STRUCTURE_FLIP_NEW_RUN: Final = 0.05
 """구조 뒤집기 확률의 새 실행 권장값(v2.1, 설계 D41). 환경에 있음 유전자가 있을 때만 for_new_run(spec)이 GA·담금질
 둘 다에 넣는다(실험실 폼, 명령줄 train, 반복 실행). NEW_RUN_DEFAULTS와 달리 환경에 따라 정해진다."""
-
-PRESET_TRAIN_KEYS: Final = ("qualify_entrants", "qualify_trials", "restart_patience", "restart_from")
-"""프리셋이 권할 수 있는 새 실행 설정 키(6.2.0, 설계 D31): 환경 파일의 editor.train에서 for_new_run(spec)이 이 키만 받는다.
-editor는 해시·런타임 밖이라 이 값을 고쳐도 환경 버전이 그대로다. 이 칸을 읽는 곳은 for_new_run 하나뿐이다."""
 
 SWITCH_NONE, SWITCH_RESTART_FRESH, SWITCH_RESTART_CHAMPION, SWITCH_QUALIFY_NEXT, SWITCH_QUALIFY_PICK = 0, 1, 2, 3, 4
 """통계 열 switch 값: 이 세대 끝에 일어난 학습 방법 교체(0 없음, 1 처음 상태에서 새로 시작, 2 챔피언에서 새로 시작,
@@ -311,18 +307,13 @@ class TrainConfig:
 
     @classmethod
     def for_new_run(cls, spec: EnvSpec | None = None, /, **values: Any) -> TrainConfig:
-        """새 실행의 설정: NEW_RUN_DEFAULTS(자동 재시작 등 권장값) → 구조 뒤집기 → 프리셋 권장값(editor.train) → values 순서로 얹는다.
+        """새 실행의 설정: NEW_RUN_DEFAULTS(자동 재시작 등 권장값) 위에 values.
 
         spec(v2.1)을 주면 그 환경에 있음 유전자(layout.on_genes)가 있을 때 GA·담금질 구조 뒤집기 확률을
         STRUCTURE_FLIP_NEW_RUN으로 둔다(values가 더 우선). 유전자 배치를 만들 수 없는 환경은 넣지 않는다(학습을 시작할 때
         Trainer가 같은 오류를 한국어로 알린다).
-
-        (6.2.0, 설계 D31) spec의 환경 파일에 editor.train이 있으면 PRESET_TRAIN_KEYS의 키만 얹는다. 권장값일 뿐이라 모르는 키,
-        형·범위가 틀린 값, 검증 주기와 맞지 않아 validate()가 거절할 값은 조용히 뺀다. editor.train이 없는 환경(옛 파일 전부)은
-        v6.1과 같은 설정이다.
         """
         structure: dict[str, Any] = {}
-        preset: dict[str, Any] = {}
         if spec is not None:
             try:
                 on = layout_for(spec).on_genes
@@ -330,38 +321,7 @@ class TrainConfig:
                 on = ()
             if on:
                 structure = {"ga_structure_flip": STRUCTURE_FLIP_NEW_RUN, "sa_structure_flip": STRUCTURE_FLIP_NEW_RUN}
-            preset = _preset_train(spec, values)
-        return cls(**{**NEW_RUN_DEFAULTS, **structure, **preset, **values})
-
-
-def _preset_train(spec: EnvSpec, values: Mapping[str, Any]) -> dict[str, Any]:
-    """spec의 editor.train에서 새 실행 설정에 얹을 키(for_new_run만 부른다). 틀린 것은 빼고 돌려준다(예외 없음)."""
-    from evolab.spec.editor_meta import editor_train
-
-    def is_int(v: Any) -> bool:
-        return isinstance(v, int) and not isinstance(v, bool)
-
-    raw = editor_train(getattr(getattr(spec, "file", None), "editor", None))
-    ok: dict[str, Callable[[Any], bool]] = {
-        "qualify_entrants": lambda v: is_int(v) and 1 <= v <= MAX_QUALIFY_ENTRANTS,
-        "qualify_trials": lambda v: is_int(v) and v >= 1,
-        "restart_patience": lambda v: v is None or (is_int(v) and v >= 1),
-        "restart_from": lambda v: isinstance(v, str) and v in RESTART_FROM,
-    }
-    out = {key: raw[key] for key in PRESET_TRAIN_KEYS if key in raw and ok[key](raw[key])}
-    # 검증 주기와의 관계(validate()가 보는 것): 부르는 쪽이 준 주기가 올바르면 그것, 아니면 데이터클래스 기본값
-    every = values.get("validate_every")
-    if not is_int(every) or every < 1:
-        every = TrainConfig.__dataclass_fields__["validate_every"].default
-    patience = out.get("restart_patience")
-    if patience is not None and patience < every:
-        del out["restart_patience"]
-    merged = {**NEW_RUN_DEFAULTS, **out, **values}
-    entrants, trials = merged.get("qualify_entrants"), merged.get("qualify_trials")
-    if is_int(entrants) and entrants > 1 and is_int(trials) and trials < every:
-        out.pop("qualify_entrants", None)  # 예선 출전자마다 한 번은 검증받아야 한다: 맞지 않는 권장 예선은 통째로 뺀다
-        out.pop("qualify_trials", None)
-    return out
+        return cls(**{**NEW_RUN_DEFAULTS, **structure, **values})
 
 
 @dataclass
