@@ -8,7 +8,10 @@
   그래프를 누르면 가장 가까운 세대가 보는 세대가 된다(dash.focus_requested, 실험실이 타임라인을 옮긴다). 가로축은 대시보드 가로축
   고르기(세대·누적 시험·경과 시간)를 따른다.
 - 빈 상태: 뇌 없는 환경은 v2.0 DASH_EMPTY_NO_BRAIN, 통계가 아직 없으면 GROW_TILE_EMPTY, 통계에 열이 없으면(크기 고정·옛 실행)
-  GROW_TILE_FIXED(틀의 은닉 뉴런 합과 연결 수).
+  GROW_TILE_FIXED(틀의 은닉 뉴런 합과 연결 수). 은닉층이 없는 뇌면 「자라기」를 고를 수 없으므로 권유 대신 까닭을 적은
+  GROW_TILE_FIXED_NO_HIDDEN.
+- 오른쪽(연결) 눈금은 늘 왼쪽(뉴런) 눈금 × (다 자란 연결 수 ÷ 틀 뉴런 합)이다(_sync_links_axis): 점선을 뉴런 좌표로 그리므로,
+  타일을 끌거나 확대해 왼쪽 눈금이 바뀌면 오른쪽 눈금도 같이 바뀌어야 점선 높이와 눈금이 맞는다.
 - 갱신은 대시보드 펌프를 따른다(보일 때만). 갱신 한 번은 열 셋을 읽어 곡선 둘에 setData하는 것뿐이다.
 
 학습 결과와 무관한 화면 전용 코드다.
@@ -35,9 +38,6 @@ from evolab.app.lab.dashboard import (
     _pen,
 )
 from evolab.app.lab.watch_tiles import _focus_line, _WatchTile
-
-Y_PAD = 0.05
-"""세로 범위 여유(틀 합·다 자란 연결 수 위아래, 비율). 왼쪽 눈금은 _Tile.fix_y(padding 0.05)라 같은 값이어야 두 눈금이 맞는다."""
 
 
 def frame_totals(brain: Any) -> tuple[int, int]:
@@ -98,10 +98,13 @@ class GrowTile(_WatchTile):
         self.full_links = 0
         """다 자란 연결 수(오른쪽 눈금 끝)."""
         self._links_range: tuple[float, float] | None = None
+        """오른쪽 눈금에 마지막으로 놓은 세로 범위(_sync_links_axis)."""
+        # 끌기·확대·fix_y·보기 되돌리기 모두 이 신호를 낸다(위 값들이 생긴 뒤에 잇는다)
+        self.plot.vb.sigYRangeChanged.connect(self._sync_links_axis)
 
     # -- 대시보드 갈고리 --------------------------------------------------------
     def meta_changed(self) -> None:
-        self._links_range = None
+        pass
 
     def history_reset(self) -> None:
         pass
@@ -110,10 +113,23 @@ class GrowTile(_WatchTile):
         self.links_view.setGeometry(self.plot.vb.sceneBoundingRect())
         self.links_view.linkedViewChanged(self.plot.vb, self.links_view.XAxis)
 
+    def links_per_neuron(self) -> float:
+        """오른쪽(연결) 눈금 ÷ 왼쪽(뉴런) 눈금 = 다 자란 연결 수 ÷ 틀 뉴런 합. 점선은 연결 수를 이 값으로 나눠 뉴런 좌표에 그린다."""
+        return float(max(1, self.full_links)) / float(max(1, self.total))
+
+    def _sync_links_axis(self, *_args: Any) -> None:
+        """오른쪽 눈금의 세로 범위 = 뉴런 그래프의 지금 세로 범위 × links_per_neuron(여유 없이). 사용자가 타일을 끌거나 확대해도,
+        틀이 바뀌어도 점선 높이를 오른쪽 눈금으로 읽으면 그 세대의 연결 수다."""
+        (_x0, _x1), (y0, y1) = self.plot.vb.viewRange()
+        k = self.links_per_neuron()
+        want = (float(y0) * k, float(y1) * k)
+        if want != self._links_range:  # 갱신마다 부르므로 바뀔 때만
+            self._links_range = want
+            self.links_view.setYRange(*want, padding=0.0)
+
     def reset_view(self) -> None:
         super().reset_view()
-        if self._links_range is not None:
-            self.links_view.setYRange(*self._links_range, padding=0.0)
+        self._sync_links_axis()
 
     # -- 갱신 ------------------------------------------------------------------
     def update_data(self) -> None:
@@ -131,7 +147,9 @@ class GrowTile(_WatchTile):
                 self._empty(S.GROW_TILE_EMPTY)
             else:
                 neurons, links = frame_totals(meta.layout.brain)
-                self._empty(S.GROW_TILE_FIXED.format(neurons=neurons, links=links))
+                # 은닉층이 없는 뇌는 실험실 「뇌」에서 「자라기」를 고를 수 없다(LAB_BRAIN_GROW_NO_HIDDEN): 권유 대신 까닭을
+                text = S.GROW_TILE_FIXED if meta.layout.brain.hidden else S.GROW_TILE_FIXED_NO_HIDDEN
+                self._empty(text.format(neurons=neurons, links=links))
             return
         if meta is not None:
             self.total, self.full_links = frame_totals(meta.layout.brain)
@@ -143,14 +161,11 @@ class GrowTile(_WatchTile):
         self.xs = self.x_values()[series.rows]
         self.gens = d.col("generation")[series.rows]
         top = float(max(1, self.total))
-        hi = float(max(1, self.full_links))
         self.neurons_curve.setData(self.xs, series.neurons)
-        self.links_curve.setData(self.xs, series.links * (top / hi))  # 오른쪽 눈금(0..hi)과 왼쪽 눈금(0..top)이 같은 높이
+        # 오른쪽 눈금(0..다 자란 연결 수)과 왼쪽 눈금(0..틀 뉴런 합)이 같은 높이가 되게 뉴런 좌표로 바꿔 그린다
+        self.links_curve.setData(self.xs, series.links / self.links_per_neuron())
         self.keep_y(self.plot, 0.0, top)
-        want = (-Y_PAD * hi, hi * (1.0 + Y_PAD))  # 뉴런 그래프(fix_y의 padding 0.05)와 같은 여유
-        if want != self._links_range:
-            self._links_range = want
-            self.links_view.setYRange(*want, padding=0.0)
+        self._sync_links_axis()  # 세로 범위가 그대로여도 틀(눈금 비)이 바뀌었을 수 있다
         self._sync_views()
         self._place_focus()
         self.stack.setCurrentWidget(self.view)

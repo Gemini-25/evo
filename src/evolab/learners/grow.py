@@ -24,7 +24,12 @@
   "growths", "grown"(이 tell에서 자랐으면 1.0).
 - 난수: 안쪽 pycma RandomState(지금 CMAES처럼 안쪽 상태에 피클), 새 뉴런 가중치용 PCG64(상태 "rng"). 시드: 안쪽 처음 = 학습 방법
   시드(cma.seed), k번째 자람(1부터) = seeds.derive(학습 방법 시드, GROW_SEED_WORD, k) & 0xFFFFFFFF, PCG64 =
-  seeds.derive(학습 방법 시드, GROW_RNG_WORD). 낱말을 나눠 섞는다(명세 A27과 같은 이유). numpy 전역 난수 없음.
+  seeds.derive(학습 방법 시드, GROW_RNG_WORD). 낱말을 나눠 섞는다(명세 A27과 같은 이유). 이 학습 방법은 numpy 전역 난수를 쓰지 않고
+  결과도 전역 난수 상태와 무관하다. 단 켜진 좌표가 300개 이상이면(pycma TPA_dimension: 바퀴 로봇처럼 큰 틀이 다 자란 뒤) 안쪽
+  pycma가 폭 적응을 TPA로 고르고, 그 일관성 검사(CMAAdaptSigmaTPA.check_consistency)가 tell마다 np.random.randint로 좌표 번호를
+  뽑아 전역 난수 상태를 앞으로 민다. 그 번호는 경고 한 줄을 낼지 정할 뿐 후보·평균·폭에는 닿지 않는다(크기 고정 CMA-ES도 300차원
+  이상이면 같음, learners/cmaes.py). 그래서 「전역 난수 상태가 그대로」는 켜진 좌표 300개 미만에서만 성립하고, 300개 이상에서는 「전역
+  난수 시드를 바꿔도 같은 후보」가 성립한다(tests/test_grow.py T34가 둘 다 본다).
 - 상태(형식 GROW_STATE_FORMAT, 설계 2.3 + 아래 덧붙인 키): 피클할 수 있고 다른 프로세스에서 그대로 이어진다. ask()와 tell() 사이에
   저장하면 그 ask() 직전 상태(안쪽 CMAES 규칙, 이 학습 방법의 다른 값은 ask에서 바뀌지 않음)이고, 불러온 뒤 ask()는 같은 후보를
   낸다. 체크포인트는 세대 끝에 저장되고 자람은 tell 안에서 일어나므로 「자라야 하는데 아직 안 자란」 상태는 저장되지 않는다(3.3).

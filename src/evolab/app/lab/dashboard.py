@@ -20,6 +20,10 @@
 - v6.1 자라는 뇌(설계 4.19, D38): 「보는 재미」 쪽 「뇌 들여다보기」 바로 뒤에 「뇌 크기」 타일(brainsize, grow_tile.py). 통계 열
   grow = 1인 세대에 자동 세로선 종류 "grow"(auto_marks, 범주 색 3 점선, 풍선 DASH_MARK_GROW, 점수 추이 범례 DASH_TREND_GROW).
   자람과 학습 방법 교체가 같은 세대면 세로선 둘. 열이 없는 실행(크기 고정·옛 실행)은 아무것도 더 그리지 않는다.
+  점수 추이 타일만 「뇌가 자람」 세로선·범례를 범주 색 3과 글자색을 섞은 색으로 긋는다(trend_grow_color: 그 타일의 「평균」 선이
+  범주 색 3이라 범례에 같은 색이 둘이 되지 않게). 옛 배치(v6.0까지 저장한 순서)에는 「뇌 크기」를 「뇌 들여다보기」 바로 뒤에
+  끼운다(NEW_TILE_AFTER). 풍선의 자란 뒤 크기는 다음 줄의 brain_neurons, 다음 줄을 쓸 수 없으면 학습 방법의 규칙으로 센 값
+  (_grown_size: 층마다 두 배, 틀에서 멈춤), 그것도 알 수 없으면 옛 크기만(DASH_MARK_GROW_FROM).
 """
 
 from __future__ import annotations
@@ -80,7 +84,11 @@ TILE_IDS: tuple[str, ...] = ("trend", "heatmap", "diversity", "blocks", "ends", 
 FUN_TILE_IDS: tuple[str, ...] = ("genemap", "brain", "brainsize", "density", "actions", "body", "structure")
 """「보는 재미」 쪽 타일(v1.2, 이 순서가 기본 배치). brain(BrainTile)은 app/lab/brain_view.py, brainsize(v6.1 「뇌 크기」,
 GrowTile, 「뇌 들여다보기」 바로 뒤)는 app/lab/grow_tile.py, structure(v2.1 몸 구조, StructureTile)는 app/lab/structure_tile.py에
-있다. 예전 배치에 없는 타일은 _load_settings가 뒤에 붙인다."""
+있다. 예전 배치에 없는 타일은 _load_settings가 뒤에 붙인다(NEW_TILE_AFTER에 있는 타일은 정해진 타일 바로 뒤에 끼운다)."""
+NEW_TILE_AFTER: dict[str, str] = {"brainsize": "brain"}
+"""예전에 저장한 배치에 없는 타일 가운데 정해진 타일 바로 뒤에 끼울 것(v6.1 「뇌 크기」는 「뇌 들여다보기」 바로 뒤, v6 설계 4.19:
+v6.0까지 쓰던 사람도 새 사람과 같은 자리에서 본다). 그 타일이 저장된 배치에 없거나 여기에 없는 새 타일은 지금처럼 뒤에 붙인다
+(v2.1 「몸 구조」는 끝)."""
 ALL_TILE_IDS: tuple[str, ...] = TILE_IDS + FUN_TILE_IDS
 PAGES: tuple[str, ...] = ("learning", "fun")
 TILE_PAGES: dict[str, tuple[str, ...]] = {"learning": TILE_IDS, "fun": FUN_TILE_IDS}
@@ -196,7 +204,8 @@ def mark_style(kind: str) -> str:
 
 
 def mark_pen(theme: Theme, style: str) -> QPen:
-    """세로선 펜: 사건은 회색 점선, 자동 재시작은 실선, 예선은 점점선, 뇌가 자람은 범주 색 3 점선(v6.1)."""
+    """세로선 펜: 사건은 회색 점선, 자동 재시작은 실선, 예선은 점점선, 뇌가 자람은 범주 색 3 점선(v6.1). 타일은 _Tile.pen_for_mark로
+    부른다: 점수 추이 타일만 「뇌가 자람」을 trend_grow_color로 바꾼다."""
     if style == "restart":
         return _pen(theme.series[7], 1.5)
     if style == "qualify":
@@ -204,6 +213,13 @@ def mark_pen(theme: Theme, style: str) -> QPen:
     if style == "grow":
         return _pen(theme.series[3], 1.5, Qt.PenStyle.DashLine)
     return _pen(theme.ink2, 1, Qt.PenStyle.DashLine)
+
+
+def trend_grow_color(theme: Theme) -> str:
+    """점수 추이 타일의 「뇌가 자람」 세로선·범례 색(v6.1 고침): 범주 색 3과 글자색을 반씩 섞은 색. 그 타일은 「평균」 선이 범주 색 3
+    (_TrendTile.LINES)이고 범주 색 0~7을 모두 쓰고 있어, 세로선까지 범주 색 3이면 범례에 같은 호박색이 서로 상관없는 두 항목으로
+    나온다. 「뇌 크기」 타일·뇌 그림의 호박색 계열은 지키되 밝은 화면에서는 더 어둡게, 어두운 화면에서는 더 밝게 갈라 놓는다."""
+    return _blend(theme.series[3], theme.ink, 0.5)
 
 
 def _shade_region(brush: QColor, z: float) -> pg.LinearRegionItem:
@@ -729,6 +745,10 @@ class _Tile(QFrame):
     def x_values(self) -> np.ndarray:
         return self.dash.x_values(self.follows_axis)
 
+    def pen_for_mark(self, style: str) -> QPen:
+        """이 타일이 긋는 세로선의 펜(펜 묶음 style: mark_style). 기본은 mark_pen(색 묶음, style)."""
+        return mark_pen(self.theme, style)
+
     def sync_marks(self) -> None:
         xs, tips, labels, kinds = self.dash.mark_positions(self.follows_axis)
         key = (xs.tobytes(), tuple(tips), tuple(kinds))
@@ -744,7 +764,7 @@ class _Tile(QFrame):
                 line = pg.InfiniteLine(
                     angle=90,
                     movable=False,
-                    pen=mark_pen(t, "event"),
+                    pen=self.pen_for_mark("event"),
                     label="" if labelled else None,
                     labelOpts={"position": 0.96, "color": t.ink2, "fill": _qcolor(t.surface, 210), "anchors": [(0, 0), (0, 0)]}
                     if labelled
@@ -768,7 +788,7 @@ class _Tile(QFrame):
                     continue
                 x, tip, label, style = want
                 if before is None or before[3] != style:
-                    line.setPen(mark_pen(t, style))
+                    line.setPen(self.pen_for_mark(style))
                 # 먼저 보인다: 이름표(InfLineLabel)는 숨은 동안 글자·위치를 고치지 않고, 선을 다시 보일 때도 고치지 않는다
                 # (숨겼던 선을 새로 쓰면 이름표가 비거나 앞 표시의 글자가 남는다)
                 line.show()
@@ -898,6 +918,11 @@ class _TrendTile(_Tile):
         self._regions: list[pg.LinearRegionItem] = []
         self.ranges: list[tuple[float, float]] = []  # 정체 구간(세대 기준)
 
+    def pen_for_mark(self, style: str) -> QPen:
+        if style == "grow":  # v6.1 고침: 「평균」 선(범주 색 3)과 같은 색을 피한다(trend_grow_color)
+            return _pen(trend_grow_color(self.theme), 1.5, Qt.PenStyle.DashLine)
+        return super().pen_for_mark(style)
+
     def update_data(self) -> None:
         d = self.dash
         x = self.x_values()
@@ -971,8 +996,8 @@ class _TrendTile(_Tile):
         mb = self.dash.my_best
         if mb is not None:
             out.append(_Entry(t.series[5], GLYPH_DASH, S.DASH_MY_BEST, lambda _i: fmt_value(mb)))
-        if d.grow_marks:  # v6.1: 뇌가 자란 세대 세로선(자라는 뇌 실행만)
-            out.append(_Entry(t.series[3], GLYPH_DASH, S.DASH_TREND_GROW))
+        if d.grow_marks:  # v6.1: 뇌가 자란 세대 세로선(자라는 뇌 실행만). 세로선과 같은 색(「평균」의 범주 색 3과 다름)
+            out.append(_Entry(trend_grow_color(t), GLYPH_DASH, S.DASH_TREND_GROW))
         if d.qualify_rows is not None:
             out.append(_Entry(_blend(t.series[6], t.surface, 0.3), GLYPH_FILL, S.DASH_QUALIFY_LEGEND))
         if self.ranges:
@@ -1640,7 +1665,7 @@ class Dashboard(QWidget):
         self.hist.extend([parse_scores(r.get("scores")) for r in rows])
         if any(k in cols for k in ("learner", "qualifying", "switch", "grow")):
             keys = [k for k in ("generation", "learner", "qualifying", "switch", "learner_stall", "learner_best", "grow",
-                                "brain_neurons") if k in cols]
+                                "brain_neurons", "brain_links") if k in cols]
             picked = [cols[k].tolist() for k in keys]
             for i in range(n):
                 self._note_learner(i, {k: v[i] for k, v in zip(keys, picked, strict=True)})
@@ -1702,8 +1727,8 @@ class Dashboard(QWidget):
     def _note_growth(self, i: int, values: Mapping[str, float], learner: float) -> None:
         """v6.1 자라는 뇌: i번째 줄의 grow·brain_neurons 열. grow = 1이면 「뇌가 자람」 세로선(그 세대 끝)을 더하고, 앞 세로선의
         새 크기는 이 줄의 brain_neurons(그 세대 후보를 만든 크기)로 채운다. 자란 세대에 학습 방법도 바뀌었으면(switch > 0: 자동
-        재시작·예선) 다음 줄은 새 학습 방법의 처음 크기라 채우지 않고 어림(_grown_size)으로 둔다. 열이 없는 줄(크기 고정·옛 실행)은
-        NaN이라 아무것도 하지 않는다."""
+        재시작·예선) 다음 줄은 새 학습 방법의 처음 크기라 채우지 않고 학습 방법의 규칙으로 센 값(_grown_size)으로 둔다. 열이 없는
+        줄(크기 고정·옛 실행)은 NaN이라 아무것도 하지 않는다."""
         neurons = values.get("brain_neurons", _NAN)
         k = self._grow_pending
         if k is not None and math.isfinite(neurons):
@@ -1714,7 +1739,7 @@ class Dashboard(QWidget):
         if values.get("grow") != 1.0:
             return
         gen = int(values["generation"])
-        info = {"grow": 1.0, "neurons": neurons, "new": _NAN, "learner": learner}
+        info = {"grow": 1.0, "neurons": neurons, "links": values.get("brain_links", _NAN), "new": _NAN, "learner": learner}
         self.auto_marks.append((gen, GROW_MARK_KIND, info))
         self._auto_rows.append(i)
         self._auto_tips.append(self._auto_tip(gen, GROW_MARK_KIND, info))
@@ -1722,11 +1747,47 @@ class Dashboard(QWidget):
         self._grow_pending = len(self.auto_marks) - 1 if not (math.isfinite(switch) and switch > 0) else None
         self.grow_marks += 1
 
-    def _grown_size(self, old: float) -> float:
-        """다음 줄이 아직 없을 때 자란 뒤 뉴런 수의 어림: 층마다 두 배(틀에서 멈춤). 은닉층이 하나면 정확하다(내장 예제 모두)."""
+    def _grown_size(self, old: float, links: float = _NAN) -> float:
+        """다음 줄을 쓸 수 없을 때(아직 없거나, 자란 세대에 학습 방법이 바뀜) 자란 뒤 은닉 뉴런 합. 알 수 없으면 NaN.
+
+        학습 방법의 규칙 그대로 센다(learners/grow.py: 층마다 min(그 층 크기, 2 × 지금)). 자라는 학습 방법의 층마다 켜진 수는 늘
+        min(그 층 크기, m)꼴이다: 처음 = min(처음 뉴런 수, 층), 자라면 m이 두 배, 챔피언에서 다시 시작해도 그 챔피언이 같은 꼴.
+        그래서 자라기 전 뉴런 합(old)에서 m이 하나로 정해지고(합은 m에 대해 늘어나기만 함) 자란 뒤 합 = Σ min(층, 2m)이다. 은닉층이
+        하나면 min(틀, 2 × old). 층 크기가 서로 다른 여러 층에서 「합의 두 배」로 어림하면 틀린다(예: 틀 [16, 2], 2 + 2 → 4 + 2).
+        이름표(틀)가 없거나, 그런 m이 없거나, 그 줄의 연결 수(links, 있으면)가 그 m의 연결 수와 다르면 NaN(풍선은 옛 크기만)."""
         meta = self.watch_meta
-        total = float(sum(meta.layout.brain.hidden)) if meta is not None else math.inf
-        return min(total, 2.0 * old)
+        if meta is None or not math.isfinite(old):
+            return _NAN
+        brain = meta.layout.brain
+        sizes = [int(n) for n in brain.hidden]
+        if not sizes or brain.n_out == 0:
+            return _NAN
+        for m in range(1, max(sizes)):  # m < 가장 큰 층: 아직 덜 자란 층이 있다
+            counts = [min(n, m) for n in sizes]
+            total = sum(counts)
+            if total < old:
+                continue
+            if total > old:
+                break
+            if math.isfinite(links):
+                made = (brain.n_in * counts[0] + sum(a * b for a, b in zip(counts[:-1], counts[1:], strict=True))
+                        + counts[-1] * brain.n_out)  # policy.frame.BrainFrame.links와 같은 셈
+                if made != links:
+                    break
+            return float(sum(min(n, 2 * m) for n in sizes))
+        return _NAN
+
+    def _retip_growth(self) -> bool:
+        """새 크기를 다음 줄에서 읽지 못한 「뇌가 자람」 세로선의 풍선을 지금 이름표(틀)로 다시 만든다. 하나라도 바뀌었으면 True.
+        실행을 열 때 통계 줄이 이름표보다 먼저 오면(실험실 _adopt_run_now) 앞 실행의 틀이나 틀 없이 센 값이 남는다."""
+        changed = False
+        for k, (gen, kind, info) in enumerate(self.auto_marks):
+            if kind == GROW_MARK_KIND and not math.isfinite(info.get("new", _NAN)):
+                tip = self._auto_tip(gen, kind, info)
+                if tip != self._auto_tips[k]:
+                    self._auto_tips[k] = tip
+                    changed = True
+        return changed
 
     def _auto_tip(self, gen: int, kind: str, info: Mapping[str, float]) -> str:
         """자동 세로선 풍선 도움말. 필요한 값이 빠진(손상된) 줄은 사건 표시와 같은 짧은 글."""
@@ -1737,7 +1798,9 @@ class Dashboard(QWidget):
             if math.isfinite(old):
                 new = info.get("new", _NAN)
                 if not math.isfinite(new):
-                    new = self._grown_size(old)
+                    new = self._grown_size(old, info.get("links", _NAN))
+                if not math.isfinite(new):  # 자란 뒤 크기를 알 수 없다: 틀린 어림 대신 옛 크기만
+                    return S.DASH_MARK_GROW_FROM.format(gen=gen, old=int(old))
                 return S.DASH_MARK_GROW.format(gen=gen, old=int(old), new=int(new))
             return S.DASH_MARK_TOOLTIP.format(gen=gen, label=S.DASH_MARK_LABELS.get(kind, kind))
         if kind == "restart":
@@ -1849,6 +1912,8 @@ class Dashboard(QWidget):
         if self._pending_load is not None and meta is not None:
             run_dir, rows = self._pending_load
             self._start_loader(run_dir, rows)
+        if self._retip_growth():  # v6.1: 틀이 바뀌면 「뇌가 자람」 풍선의 센 값도 바뀐다(모든 타일의 세로선 풍선)
+            self._refresh_all(marks_only=True)
         self._invalidate(FUN_TILE_IDS)
 
     def load_history(self, run_dir: Path | None, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -2363,13 +2428,22 @@ class Dashboard(QWidget):
                     tile_values[key] = s.value(key)
         finally:
             s.endGroup()
-        # 쪽마다: 저장된 순서에서 그 쪽 타일만, 빠진 타일(새 버전에서 생긴 타일)은 기본 순서로 뒤에 붙인다
+        # 쪽마다: 저장된 순서에서 그 쪽 타일만, 빠진 타일(새 버전에서 생긴 타일)은 기본 순서로 뒤에 붙인다. 정해진 자리가 있는
+        # 새 타일(NEW_TILE_AFTER: v6.1 「뇌 크기」)은 그 타일 바로 뒤에 끼운다(v6.0까지의 배치를 저장한 사람도 설계의 자리에서 본다)
         for p, ids in TILE_PAGES.items():
             seen: list[str] = []
             for tid in order:
                 if tid in ids and tid not in seen:
                     seen.append(tid)
-            self._orders[p] = seen + [t for t in ids if t not in seen]
+            for tid in ids:
+                if tid in seen:
+                    continue
+                anchor = NEW_TILE_AFTER.get(tid)
+                if anchor is not None and anchor in seen:
+                    seen.insert(seen.index(anchor) + 1, tid)
+                else:
+                    seen.append(tid)
+            self._orders[p] = seen
         self._hidden = {t for t in hidden if t in ALL_TILE_IDS}
         try:
             self._columns = min(MAX_COLUMNS, max(1, int(str(columns)))) if columns is not None else DEFAULT_COLUMNS

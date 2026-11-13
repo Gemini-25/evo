@@ -3,6 +3,10 @@
 pycma 4.5에서 실험으로 확인한 것:
 - 전용 난수: opts['randn']에 RandomState(seed).randn을 넘기고 'seed'=nan이면 pycma가 numpy 전역 난수를
   건드리지 않는다(시드도 넣지 않는다). 표본 생성기(es.sm.randn)도 같은 함수를 쓴다.
+  예외 하나(v6.1 검증에서 확인, 결과에는 영향 없음): 차원이 300 이상이면(cma.evolution_strategy.TPA_dimension) pycma가 폭 적응을
+  CMAAdaptSigmaTPA로 고르고, 그 일관성 검사(check_consistency, tell마다)가 np.random.randint로 검사할 좌표 번호를 뽑는다. 전역
+  난수 상태는 앞으로 가지만 그 번호는 경고를 낼지에만 쓰이고 후보·평균·폭 계산에는 들어가지 않는다: 전역 시드를 무엇으로 두든
+  후보가 같다. AdaptSigma를 바꾸면 그 차원의 지금까지 결과가 달라지므로 그대로 둔다.
 - 'signals_filename'은 빈 문자열로 끈다. 기본값이면 stop()이 실행 폴더의 cma_signals.in을 읽어 설정을 바꾼다
   (verbose=-9에서도 읽음). None을 넘기면 경고가 나서 ''를 쓴다.
 - 경계: opts['bounds'] = [[-1]*k + [None]*(n-k), [1]*k + [None]*(n-k)] → BoundTransform. ask()가 돌려주는

@@ -3,9 +3,12 @@
 # 사본 = 첫 줄 출처 주석 + 원본 바이트. 불러올 때(tests/test_grow.py의 v60 도우미) 서로를 부르는 import 줄만 메모리에서 사본
 # 꾸러미 이름으로 바꾼다(evolab.engine.trainer·session·commands, evolab.runs.bundle, evolab.learners.cmaes). 나머지 모듈은 지금 것을 쓴다.
 # 용도: v6.0 프로그램 흉내. 크기 고정 실행이 v6.0과 같은지(T40), v6.0이 자라는 실행을 이어 가기·재현에서 거절하는지(T44).
+# brain_view.py(v6.1 고침 묶음에서 더함)는 화면 사본이다: tests/test_grow_screens.py T49가 importlib로 따로 불러(import 줄을 바꾸지 않음, 다른 모듈은 지금 것)
+# 크기 고정 실행의 뇌 그림이 v6.0 그림과 바이트까지 같은지, 연결선 고르기(select_edges)가 v6.0과 같은지 본다.
 commit 1e59b260b02d0350d6e3eb0143dd52a0dddf13ac
 trainer.py src/evolab/engine/trainer.py f45fcc90718a63ee0426045b537dbd397837a577 c6e6291b8ec436d5183f2fda7521cc68dc5bce83f5722fa0cbe01e20d8c649af a01615885101669f638dccfa75208282f7e10a62e4a5c5273766e9b6f86535ec
 session.py src/evolab/engine/session.py b596ed0816e613e49d613c9f9a8c17a0888dbcdd caa5681d30628f562f6200b057061b70942c2a85e0bfa9a71d3aab89f9768205 d513864ff8ce165900ce0add6557a6af201b454b34f11568d314b4bf9a0f3d9c
 commands.py src/evolab/engine/commands.py 3594b168fc553c96815afaec86cdf568887a76b5 8e744a34da0af62ca959603f4a222e1f2cc762db679eae21ab8d7e64a9cf4560 a008ac954a34990043cbaabee59c548b2bd0dd04a63f3e87a2b5c7f24ee917d6
 bundle.py src/evolab/runs/bundle.py 428bc8489d35835a88c9b2a46bd1a7876acb2a66 75ed020257a16bee6a24edafcdf46d29e059953f96174f360978105bb4f61963 713df272ae8ddb696ae9c6332f1737b1d2aa604f403b76b689273eaf25782064
 cmaes.py src/evolab/learners/cmaes.py e98835b7d5fe537138441f7eaf0619e1ee670795 dc15a0c0ddcb30a1a87b9265b70440807d95287e6c343e88d7a26cbd75efbbb1 12ddb247d4a7f616596cff34d899802355925cb5d2e59a2412317885114abe1e
+brain_view.py src/evolab/app/lab/brain_view.py e17b96db0c43f539bc03ded5f9279f92875f1ded 8a76e68a6837cea4dd41b7839232ba4b9130830311d4b9b4ed5408bec503cf1c bdc414975ed1d12a5349d6ed9bb7eb0bd49e1ba33eb86b0eb05956385fbfbe65

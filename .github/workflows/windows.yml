@@ -189,6 +189,38 @@ jobs:
           & $cli reproduce $zip --out (Join-Path $dest "다시 돌림") --workers 1
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # W3(v6.1 자라는 뇌, v6 설계 8.4·9.3 v6.1-2): 같은 exe로 자라는 뇌를 짧게 학습하고(--method grow, 세대마다 자람: 뉴런 2 → 4 → 8 → 16),
+      # 재현 묶음을 만들어 다시 돌린 결과가 원래 실행과 같아야 한다(종료 코드 0과 「원래 실행과 같습니다」 줄). 자체 점검 「자라는 뇌」는
+      # 워커 없이 학습기만 보므로, 여기서 명령줄 인자(--method grow, --grow-every)·워커 프로세스 2개의 자라는 학습·묶음·재현을 exe로
+      # 지나간다. 실행 폴더는 앞 단계의 「실행 기록」과 따로 둔다(앞 단계와 오류 보고 단계가 그 폴더의 첫 실행을 쓴다).
+      # exe는 출력이 파이프면 UTF-8로 쓰므로(cli._configure_streams) 받는 쪽 인코딩을 UTF-8로 맞춘 뒤 한글 줄을 찾는다.
+      - name: Growing brain train and reproduce with the console exe (Korean path)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $cli = Join-Path $dest "evolab\evolab-cli.exe"
+          $envfile = Join-Path $dest "evolab\_internal\environments\lander.evoenv"
+          $runs = Join-Path $dest "자라는 뇌 기록"
+          & $cli train $envfile --method grow --grow-every 1 --popsize 8 --trials 2 --max-generations 4 --validate-every 16 --workers 2 --out $runs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $run = (Get-ChildItem -LiteralPath $runs -Directory | Select-Object -First 1).FullName
+          if (-not $run) { Write-Error "no growing run folder"; exit 1 }
+          $grown = @(Import-Csv -LiteralPath (Join-Path $run "stats.csv") -Encoding utf8 | Where-Object { $_.grow -eq "1" }).Count
+          if ($grown -ne 3) { Write-Error "expected 3 growth rows in stats.csv, got $grown"; exit 1 }
+          $zip = Join-Path $dest "자라는 뇌 묶음.zip"
+          & $cli bundle $run --out $zip
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $out = & $cli reproduce $zip --out (Join-Path $dest "자라는 뇌 다시 돌림") --workers 1
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { "$_" }
+          if ($code -ne 0) { Write-Error "reproduce exit code $code"; exit 1 }
+          if (-not ($out | Select-String -SimpleMatch -Quiet "원래 실행과 같습니다")) {
+            Write-Error "reproduce did not print the same-as-original line"; exit 1
+          }
+
       - name: Self-test windowed exe (evolab.exe, no stdout)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh

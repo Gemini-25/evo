@@ -8,6 +8,15 @@
 
 v6.0 사본(tests/data/v60_snapshot)은 load_v60()이 임시 꾸러미 _evolab_v60 아래로 불러온다: 서로를 부르는 import 줄만 사본 이름으로
 바꾸고(SOURCES.txt), 나머지 모듈(평가·풀·저장소·문구)은 지금 것을 쓴다.
+
+v6.1 고침 묶음(검토·검증에서 확인된 결함)에서 더하거나 고친 것:
+- T34: 은닉층 2·3개 틀에서도 같은 시드 = 같은 후보(FRAMES). 켜진 좌표 300개 이상(pycma TPA가 전역 난수를 건드림)에서는 전역 난수
+  시드를 바꿔도 같은 후보. T35: 은닉층 2·3개 틀, 자람 직전·직후마다, ask와 tell 사이(그 tell에서 자라는 경우 포함).
+- T37: 자라는 실행의 diversity 열은 켜진 좌표만의 표준편차 평균(자랄 때 튀지 않음). T41: 자란 세대 끝에 자동 재시작·예선으로
+  버려진 자람은 알리지 않고(Trainer.last_growth, 명령줄 한 줄, 세션 "growth"), 방금 자란 출전자가 통과하면 알린다.
+- T40: v6.0이 만든 실행을 v6.1이, v6.1이 만든 실행을 v6.0이 이어 간다(네 짝이 모두 같음).
+- T44: 재현 거절은 v6.0의 글 그대로("grow" 한 줄), v6.1 세션이 자라는 실행을 진짜로 이어 간다(자람을 지나서), 예전 체크포인트에서
+  이어 하면 분기 폴더가 남는다.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ import multiprocessing as mp
 import pickle
 import shutil
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import Any
@@ -29,7 +39,7 @@ import pytest
 
 from evolab import cli, paths, selftest
 from evolab.app import strings as S
-from evolab.engine import seeds
+from evolab.engine import commands, seeds
 from evolab.engine import trainer as trainer_mod
 from evolab.engine.evaluate import EvalResult, evaluate
 from evolab.engine.pool import WorkerPool
@@ -38,6 +48,8 @@ from evolab.engine.runsetup import create_run
 from evolab.engine.trainer import (
     GROW_COLUMNS,
     GROW_KEYS,
+    SWITCH_QUALIFY_NEXT,
+    SWITCH_QUALIFY_PICK,
     SWITCH_RESTART_CHAMPION,
     SWITCH_RESTART_FRESH,
     TrainConfig,
@@ -212,6 +224,8 @@ V60_PACKAGE = "_evolab_v60"
 V60_MODULES = {"cmaes": "evolab.learners.cmaes", "trainer": "evolab.engine.trainer", "bundle": "evolab.runs.bundle",
                "session": "evolab.engine.session", "commands": "evolab.engine.commands"}
 """사본 파일 이름 → v6.0 원래 모듈 이름(불러오는 순서). 사본끼리 부르는 import 줄만 사본 꾸러미로 바꾼다."""
+V60_SCREEN_FILES = {"brain_view.py": "src/evolab/app/lab/brain_view.py"}
+"""화면 사본(사본 파일 → 원본 경로): load_v60()이 부르지 않고 tests/test_grow_screens.py T49가 importlib로 따로 부른다(v6.0 뇌 그림)."""
 
 
 def _sha(data: bytes) -> str:
@@ -246,7 +260,9 @@ def test_v60_snapshot_files_match_their_sources() -> None:
              if ln and not ln.startswith("#")]
     assert lines[0].startswith("commit 1e59b26")
     table = {ln.split()[0]: ln.split()[1:] for ln in lines[1:]}
-    assert set(table) == {f"{n}.py" for n in V60_MODULES}
+    assert set(table) == {f"{n}.py" for n in V60_MODULES} | set(V60_SCREEN_FILES)
+    assert {name: table[name][0] for name in V60_SCREEN_FILES} == V60_SCREEN_FILES
+    assert {p.name for p in SNAPSHOT.iterdir() if p.suffix == ".py"} == set(table)  # 출처표에 없는 사본이 없다
     for name, (src, _blob, src_sha, copy_sha) in table.items():
         data = (SNAPSHOT / name).read_bytes()
         assert _sha(data) == copy_sha, name
@@ -425,16 +441,59 @@ def test_start_is_clipped_to_the_frame_and_never_grows() -> None:
 # ---------------------------------------------------------------------------
 # T34 결정성
 # ---------------------------------------------------------------------------
-def test_same_seed_same_candidates_and_no_global_numpy_random() -> None:
+FRAMES: dict[str, tuple[str, int, int, int]] = {
+    "lander": (LANDER_TEXT, 10, 40, 3),
+    "two-layers": (brain_text([6, 5]), 3, 15, 2),
+    "three-layers-relu": (brain_text([4, 6, 3], "relu"), 3, 15, 2),
+}
+"""T34·T35의 틀: 이름 → (환경 글, 자라는 간격, 세대 수, 그동안 자라는 횟수). 은닉층 2·3개 틀은 원형이 재지 않아 함수 보존(T32)과
+결정성·저장 테스트만 지킨다(설계 4.15). 착륙선 (2) → (16), [6, 5]는 (2, 2) → (4, 4) → (6, 5), [4, 6, 3]은 (2, 2, 2) → (4, 4, 3) → (4, 6, 3)."""
+
+
+def _same_random_state(a: Any, b: Any) -> bool:
+    return bool(a[0] == b[0] and np.array_equal(a[1], b[1]) and a[2:] == b[2:])
+
+
+@pytest.mark.parametrize("name", list(FRAMES))
+def test_same_seed_same_candidates_and_no_global_numpy_random(name: str) -> None:
+    text, every, gens, growths = FRAMES[name]
+    layout = layout_of(text)
+    assert layout.dim < 300  # 켜진 좌표 300개 미만: 전역 난수 상태가 그대로다(300개 이상은 아래 테스트)
     before = np.random.get_state()
     runs = []
     for seed in (3, 3, 4):
-        lr = learner(seed=seed, every=10)
-        runs.append(b"".join(generation(lr).tobytes() + lr.best().tobytes() for _ in range(40)))
-        assert lr.growths == 3
+        lr = learner(layout, seed=seed, every=every)
+        runs.append(b"".join(generation(lr).tobytes() + lr.best().tobytes() for _ in range(gens)))
+        assert lr.growths == growths and lr.counts == lr.frame.sizes
     after = np.random.get_state()
     assert runs[0] == runs[1] and runs[0] != runs[2]
-    assert before[0] == after[0] and np.array_equal(before[1], after[1]) and before[2:] == after[2:]
+    assert _same_random_state(before, after)
+
+
+def test_three_hundred_active_coordinates_do_not_depend_on_the_global_numpy_random() -> None:
+    """켜진 좌표가 300개 이상이면(pycma TPA_dimension) 안쪽 pycma가 폭 적응을 TPA로 고르고, 그 일관성 검사가 tell마다
+    np.random.randint로 검사할 좌표 번호를 뽑는다(learners/grow.py 「난수」, learners/cmaes.py). 그래서 「전역 난수 상태가 그대로」는
+    이 크기에서 성립하지 않는다. 대신 결과가 전역 난수와 무관해야 한다: 전역 시드를 바꿔도 후보·추천해가 바이트 같고, 학습 방법
+    시드를 바꾸면 다르다. 착륙선 은닉 24개 틀(9·24 + 24 + 24·3 + 3 = 315차원), 간격 1이라 4세대 끝에 다 자란다."""
+    layout = layout_of(brain_text([24]))
+    assert layout.dim == 315
+    saved = np.random.get_state()
+    try:
+        runs: dict[tuple[int, int], bytes] = {}
+        touched = []
+        for global_seed, seed in ((1, 3), (2, 3), (1, 4)):
+            np.random.seed(global_seed)
+            start = np.random.get_state()
+            lr = learner(layout, seed=seed, every=1)
+            runs[global_seed, seed] = b"".join(generation(lr).tobytes() + lr.best().tobytes() for _ in range(14))
+            assert lr.counts == (24,) and lr.growths == 4 and lr.inner.dim == 315
+            touched.append(not _same_random_state(start, np.random.get_state()))
+    finally:
+        np.random.set_state(saved)
+    assert runs[1, 3] == runs[2, 3] and runs[1, 3] != runs[1, 4]
+    # 이 틀이 정말 그 길(pycma가 전역 난수를 뽑는 길)을 지났다. pycma가 더는 뽑지 않게 되면 여기서 실패한다: 그때는 위 테스트의
+    # 300 미만 조건과 learners/grow.py의 예외 설명을 지우면 된다
+    assert all(touched)
 
 
 def test_seed_words() -> None:
@@ -455,10 +514,12 @@ def _continue(lr: GrowingCMAES, gens: int) -> bytes:
     return b"".join(generation(lr).tobytes() + lr.best().tobytes() + repr(lr.stats()).encode() for _ in range(gens))
 
 
-@pytest.mark.parametrize("when", [2, 3, 4, 11])
-def test_state_roundtrip_through_pickle_continues_identically(when: int) -> None:
-    """간격 3: 2세대 끝 = 자람 직전, 3세대 끝 = 자람 직후, 4세대 = 자란 뒤 한 세대, 11 = 한참 뒤(세 번 자란 뒤)."""
-    lr = learner(layout_of(TEXTS["hill_car"]), every=3)
+@pytest.mark.parametrize("name", ["hill_car", "two-layers", "three-layers-relu"])
+@pytest.mark.parametrize("when", [2, 3, 4, 5, 6, 7, 11])
+def test_state_roundtrip_through_pickle_continues_identically(name: str, when: int) -> None:
+    """간격 3: 2·5세대 끝 = 자람 직전, 3·6세대 끝 = 자람 직후, 4·7세대 = 자란 뒤 한 세대, 11 = 한참 뒤(다 자란 뒤). 몸 유전자가 있는
+    언덕 자동차와 은닉층 2·3개 틀(자람마다 그 직전·직후)."""
+    lr = learner(layout_of(TEXTS[name] if name in TEXTS else FRAMES[name][0]), every=3)
     for _ in range(when):
         generation(lr)
     state = pickle.loads(pickle.dumps(lr.state_dict()))
@@ -471,17 +532,23 @@ def test_state_roundtrip_through_pickle_continues_identically(when: int) -> None
     assert _continue(other, 8) == _continue(lr, 8)
 
 
-def test_state_between_ask_and_tell_is_the_generation_boundary() -> None:
-    lr = learner(every=2)
-    for _ in range(3):
+@pytest.mark.parametrize("name", list(FRAMES))
+@pytest.mark.parametrize("told", [1, 2, 3])
+def test_state_between_ask_and_tell_is_the_generation_boundary(name: str, told: int) -> None:
+    """간격 2(2·4세대 끝에 자람). told = 1·3: 저장한 ask의 tell에서 자란다(첫째·둘째 자람 직전의 ask와 tell 사이), 2: 자란 직후 첫 ask."""
+    layout = layout_of(FRAMES[name][0])
+    lr = learner(layout, every=2)
+    for _ in range(told):
         generation(lr)
     X = lr.ask()
     state = pickle.loads(pickle.dumps(lr.state_dict()))
-    other = learner(seed=77)
+    other = learner(layout, seed=77)
     other.load_state_dict(state)
     assert other.ask().tobytes() == X.tobytes()
     lr.tell(X, fake_scores(X))
     other.tell(X, fake_scores(X))
+    assert (lr.last_growth is not None) == (told != 2) and other.last_growth == lr.last_growth
+    assert other.counts == lr.counts and other.best().tobytes() == lr.best().tobytes()
     assert _continue(other, 5) == _continue(lr, 5)
 
 
@@ -708,6 +775,34 @@ def test_stats_columns_only_for_growing_runs(tmp_path: Path) -> None:
     assert [c for c in header if c not in GROW_COLUMNS] == fixed.stats_columns()
 
 
+def test_diversity_column_of_growing_runs_covers_only_the_active_coordinates() -> None:
+    """자라는 실행의 diversity 열 = 그 세대 후보의 켜진 좌표만의 표준편차 평균. 꺼진 좌표는 늘 0이라 틀 전체로 평균하면 값이
+    (켜진 좌표 수 ÷ 틀 길이)배로 줄고(뉴런 2개일 때 29/211) 자랄 때마다 두 배쯤 뛴다(고치기 전: 1.8~2.0배, 「탐색 폭」의 1/7).
+    「탐색 폭」(sigma)과 같은 단위(「탐색 폭과 다양성」 타일이 한 눈금에 그린다)라 자란 세대 앞뒤로 튀지 않는다.
+    크기 고정 실행은 v6.0 식(모든 유전자의 평균) 그대로다(바이트 비교는 T40)."""
+    t = Trainer(LANDER_TEXT, small(max_generations=11), ConstantValidation(), None)
+    frame = BrainFrame(t.layout)
+    rows = []
+    while t.check_stop() is None:
+        row = t.step()
+        assert t.last_generation is not None
+        X = t.last_generation.population
+        active = frame.active_coords((int(row["brain_neurons"]),))
+        assert row["diversity"] == pytest.approx(float(np.mean(np.std(X[:, active], axis=0))), rel=1e-12)
+        whole = float(np.mean(np.std(X, axis=0)))  # 고치기 전 값: 틀 전체(꺼진 좌표의 0 포함)
+        assert whole == pytest.approx(row["diversity"] * len(active) / t.layout.dim, rel=1e-9)
+        assert 0.5 < row["diversity"] / row["sigma"] < 1.5, row["generation"]
+        rows.append(row)
+    assert grown_rows(rows) == [(3, 2, 24), (6, 4, 48), (9, 8, 96)]
+    for k, r in enumerate(rows[:-1]):
+        if r["grow"]:  # 자란 세대 줄 → 다음 줄(새 크기의 첫 후보): 「탐색 폭」처럼 이어진다
+            assert 0.67 < rows[k + 1]["diversity"] / r["diversity"] < 1.5, r["generation"]
+    fixed = Trainer(LANDER_TEXT, small(method="cmaes", max_generations=2), ConstantValidation(), None)
+    row = fixed.step()
+    assert fixed.last_generation is not None
+    assert row["diversity"] == float(np.mean(np.std(fixed.last_generation.population, axis=0)))
+
+
 def test_trainer_last_growth(tmp_path: Path) -> None:
     with WorkerPool(0) as pool:
         t = Trainer(LANDER_TEXT, small(grow_every=2), pool, None)
@@ -817,6 +912,31 @@ def run_session(session_cls: Any, request: Any, timeout: float = 120.0) -> list[
         msgs.append(msg)
         if msg.get("type") == "closed":
             break
+    cmd_w.close()
+    ev_r.close()
+    return msgs
+
+
+def drive_session(session_cls: Any, request: Any, timeout: float = 120.0) -> list[dict[str, Any]]:
+    """학습 프로세스 없이 세션 하나를 스레드에서 끝까지 돌린다(시작에 성공하는 요청용): 「끝남」 상태가 오면 quit을 보내고, closed
+    까지 받은 결과 메시지. 화면(TrainingClient)이 하는 일을 파이프로 직접 한다."""
+    cmd_r, cmd_w = mp.Pipe(duplex=False)
+    ev_r, ev_w = mp.Pipe(duplex=False)
+    worker = threading.Thread(target=lambda: session_cls(cmd_r, ev_w, request).main(), daemon=True)
+    worker.start()
+    msgs: list[dict[str, Any]] = []
+    while ev_r.poll(timeout):
+        try:
+            msg = ev_r.recv()
+        except EOFError:
+            break
+        msgs.append(msg)
+        if msg.get("type") == "state" and msg.get("state") == "finished":
+            cmd_w.send({"type": "quit"})
+        if msg.get("type") == "closed":
+            break
+    worker.join(30)
+    assert not worker.is_alive(), [m.get("type") for m in msgs]
     cmd_w.close()
     ev_r.close()
     return msgs
@@ -980,6 +1100,89 @@ def test_restart_and_qualify_runs_resume_identically(tmp_path: Path) -> None:
     assert 4 in switches  # 예선 끝(통과자를 저장한 상태에서 다시 만듦)
 
 
+class RisingValidation(ConstantValidation):
+    """검증 점수가 검증할 때마다 1씩 오르는 평가기: 예선에서 늘 뒤 출전자가 통과한다(ConstantValidation은 동점이라 앞 출전자)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.validations = 0
+
+    def evaluate(self, env_version: str, env_text: str, layout: Any, genomes: np.ndarray, pairs: list[tuple[int, Any]],
+                 record: list[bool] | None = None) -> EvalResult:
+        res = super().evaluate(env_version, env_text, layout, genomes, pairs, record)
+        if pairs[0][1].seed in VALIDATION_SEEDS:
+            self.validations += 1
+            res.scores[:] = 5.0 + self.validations
+        return res
+
+
+def announced(t: Trainer, row: dict[str, Any]) -> tuple[Any, str | None, Any]:
+    """한 세대 뒤 세 곳이 알리는 자람: Trainer.last_growth, 명령줄 한 줄(CLI_TRAIN_GROWN, 없으면 None), 세션 세대 메시지의
+    "growth"(없으면 None). 세션은 학습 프로세스 없이 만들어 그 세대의 메시지만 만들게 한다."""
+    from evolab.engine.session import Session, SessionRequest
+
+    sent: list[dict[str, Any]] = []
+    session = Session(None, None, SessionRequest(kind="resume"))
+    session.trainer = t
+    session._send = sent.append  # type: ignore[method-assign]
+    session._send_generation(row)
+    message = next(m for m in sent if m["type"] == "generation")
+    assert ("growth" in message) == (message.get("growth") is not None)
+    return t.last_growth, commands._grown_text(t, row), message.get("growth")
+
+
+NOT_ANNOUNCED = (None, None, None)
+
+
+def grew(gen: int, old: int, new: int) -> tuple[Any, str, dict[str, int]]:
+    """착륙선(입력 9, 출력 3)에서 gen세대 끝에 뉴런 old → new로 자랐을 때 announced()가 돌려줄 값."""
+    return ((old, new, 12 * old, 12 * new), S.CLI_TRAIN_GROWN.format(gen=gen, old=old, new=new),
+            {"old": old, "new": new, "old_links": 12 * old, "new_links": 12 * new})
+
+
+@pytest.mark.parametrize(("restart_from", "switch"), [("fresh", SWITCH_RESTART_FRESH),
+                                                      ("champion", SWITCH_RESTART_CHAMPION)])
+def test_growth_thrown_away_by_a_restart_is_not_announced(restart_from: str, switch: int) -> None:
+    """간격 3, 검증 점수가 늘 같아 6세대 끝에 자동 재시작: 3세대 끝의 자람(2 → 4)은 알리고, 6세대 끝의 자람(4 → 8)은 같은 세대 끝에
+    그 학습 방법이 버려지므로 어디에도 알리지 않는다(7세대는 뉴런 2개: 처음 상태 또는 2세대에 뽑힌 뉴런 2개짜리 챔피언에서).
+    통계 열 grow는 그 세대 끝에 자란 사실 그대로 1이다(대시보드 세로선 둘: 자람과 자동 재시작)."""
+    config = small(grow_every=3, restart_patience=48, restart_from=restart_from, max_generations=9)
+    t = Trainer(LANDER_TEXT, config, ConstantValidation(), None)
+    rows, told = [], []
+    for _ in range(8):
+        row = t.step()
+        rows.append(row)
+        told.append(announced(t, row))
+    assert [(int(r["switch"]), int(r["grow"])) for r in rows] == [(0, 0), (0, 0), (0, 1), (0, 0), (0, 0), (switch, 1),
+                                                                   (0, 0), (0, 0)]
+    assert [int(r["brain_neurons"]) for r in rows] == [2, 2, 2, 4, 4, 4, 2, 2]
+    assert told == [NOT_ANNOUNCED, NOT_ANNOUNCED, grew(3, 2, 4), NOT_ANNOUNCED, NOT_ANNOUNCED, NOT_ANNOUNCED,
+                    NOT_ANNOUNCED, NOT_ANNOUNCED]
+    assert isinstance(t.learner, GrowingCMAES) and t.state.restarts == 1
+
+
+def test_growth_at_the_end_of_qualifying_is_announced_only_when_that_entrant_goes_on() -> None:
+    """예선 2출전, 출전마다 2세대(시험 24회), 간격 2: 출전자마다 마지막 세대 끝에 자란다.
+    2세대 끝(다음 출전으로): 자란 출전자 0은 보관되고 출전자 1이 뉴런 2개로 시작한다 → 알리지 않는다.
+    4세대 끝(예선 끝): 방금 자란 출전자 1이 통과하면(검증 점수가 오르는 평가기) 그 자란 상태에서 이어 가므로 알리고, 출전자 0이
+    통과하면(동점은 앞 출전자) 출전자 1의 자람은 버려지므로 알리지 않는다. 누가 통과하든 5세대는 뉴런 4개(각자 자란 상태)."""
+    config = small(grow_every=2, qualify_entrants=2, qualify_trials=24, max_generations=6)
+    config.validate()
+    for evaluator, winner in ((RisingValidation(), 1), (ConstantValidation(), 0)):
+        t = Trainer(LANDER_TEXT, config, evaluator, None)
+        rows, told = [], []
+        for _ in range(5):
+            row = t.step()
+            rows.append(row)
+            told.append(announced(t, row))
+        assert [int(r["switch"]) for r in rows] == [0, SWITCH_QUALIFY_NEXT, 0, SWITCH_QUALIFY_PICK, 0]
+        assert [int(r["grow"]) for r in rows] == [0, 1, 0, 1, 0]
+        assert [int(r["learner"]) for r in rows] == [0, 0, 1, 1, winner]
+        assert [int(r["brain_neurons"]) for r in rows] == [2, 2, 2, 2, 4]
+        assert told[:3] == [NOT_ANNOUNCED] * 3 and told[4] == NOT_ANNOUNCED
+        assert told[3] == (grew(4, 2, 4) if winner == 1 else NOT_ANNOUNCED), winner
+
+
 # ---------------------------------------------------------------------------
 # T40 크기 고정 실행이 v6.0과 같다
 # ---------------------------------------------------------------------------
@@ -1022,13 +1225,27 @@ def test_fixed_size_runs_are_byte_identical_to_v60(tmp_path: Path, env: str, ove
         assert "stds" not in b["learner"]["config"]
         assert canon(a) == canon(b), g
     if over["method"] == "cmaes":
-        with WorkerPool(0) as pool:  # v6.0의 체크포인트를 v6.1이 이어 가면 v6.0 사본이 이어 간 것과 같다
-            tails = []
-            for module, store in ((v60.trainer, old), (trainer_mod, new)):
-                t = module.Trainer.resume(store, pool, None, max_generations=8)
-                t.run()
-                tails.append(strip(store.read_stats()))
-        assert tails[0] == tails[1]
+        # 서로의 체크포인트를 이어 간다: (만든 프로그램, 이어 간 프로그램) 네 짝. v6.0이 만든 6세대 체크포인트를 v6.1이, v6.1이 만든
+        # 것을 v6.0이 8세대까지 이어 가도 통계·챔피언·세대 대표·마지막 체크포인트가 모두 같다(실행 폴더를 복사해서 이어 감)
+        resumed: dict[tuple[str, str], RunStore] = {}
+        with WorkerPool(0) as pool:
+            for made, store in stores.items():
+                for prog, module in (("v60", v60.trainer), ("v61", trainer_mod)):
+                    copy = tmp_path / f"{made}_resumed_by_{prog}"
+                    shutil.copytree(store.root, copy)
+                    again = RunStore.open(copy)
+                    t = module.Trainer.resume(again, pool, None, max_generations=8)
+                    assert type(t).__module__ == module.__name__ and t.state.generation == 6
+                    t.run()
+                    resumed[made, prog] = again
+        first = resumed["v60", "v60"]
+        tail = strip(first.read_stats())
+        assert len(tail) == 8 and tail[:6] == strip(old.read_stats())
+        for pair, again in resumed.items():
+            assert strip(again.read_stats()) == tail, pair
+            assert champion_files(again) == champion_files(first), pair
+            assert again.checkpoints()[-1] == 8, pair
+            assert canon(again.load_checkpoint(8)[1]) == canon(first.load_checkpoint(8)[1]), pair
 
 
 # ---------------------------------------------------------------------------
@@ -1037,7 +1254,7 @@ def test_fixed_size_runs_are_byte_identical_to_v60(tmp_path: Path, env: str, ove
 @pytest.fixture(scope="module")
 def grow_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     """v6.1이 만든 작은 착륙선 자라는 실행(6세대, 2·4·6세대 끝에 자람, 체크포인트 2·4·6)과 그 재현 묶음."""
-    base = tmp_path_factory.mktemp("grow_run")
+    base = tmp_path_factory.mktemp("v61run")  # 경로에 "grow"가 없게: 재현 거절 글("grow")을 경로와 헷갈리지 않는다
     config = TrainConfig.for_new_run(LANDER_SPEC, **dataclasses.asdict(small(grow_every=2, max_generations=6)))
     store = create_run(base / "runs", LANDER_TEXT, LANDER_SPEC, config, 0)
     t, rows = train(LANDER_TEXT, config, store)
@@ -1081,14 +1298,75 @@ def test_v60_session_resume_refuses_a_growing_run(tmp_path: Path, grow_run: tupl
     assert errors[0]["message"] == S.TRAIN_CANNOT_START.format(reason="grow")
     assert msgs[-1]["type"] == "closed" and not [m for m in msgs if m["type"] in ("started", "generation")]
     assert _snapshot_of(run) == before
-    # 같은 요청을 v6.1 세션은 받아 이어 간다(시작 메시지, 자라는 학습 방법)
+    # 같은 요청(같은 폴더, 같은 칸)을 v6.1 세션은 받는다: 6세대(마지막 체크포인트, 세 번째 자람 직후)에서 시작하고 오류가 없다.
+    # 이 실행은 최대 6세대라 더 돌 세대 없이 「끝남」으로 간다(자람을 지나 이어 가는 것은 아래 테스트)
     from evolab.engine.session import Session, SessionRequest
-    from evolab.engine.trainer import Trainer as NewTrainer
 
+    msgs = drive_session(Session, SessionRequest(kind="resume", run_dir=str(run), workers=0))
+    assert [m["type"] for m in msgs if m["type"] in ("started", "error", "generation", "closed")] == ["started", "closed"]
+    started = msgs[0]
+    assert started["type"] == "started" and started["generation"] == 6 and started["config"]["method"] == "grow"
+    assert (started["config"]["grow_start"], started["config"]["grow_every"]) == (2, 2)
+    assert [(r["generation"], r["brain_neurons"], r["grow"]) for r in started["stats"]][-2:] == [("5", "8", "0"),
+                                                                                                 ("6", "8", "1")]
+    assert [m["state"] for m in msgs if m["type"] == "state"][-1] == "finished"
     with WorkerPool(0) as pool:
-        t = NewTrainer.resume(RunStore.open(run), pool, None)
+        t = Trainer.resume(RunStore.open(run), pool, None)
         assert isinstance(t.learner, GrowingCMAES) and t.learner.counts == (16,)  # 6세대 끝에 자란 뒤 상태
-    assert Session and SessionRequest
+
+
+def test_v61_session_resumes_a_growing_run_across_a_growth(tmp_path: Path) -> None:
+    """v6.1 세션의 「이어 하기」가 자라는 실행을 진짜로 이어 간다: 7세대 실행(간격 2: 2·4·6세대 끝에 자람)을 4세대 체크포인트(둘째
+    자람 직후, 뉴런 8개)에서 이어 가면 시작 메시지는 4세대, 세대 메시지는 5·6·7, "growth"는 6세대에만(8 → 16), 오류가 없고
+    통계가 끊지 않은 실행과 같다."""
+    from evolab.engine.session import Session, SessionRequest
+
+    config = small(grow_every=2, max_generations=7, checkpoint_every=1)
+    store = keep_all_store(tmp_path / "ref", config=config)
+    train(LANDER_TEXT, config, store)
+    ref = strip(store.read_stats())
+    assert grown_rows(store.read_stats()) == [(2, 2, 24), (4, 4, 48), (6, 8, 96)] and store.checkpoints() == list(range(1, 8))
+    copy = tmp_path / "copy"
+    shutil.copytree(store.root, copy)
+    msgs = drive_session(Session, SessionRequest(kind="resume", run_dir=str(copy), generation=4, workers=0,
+                                                 spectate=False))
+    assert not [m for m in msgs if m["type"] == "error"]
+    started = [m for m in msgs if m["type"] == "started"]
+    assert len(started) == 1 and started[0]["generation"] == 4 and started[0]["config"]["method"] == "grow"
+    assert len(started[0]["stats"]) == 4  # 4세대 뒤의 줄은 잘라 내고 다시 돈다
+    gens = [m for m in msgs if m["type"] == "generation"]
+    assert [int(m["generation"]) for m in gens] == [5, 6, 7]
+    assert [m.get("growth") for m in gens] == [None, {"old": 8, "new": 16, "old_links": 96, "new_links": 192}, None]
+    assert [int(m["row"]["brain_neurons"]) for m in gens] == [8, 8, 16]
+    assert msgs[-1]["type"] == "closed" and [m["state"] for m in msgs if m["type"] == "state"][-1] == "finished"
+    again = RunStore.open(copy)
+    assert strip(again.read_stats()) == ref and genomes_of(again) == genomes_of(store)
+    assert [e["kind"] for e in again.read_events()][-2:] == ["resume", "stop"]
+
+
+def test_v60_resume_from_an_earlier_checkpoint_leaves_a_branch_folder_it_cannot_continue(
+        tmp_path: Path, grow_run: tuple[Path, Path]) -> None:
+    """옛 프로그램의 기록 화면에서 「이어하기」로 최신이 아닌 체크포인트를 고르면 먼저 분기 폴더를 만들고(runs/catalog.branch_run:
+    v6.0과 v6.1이 같은 파일) 그 폴더로 세션을 연다. v6.0 세션은 「grow」로 거절하고 분기 폴더는 남는다(원래 실행은 그대로).
+    도움말 「자라는 뇌」 절 끝 문단이 이것과 「복제」(옛 프로그램은 크기 고정 실행으로 시작)를 적는다. 남은 폴더는 v6.1이 이어 간다."""
+    v60 = load_v60()
+    run = tmp_path / "run"
+    shutil.copytree(grow_run[0], run)
+    before = _snapshot_of(run)
+    child = branch_run(run, 4, tmp_path / "분기")
+    msgs = run_session(v60.session.Session, v60.session.SessionRequest(kind="resume", run_dir=str(child), workers=0))
+    errors = [m for m in msgs if m["type"] == "error"]
+    assert len(errors) == 1 and errors[0]["fatal"] and errors[0]["message"] == S.TRAIN_CANNOT_START.format(reason="grow")
+    assert not [m for m in msgs if m["type"] in ("started", "generation")]
+    assert _snapshot_of(run) == before
+    left = RunStore.open(child)
+    assert left.checkpoints() == [4] and len(left.read_stats()) == 4
+    assert left.read_run_info()["config"]["method"] == "grow"
+    with WorkerPool(0) as pool:
+        Trainer.resume(left, pool, None, max_generations=6).run()
+    assert strip(left.read_stats()) == strip(RunStore.open(run).read_stats())
+    section = S.HELP_PAGES["lab"][1].split("## 자라는 뇌", 1)[1]
+    assert "{{REC_CLONE}}" in section and "{{REC_RESUME}}" in section and "v6.1" in section
 
 
 def test_v60_reproduce_refuses_and_judge_open_replay_still_work(tmp_path: Path, grow_run: tuple[Path, Path],
@@ -1099,7 +1377,13 @@ def test_v60_reproduce_refuses_and_judge_open_replay_still_work(tmp_path: Path, 
     capsys.readouterr()
     assert v60.commands.reproduce_command(parser.parse_args(["reproduce", str(bundle), "--out", str(tmp_path / "re"),
                                                              "--workers", "0"])) == 2
-    assert "grow" in capsys.readouterr().err
+    # v6.0 make_learner의 ValueError("grow") 그대로 한 줄. 「묶음을 읽을 수 없습니다: <경로>」 같은 다른 거절(경로에 grow가 들어
+    # 있으면 "grow" in err로는 구별되지 않는다)이 아니다
+    assert capsys.readouterr().err.strip().splitlines() == ["grow"]
+    assert "grow" not in str(bundle) and "grow" not in str(tmp_path)
+    left = [p for p in (tmp_path / "re").iterdir() if p.is_dir()]  # 설계 2.4: 빈 실행 폴더 하나가 남는다(통계 줄 없음)
+    assert len(left) == 1 and RunStore.open(left[0]).read_run_info()["config"]["method"] == "grow"
+    assert RunStore.open(left[0]).read_stats() == []
     # 판정: v6.0 명령이 v6.1 명령과 같은 출력을 낸다
     from evolab.engine import commands as new_commands
 

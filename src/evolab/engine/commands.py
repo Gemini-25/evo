@@ -5,9 +5,10 @@ train --no-observe는 그래프용 관찰 기록(v1.2)만 끈다(Trainer 인자,
 측정 뒤 관찰을 켠 같은 평가를 한 번 더 돌려 차이를 알린다(D32). v6.0(v6 설계 4.10·D17): 단일 코어 줄은 학습과 같은 평가 창
 (evaluate.EVAL_WINDOW)으로 재고 문구에 창 크기를 적는다. 새 줄: 「평가 창」(BENCH_WINDOWS를 번갈아), 「관전 재생 길이」(이미 잰
 평가의 시험 0번 스텝 수, 계산이 더 들지 않음), 「pymunk C 함수 바로 부르기」(episode._CP_FAST).
-v6.1 자라는 뇌(v6 설계 4.16·5.5): train --method grow --grow-start --grow-every. 새 실행은 시작 줄 뒤에 TRAIN_GROW_SUMMARY 한 줄,
-자란 세대마다 CLI_TRAIN_GROWN 한 줄(진행 줄 간격과 상관없이). 은닉층이 없는 뇌면 실행 폴더를 만들기 전에 거절. 이어 할 때는
-grow_*를 바꿀 수 없다(학습 방법의 일부: --grow-start·--grow-every를 주면 TRAIN_RESUME_GROW_FIXED, 종료 코드 2).
+v6.1 자라는 뇌(v6 설계 4.16·5.5): train --method grow --grow-start --grow-every. 새 실행은 시작 줄 뒤에 TRAIN_GROW_SUMMARY 한 줄
+(처음부터 다 자란 크기면 TRAIN_GROW_SUMMARY_FULL), 자란 세대마다 CLI_TRAIN_GROWN 한 줄(진행 줄 간격과 상관없이. 자란 세대 끝에
+자동 재시작·예선으로 그 학습 방법을 버리면 알리지 않는다: Trainer.last_growth). 은닉층이 없는 뇌면 실행 폴더를 만들기 전에 거절.
+이어 할 때는 grow_*를 바꿀 수 없다(학습 방법의 일부: --grow-start·--grow-every를 주면 TRAIN_RESUME_GROW_FIXED, 종료 코드 2).
 """
 
 from __future__ import annotations
@@ -139,12 +140,17 @@ def _stability_text(config: TrainConfig) -> str:
 
 
 def _grow_text(config: TrainConfig, layout: Any) -> str | None:
-    """자라는 뇌 새 실행의 시작 줄(v6.1 TRAIN_GROW_SUMMARY): 은닉 뉴런 합 처음 → 다 자란 크기, 간격. 크기 고정이면 None."""
+    """자라는 뇌 새 실행의 시작 줄(v6.1 TRAIN_GROW_SUMMARY): 은닉 뉴런 합 처음 → 다 자란 크기, 간격. 크기 고정이면 None.
+    처음 뉴런 수가 모든 은닉층을 이미 채우면(틀로 잘림) 자라지 않으므로 「두 배」를 약속하지 않고 TRAIN_GROW_SUMMARY_FULL
+    (실험실 안내 줄 LAB_GROW_HINT_ALREADY와 같은 경우)."""
     if config.method != "grow" or not layout.brain.hidden:
         return None
     sizes = layout.brain.hidden
     start = sum(min(config.grow_start, s) for s in sizes)
-    return S.TRAIN_GROW_SUMMARY.format(start=start, full=sum(sizes), every=config.grow_every)
+    full = sum(sizes)
+    if start >= full:
+        return S.TRAIN_GROW_SUMMARY_FULL.format(full=full)
+    return S.TRAIN_GROW_SUMMARY.format(start=start, full=full, every=config.grow_every)
 
 
 def _grown_text(trainer: Trainer, row: dict[str, Any]) -> str | None:

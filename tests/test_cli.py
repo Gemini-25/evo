@@ -4,6 +4,7 @@
   통계를 내고, 시작 요약 줄(TRAIN_GROW_SUMMARY)과 자란 세대마다 CLI_TRAIN_GROWN 한 줄을 쓴다.
 - --resume은 grow_*를 바꾸지 못하고(TRAIN_RESUME_GROW_FIXED, 종료 코드 2) 그냥 이어 가면 계속 자란다. judge·bundle·reproduce가 된다.
 - IPOP과 함께, 은닉층 없는 뇌, 1보다 작은 값은 실행 폴더를 만들기 전에 거절한다. 크기 고정 실행에는 새 줄·새 키가 없다.
+- 처음 뉴런 수가 틀을 이미 채우면(--grow-start 16 이상) 시작 줄이 「두 배」를 약속하지 않는다(TRAIN_GROW_SUMMARY_FULL, v6.1 고침).
 """
 
 from __future__ import annotations
@@ -137,6 +138,35 @@ def test_bad_grow_runs_are_refused_before_creating_a_folder(tmp_path: Path, caps
                      *BASE, *extra]) == 2
     assert S.TRAIN_CANNOT_START.format(reason=message) in capsys.readouterr().err
     assert not out.exists() or not any(out.iterdir())
+
+
+@pytest.mark.parametrize("start", [16, 40])
+def test_start_that_already_fills_the_frame_does_not_promise_doubling(tmp_path: Path, capsys: pytest.CaptureFixture[str],
+                                                                      start: int) -> None:
+    """--grow-start가 은닉층 크기(16) 이상이면 학습 방법이 틀로 잘라 처음부터 다 자란 크기라 한 번도 자라지 않는다. 시작 줄은
+    「뉴런 16개 → 16개, 10세대마다 두 배」가 아니라 자라지 않는다고 말한다(실험실 안내 줄 LAB_GROW_HINT_ALREADY와 같은 경우)."""
+    out = tmp_path / "runs"
+    capsys.readouterr()
+    assert cli.main(["train", str(LANDER), "--method", "grow", "--grow-start", str(start), "--grow-every", "1",
+                     "--max-generations", "3", "--out", str(out), *BASE]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    full = S.TRAIN_GROW_SUMMARY_FULL.format(full=16)
+    k = lines.index(full)
+    assert lines[k - 1].startswith(S.TRAIN_STABILITY.split("{")[0])  # 자동 재시작·예선 줄 바로 뒤(자라는 실행과 같은 자리)
+    assert not [ln for ln in lines if "두 배" in ln or "→" in ln or "뇌가 자랐습니다" in ln]
+    assert "자라지 않습니다" in full and "16" in full
+    rows = RunStore.open(only_run(out)).read_stats()
+    assert [(r["brain_neurons"], r["grow"]) for r in rows] == [("16", "0")] * 3  # 정말 자라지 않는다
+    # 한 층이라도 덜 찼으면 지금처럼 자라는 줄
+    spec = compile_env(LANDER_TEXT)
+    from evolab.engine import commands
+    from evolab.policy.genome import layout_for
+
+    layout = layout_for(spec)
+    assert commands._grow_text(TrainConfig(method="grow", grow_start=15, grow_every=4), layout) == \
+        S.TRAIN_GROW_SUMMARY.format(start=15, full=16, every=4)
+    assert commands._grow_text(TrainConfig(method="grow", grow_start=start), layout) == full
+    assert commands._grow_text(TrainConfig(method="cmaes", grow_start=start), layout) is None
 
 
 def test_fixed_size_train_has_no_grow_line_or_keys(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -30,6 +30,10 @@ v2.0과 비트 단위로 같게 돌고, 새 실행은 환경에 있음 유전자
 크기 고정 실행의 config 사전(run.json, 체크포인트, 재현 묶음)이 v6.0과 바이트 같다. 통계 열 GROW_COLUMNS(brain_neurons·brain_links·
 grow)는 자라는 실행만 switch 바로 뒤에 쓴다(크기 고정 실행의 열 머리는 v6.0과 같음). 학습 방법이 grow가 아니면 이 파일의 다른
 길은 한 줄도 바뀌지 않는다. 옛 프로그램(v3~v6.0)은 method = "grow"를 모르므로 이어 가기·재현을 거절한다(설계 2.4).
+자라는 실행의 통계 열 diversity는 켜진 좌표만의 표준편차 평균이다(학습 방법 stats()["diversity"]): 꺼진 좌표(늘 0)까지 평균하면
+자랄 때마다 값이 두 배쯤 뛰고 「탐색 폭」(sigma)과 단위가 어긋난다. 크기 고정 실행은 v6.0 식(모든 유전자) 그대로다.
+last_growth는 자란 학습 방법이 다음 세대에도 쓰일 때만 남긴다: 자란 세대 끝에 자동 재시작·예선 다음 출전으로 그 학습 방법을
+버리면(예선에서 다른 출전자가 통과해도) None이다(통계 열 grow는 그 세대 끝에 자란 사실 그대로 1).
 
 조립 실패(v2.0, 설계 4.9·D22): 몸 수치 때문에 조립되지 않는 (개체, 시험) 쌍은 평가가 점수 NaN으로 돌려준다(evaluate.py).
 집계 점수는 NaN이 그대로 퍼지고(그 개체 = 실패), 학습 방법은 tell에서 sanitize_scores(유한한 최솟값 − 1)로 바꾼다. 통계,
@@ -634,8 +638,10 @@ class Trainer:
             raise TrainerChangeError(problem)
         self.learner = make_learner(config, self.layout)
         self.last_growth: tuple[int, int, int, int] | None = None
-        """마지막 세대 끝에 뇌가 자랐으면 (옛 뉴런 합, 새 뉴런 합, 옛 연결, 새 연결), 아니면 None(v6.1, 자라는 실행만).
-        세션이 세대 메시지 "growth"로, 명령줄이 CLI_TRAIN_GROWN 한 줄로 알린다. 저장하지 않는다(통계 열 grow와 같은 뜻)."""
+        """마지막 세대 끝에 뇌가 자랐고 그 자란 학습 방법으로 다음 세대를 이어 가면 (옛 뉴런 합, 새 뉴런 합, 옛 연결, 새 연결),
+        아니면 None(v6.1, 자라는 실행만). 세션이 세대 메시지 "growth"로, 명령줄이 CLI_TRAIN_GROWN 한 줄로 알린다. 저장하지
+        않는다. 통계 열 grow와 거의 같은 뜻이지만, 자란 세대 끝에 학습 방법이 바뀌어(자동 재시작, 예선 다음 출전, 예선에서 다른
+        출전자가 통과) 자란 뇌를 더 쓰지 않으면 None이다: 「뇌가 자랐습니다」라고 알린 다음 세대가 작은 뇌로 돌면 안 된다."""
         self.state = TrainState(qualifying=config.qualify_entrants > 1)
         self.block_ids = [b.id for b in self.spec.file.scoring.blocks]
         self.end_ids = [t.event for t in self.spec.terminations]
@@ -738,7 +744,8 @@ class Trainer:
         scores = res.scores.reshape(pop, T)
         agg = aggregate(scores, self.how)
         self.learner.tell(X, agg)  # 학습 방법이 NaN(조립 실패)을 agg_s와 같은 규칙으로 바꾼다
-        self.last_growth = getattr(self.learner, "last_growth", None)  # 자라는 뇌(v6.1): 이 tell에서 자랐나(교체 전에 읽음)
+        # 자라는 뇌(v6.1): 이 tell에서 자랐나. 교체 전에 읽고, 아래에서 학습 방법이 바뀌면 지운다(자란 뇌가 버려짐)
+        self.last_growth = getattr(self.learner, "last_growth", None)
         # 통계·세대 대표·관찰·화면 점수: 조립 실패 개체는 유한한 최솟값 − 1(sanitize_scores). NaN이 없으면 agg 그대로의
         # 사본이라 v1.2와 비트 단위로 같다(±무한대 집계도 v1.2처럼 그대로 둔다)
         agg_s = sanitize_scores(agg, pop) if np.isnan(agg).any() else agg.copy()
@@ -790,6 +797,11 @@ class Trainer:
             self.store.save_champion(label, "representative", X[rep], score=float(agg_s[rep]),
                                      env_version=self.env_version, **(obs or {}))
         self._apply_switch(switch)
+        if self.last_growth is not None and s.current.index != cur.index:
+            # 자란 학습 방법이 이 세대 끝에 다른 학습 방법으로 바뀌었다(자동 재시작, 예선 다음 출전, 예선에서 다른 출전자가 통과):
+            # 자란 뇌는 다음 세대에 쓰이지 않으므로 알리지 않는다. 예선 끝에 방금 자란 출전자가 통과하면(번호가 같음) 그 자란
+            # 상태에서 이어 가므로 그대로 알린다. 통계 줄의 grow 열은 이미 썼고 바꾸지 않는다
+            self.last_growth = None
         self.in_step = False
         if self.store is not None and c.checkpoint_every and s.generation % c.checkpoint_every == 0:
             self.checkpoint()  # 바꾼 뒤 상태(새 학습 방법)가 담긴다
@@ -960,7 +972,7 @@ class Trainer:
             "switch": switch,
             **self._grow_columns(learner_stats),  # 자라는 실행만(v6.1 GROW_COLUMNS), 크기 고정 실행은 비어 열이 v6.0과 같음
             "sigma": float(learner_stats.get("sigma", math.nan)),
-            "diversity": float(np.mean(np.std(X, axis=0))),
+            "diversity": self._diversity(X, learner_stats),
             "distance": mean_pairwise_distance(X),
             "steps": steps,
         }
@@ -980,6 +992,15 @@ class Trainer:
         row["elapsed"] = s.elapsed
         row["steps_per_second"] = steps / gen_time if gen_time > 0 else 0.0
         return row
+
+    def _diversity(self, X: np.ndarray, learner_stats: dict[str, float]) -> float:
+        """통계 열 diversity(유전자 표준편차 평균). 크기 고정 실행은 v6.0 식 그대로 모든 유전자의 평균이다. 자라는 실행은 켜진
+        좌표만의 평균(학습 방법이 이 세대 후보에서 이미 계산한 stats()["diversity"]): 꺼진 좌표는 늘 0이라 틀 전체로 평균하면
+        값이 (켜진 좌표 수 / 틀 길이)배로 줄고 자랄 때마다 두 배쯤 뛴다. 여기서 learner.active_coords()로 다시 계산하지 않는다:
+        이 세대 끝에 자랐으면 그것은 이미 자란 뒤의 좌표다."""
+        if self.config.method == "grow":
+            return float(learner_stats["diversity"])
+        return float(np.mean(np.std(X, axis=0)))
 
     def _grow_columns(self, learner_stats: dict[str, float]) -> dict[str, Any]:
         """자라는 실행의 통계 열(GROW_COLUMNS): 이번 세대 후보를 만든 뉴런 합·연결 수와 이 세대 끝에 자랐나(0/1). 아니면 빈 사전."""

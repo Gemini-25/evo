@@ -17,6 +17,10 @@
   크기) 그대로라 세대를 넘겨 보면 같은 자리가 채워진다. BrainTile은 자라는 뇌 실행(Dashboard.brain_grows: 통계에 brain_neurons
   열)에서만 유전자로 켜짐을 판단한다(policy.frame.BrainFrame.active_neurons): 크기 고정 실행은 GA의 첫 개체가 처음 유전자(뇌 0)라
   유전자만 보면 모든 뉴런이 꺼져 보인다. 꺼진 자리가 있으면 제목 끝에 BRAIN_SIZE_LABEL, 아래 줄에 BRAIN_GROW_NOTE.
+  멈춘 그림(원천 없음)은 보는 세대의 뇌 크기를 따른다: 그때 챔피언의 켜진 뉴런이 보는 세대 대표와 다르면(챔피언은 검증 때만
+  바뀌므로 그 뒤에 뇌가 자랐거나, 자동 재시작으로 작은 뇌에서 다시 시작) 챔피언 대신 보는 세대 대표를 그린다(원천 종류 "size",
+  제목 BRAIN_TITLE_REP_SIZE). 그래야 세대를 넘겨 볼 때 모든 크기가 차례로 보이고 「뇌 크기」 타일·통계 줄과 같은 크기다.
+  「새로 켜짐」 고리는 멈춘 그림이면 보는 세대 g 기준(g − FRESH_GENERATIONS세대 대표와 비교, 설계 4.18), 원천이 있으면 그 원천의 세대.
 
 학습 결과와 무관한 화면 전용 코드다(유전자를 읽기만 한다).
 """
@@ -716,6 +720,7 @@ class BrainTile(_WatchTile):
     playing(캔버스가 추적 재생 중인 개체) · live(관전 중 그 세대 대표를 시험 0번으로 따로 다시 돌린 것) · 없으면 보는
     세대까지의 마지막 챔피언 멈춘 그림. 그때까지 챔피언이 없으면(검증 전, 고속 모드의 첫 세대들) 보는 세대 대표의 멈춘
     그림(경주의 RACE_LANE_REP_INSTEAD와 같은 규칙). 연결선 그림은 유전자가 바뀔 때만 다시 만든다.
+    v6.1 자라는 뇌 실행: 그때 챔피언의 뇌 크기가 보는 세대와 다르면 보는 세대 대표의 멈춘 그림(원천 "size", _resized_rep).
     """
 
     follows_axis = False
@@ -728,8 +733,11 @@ class BrainTile(_WatchTile):
         self._title_parts: tuple[str, str, float] | None = None
         """(종류, 이름 또는 세대 글, 재생 길이(초)): show_time이 제목의 시각만 바꾼다."""
         self.source_kind: str | None = None
-        """지금 그리는 원천: "playing" | "live" | "champion" | "rep"(챔피언이 없어 보는 세대 대표) | None(빈 상태)."""
+        """지금 그리는 원천: "playing" | "live" | "champion" | "rep"(챔피언이 없어 보는 세대 대표) | "size"(v6.1 자라는 뇌 실행:
+        그때 챔피언의 뇌 크기가 보는 세대와 달라 보는 세대 대표) | None(빈 상태)."""
         self.source_generation: int | None = None
+        self.champion_generation: int | None = None
+        """원천이 "size"일 때 그리지 않은 그때 챔피언의 세대(제목 BRAIN_TITLE_REP_SIZE), 아니면 None."""
         self.size_label = ""
         """v6.1: 제목 끝 BRAIN_SIZE_LABEL(꺼진 자리가 있을 때만, 없으면 빈 글)."""
         self._frame: tuple[Any, BrainFrame | None] | None = None
@@ -772,14 +780,23 @@ class BrainTile(_WatchTile):
             return
         src: BrainSource | None = self.dash.brain_source
         notes: list[str] = []
+        lay = meta.layout
+        champion_gen: int | None = None
         if src is not None and src.genome.shape == (meta.dim,):
             genome = src.genome
             kind, gen = src.kind, src.generation
             rep = src.replay
+            fresh_gen = gen
         else:
             gen_now = self.dash.view_generation()
             champ = self.dash.champion_at(gen_now if gen_now is not None else 2**62)
-            if champ is not None:
+            resized = self._resized_rep(lay, champ[1], gen_now) if champ is not None and gen_now is not None else None
+            if resized is not None:  # v6.1: 그때 챔피언은 다른 크기의 뇌(그 뒤에 자랐거나 다시 시작) → 보는 세대 대표
+                assert champ is not None
+                gen, genome = gen_now, resized
+                kind, rep = "size", None
+                champion_gen = champ[0]
+            elif champ is not None:
                 gen, genome = champ
                 kind, rep = "champion", None
             else:
@@ -789,10 +806,10 @@ class BrainTile(_WatchTile):
                     return
                 gen, genome = gen_now, still
                 kind, rep = "rep", None
-        lay = meta.layout
+            fresh_gen = gen_now if gen_now is not None else gen  # 멈춘 그림의 고리는 보는 세대 기준(챔피언을 뽑은 세대가 아님)
         try:
             g64 = np.asarray(genome, dtype=np.float64)
-            active, fresh, self.size_label = self._growth_marks(lay, g64, gen)
+            active, fresh, self.size_label = self._growth_marks(lay, g64, fresh_gen)
             params = lay.brain_params(g64[None, :])[0]
             self.brain.set_network(lay.brain, params, list(meta.inputs), list(meta.outputs), self.theme,
                                    active=active, fresh=fresh)
@@ -813,7 +830,8 @@ class BrainTile(_WatchTile):
             self.brain.set_trace(None, None, self.brain.dt)
         self.brain.set_time(self.dash.play_time)
         self.source_kind, self.source_generation = kind, gen
-        if kind in ("champion", "rep"):
+        self.champion_generation = champion_gen
+        if kind in ("champion", "rep", "size"):
             self._title_parts = (kind, str(gen), 0.0)
             notes.append(S.BRAIN_LEGEND_STILL)
         else:
@@ -871,6 +889,33 @@ class BrainTile(_WatchTile):
         self._active_cache[int(generation)] = out
         return out
 
+    def _resized_rep(self, layout: Any, champion: np.ndarray, generation: int) -> np.ndarray | None:
+        """자라는 뇌 실행에서 그때 챔피언의 켜진 뉴런이 보는 세대(generation) 대표의 켜진 뉴런과 다르면 그 세대 대표 유전자
+        (float64), 같거나 견줄 수 없으면(크기 고정·옛 실행, 틀 없음, 그 세대 대표를 읽을 수 없음) None.
+
+        챔피언은 검증 때만 바뀐다(새 실행 기본: 학습 시험 1,000회마다, 더 나은 후보가 있을 때만). 그 사이에 뇌가 자라면 챔피언은
+        옛 크기의 뇌라, 그것만 그리면 「뇌 크기」 타일·통계 줄과 크기가 어긋나고 세대를 넘겨 볼 때 한 단계가 통째로 빠진다. 자동
+        재시작(처음 상태에서)으로 작은 뇌에서 다시 자랄 때도 같다. 켜짐 비교는 active_at(화면 기록의 float16 대표, 기억해 둠)이라
+        파일을 다시 읽지 않고, 다를 때만 dash.rep_genome으로 정확한 유전자를 가져온다."""
+        if not self.dash.brain_grows:
+            return None
+        frame = self.frame_for(layout)
+        if frame is None:
+            return None
+        now = self.active_at(int(generation))
+        if now is None:
+            return None
+        try:
+            then = tuple(frame.active_neurons(champion))
+        except FrameError:
+            return None
+        if _same_masks(now, then):
+            return None
+        still = self.dash.rep_genome(int(generation))
+        if still is None or still.shape != champion.shape:
+            return None
+        return still
+
     def _growth_marks(self, layout: Any, genome: np.ndarray, gen: int | None
                       ) -> tuple[list[np.ndarray] | None, list[np.ndarray] | None, str]:
         """(켜진 뉴런, 새로 켜진 뉴런, 제목 끝 글). 자라는 뇌 실행(dash.brain_grows)만: 크기 고정·옛 실행은 (None, None, "")라
@@ -895,6 +940,7 @@ class BrainTile(_WatchTile):
 
     def _empty(self, text: str = S.BRAIN_EMPTY) -> None:
         self.source_kind = self.source_generation = None
+        self.champion_generation = None
         self._title_parts = None
         self._title = ""
         self.size_label = ""
@@ -912,6 +958,8 @@ class BrainTile(_WatchTile):
             title = S.BRAIN_TITLE_CHAMPION.format(gen=name)
         elif kind == "rep":
             title = S.BRAIN_TITLE_REP.format(gen=name)
+        elif kind == "size":  # v6.1: 그때 챔피언과 뇌 크기가 달라 보는 세대 대표를 그림
+            title = S.BRAIN_TITLE_REP_SIZE.format(gen=name, champion=self.champion_generation)
         elif kind == "live":
             title = S.BRAIN_TITLE_LIVE.format(gen=name, t=shown)
         else:

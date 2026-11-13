@@ -58,8 +58,10 @@ def _strings_code_without_definitions(names: list[str]) -> str:
 
 def test_every_v61_string_is_used() -> None:
     names = _v61_constant_names()
-    # 0'단계 49개 중: 설계 6절 37개 + FRAME_* 5개, L 묶음 6개, C 묶음 1개(GROW_TILE_EMPTY). 블록 머리를 놓치면 0이 된다
-    assert len(names) == 49
+    # 0'단계 49개 중: 설계 6절 37개 + FRAME_* 5개, L 묶음 6개, C 묶음 1개(GROW_TILE_EMPTY). 블록 머리를 놓치면 0이 된다.
+    # v6.1 고침 묶음 4개(TRAIN_GROW_SUMMARY_FULL, BRAIN_TITLE_REP_SIZE, GROW_TILE_FIXED_NO_HIDDEN, DASH_MARK_GROW_FROM)를 더해 53
+    assert len(names) == 53
+    assert {"TRAIN_GROW_SUMMARY_FULL", "BRAIN_TITLE_REP_SIZE", "GROW_TILE_FIXED_NO_HIDDEN", "DASH_MARK_GROW_FROM"} <= set(names)
     sources = [p for p in [*SRC.rglob("*.py"), *(ROOT / "packaging").rglob("*.py")]
                if p.name != "strings.py" and "__pycache__" not in p.parts]
     text = "\n".join(p.read_text(encoding="utf-8") for p in sources) + "\n" + _strings_code_without_definitions(names)
@@ -178,7 +180,10 @@ def test_lab_hint_cli_summary_and_learner_agree(qtbot: QtBot, tmp_path: Path, mo
         else:
             assert hint == S.LAB_GROW_HINT.format(path=" → ".join(map(str, path)), gen=gen)
         config = TrainConfig(method="grow", grow_start=start, grow_every=every)
-        assert commands._grow_text(config, view.layout) == S.TRAIN_GROW_SUMMARY.format(start=path[0], full=path[-1],
-                                                                                        every=every)
+        if len(path) == 1:  # 처음부터 다 자란 크기: 명령줄도 실험실처럼 자라지 않는다고 말한다(v6.1 고침, 전에는 「두 배」를 약속)
+            assert commands._grow_text(config, view.layout) == S.TRAIN_GROW_SUMMARY_FULL.format(full=path[0])
+        else:
+            assert commands._grow_text(config, view.layout) == S.TRAIN_GROW_SUMMARY.format(start=path[0], full=path[-1],
+                                                                                            every=every)
     finally:
         view.shutdown()

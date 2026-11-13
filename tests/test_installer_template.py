@@ -795,3 +795,60 @@ def test_workflow_text_runs_the_yaml_checks_and_compares_the_exe_mp4() -> None:
     assert "frame_count(job)" in w7 and "Get-FileHash -Algorithm SHA256 -LiteralPath $exeMp4" in w7
     assert "if ($exeHash -ne $srcHash)" in w7
     assert "cl /nologo /W3 /Zc:preprocessor packaging\\ci\\mf_abi.c" in text
+
+
+GROW_STEP = "Growing brain train and reproduce with the console exe (Korean path)"
+"""W3(v6.1 자라는 뇌, v6 설계 8.4·9.3 v6.1-2): package job이 한글 경로의 콘솔 exe로 자라는 뇌를 짧게 학습하고 재현한다."""
+
+
+def test_workflow_text_has_the_growing_brain_exe_step() -> None:
+    """PyYAML 없이도 글로 확인한다(v6.1 고침: W3는 출시 기준인데 단계가 없었다). exe로 train --method grow(세대마다 자람, 워커 2개),
+    통계의 자란 줄 3개, bundle, reproduce의 종료 코드와 「원래 실행과 같습니다」 줄. 실행 폴더는 앞 단계의 「실행 기록」과 따로 둔다
+    (앞 단계와 오류 보고 단계가 그 폴더의 첫 실행을 쓴다). 네이티브 명령 뒤에는 늘 종료 코드를 본다."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert text.count(f"- name: {GROW_STEP}\n") == 1
+    package = text.split("\n  package:\n", 1)[1].split("\n  release:\n", 1)[0]
+    before, step = package.split(f"- name: {GROW_STEP}\n", 1)
+    step = step.split("\n      - name:", 1)[0]
+    assert "- name: Train, judge and reproduce with the console exe (Korean path)" in before
+    assert "- name: Copy exe folder to a Korean path" in before and "- name: Self-test windowed exe" not in before
+    assert "if: ${{ !cancelled() && steps.build.outcome == 'success' }}" in step and "shell: pwsh" in step
+    lines = [ln.strip() for ln in step.splitlines()]
+    train = [ln for ln in lines if ln.startswith("& $cli train ")]
+    assert len(train) == 1
+    for arg in ("$envfile", "--method grow", "--grow-every 1", "--max-generations 4", "--workers 2", "--out $runs"):
+        assert arg in train[0], arg
+    assert '$cli = Join-Path $dest "evolab\\evolab-cli.exe"' in lines  # 한글 경로로 복사한 exe(소스 실행이 아님)
+    runs = [ln for ln in lines if ln.startswith("$runs = ")]
+    assert len(runs) == 1 and '"실행 기록"' not in runs[0] and runs[0].startswith('$runs = Join-Path $dest "')
+    assert any("Import-Csv" in ln and "stats.csv" in ln and '$_.grow -eq "1"' in ln for ln in lines)
+    assert "if ($grown -ne 3) {" in step
+    assert "& $cli bundle $run --out $zip" in lines
+    reproduce = [ln for ln in lines if "$cli reproduce $zip" in ln]
+    assert len(reproduce) == 1 and reproduce[0].startswith("$out = & $cli reproduce $zip --out (Join-Path $dest ")
+    assert "--workers 1" in reproduce[0]
+    same = S.BUNDLE_SAME.split("(")[0]  # 「원래 실행과 같습니다」: 프로그램이 쓰는 글 그대로
+    assert same and f'Select-String -SimpleMatch -Quiet "{same}"' in step
+    assert "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)" in lines  # exe의 UTF-8 출력을 그대로 받는다
+    assert lines.index("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)") < lines.index(reproduce[0])
+    # 네이티브 명령마다 바로 다음 줄에서 종료 코드를 본다(pwsh는 0이 아닌 종료 코드로 멈추지 않는다)
+    for k, ln in enumerate(lines):
+        if ln.startswith("& $cli "):
+            assert lines[k + 1] == "if ($LASTEXITCODE -ne 0) { exit 1 }", ln
+    k = lines.index(reproduce[0])
+    assert lines[k + 1] == "$code = $LASTEXITCODE" and 'if ($code -ne 0) { Write-Error "reproduce exit code $code"; exit 1 }' in lines
+    # 공백·한글이 든 경로는 변수로만 넘긴다(pwsh가 인자 하나로 넘김). 글자 그대로 쓴 경로 조각은 모두 따옴표 안이다
+    for ln in lines:
+        if ln.startswith(("& $cli", "$out = & $cli")):
+            assert not re.search("[가-힣]", re.sub(r'"[^"]*"', "", ln)), ln
+
+
+def test_workflow_growing_brain_step_follows_the_build(workflow: dict[str, Any]) -> None:
+    step = _step(workflow, "package", GROW_STEP)
+    assert step["if"] == "${{ !cancelled() && steps.build.outcome == 'success' }}" and step["shell"] == "pwsh"
+    assert step["timeout-minutes"] == 10
+    names = [s.get("name", "") for s in _steps(workflow, "package")]
+    assert names.index("Train, judge and reproduce with the console exe (Korean path)") + 1 == names.index(GROW_STEP)
+    assert names.index("Copy exe folder to a Korean path") < names.index(GROW_STEP) \
+        < names.index("Error report bundle with the console exe (Korean path)")
+    assert "train $envfile --method grow" in step["run"] and "reproduce $zip" in step["run"]
