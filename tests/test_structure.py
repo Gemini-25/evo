@@ -451,7 +451,7 @@ def test_t59_version_2_files_read_and_save_as_before() -> None:
     """형식 2 파일은 형식 3 프로그램에서 2 → 3으로 읽히지만(사전 그대로) 저장은 다시 2."""
     text = (ENVS / "glider.evoenv").read_text(encoding="utf-8")
     env = parse_env(text)
-    assert env.version == m.CURRENT_VERSION == 3
+    assert env.version == m.CURRENT_VERSION >= 3  # 6.2.0부터 4(형식 2 파일의 저장은 그대로 2)
     assert json.loads(dump_env(env))["version"] == 2
     assert all(b.exists is None for b in env.bodies)
 

@@ -1,0 +1,16 @@
+{
+  "recipe": 1, "start": "blank_side", "name": "시험용 옆 세계", "world": "side",
+  "arena": {"template": "track_side", "values": {}},
+  "roles": [
+    {"id": "runner", "label": "걷는 몸",
+     "body": {"template": "fixture_walker", "values": {"size": 1.0, "power": 1.0}}}
+  ],
+  "props": [],
+  "rules": [
+    {"rule": "distance", "who": "runner", "part": "torso", "direction": "right", "per_m": 1.0},
+    {"rule": "touch_ends", "who": "runner", "part": "torso", "what": "$ground", "outcome": "failure"},
+    {"rule": "time_limit", "seconds": 10.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "runner", "count": 1, "spawn": "start"}]},
+  "train": {"qualify_entrants": 2, "qualify_trials": 4000}
+}

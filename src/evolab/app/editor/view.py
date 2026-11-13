@@ -196,8 +196,9 @@ class EditorView(QWidget):
 
     def _on_checked(self, issues: list) -> None:
         errors = sum(1 for i in issues if i.severity == "error")
-        warnings = sum(1 for i in issues if i.severity == "warning")  # 안내(info)는 문제가 아니라 세지 않는다
-        self.status.setText(S.ED_STATUS.format(errors=errors, warnings=warnings) if errors or warnings
+        warnings = sum(1 for i in issues if i.severity == "warning")
+        infos = sum(1 for i in issues if i.severity == "info")  # 살펴볼 것(info)만 있으면 「문제 없음」 그대로(문제가 아니다)
+        self.status.setText(S.ED_STATUS.format(errors=errors, warnings=warnings, infos=infos) if errors or warnings
                             else S.ED_STATUS_OK)
         self.act_play.setEnabled(errors == 0)
         self.act_lab.setEnabled(errors == 0)
