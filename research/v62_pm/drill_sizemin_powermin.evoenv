@@ -246,7 +246,7 @@
       "tags": [
         "player"
       ],
-      "drag": 0.0,
+      "drag": 67.5,
       "motion": null,
       "exists": null
     }
@@ -254,27 +254,73 @@
   "joints": [],
   "actuators": [
     {
-      "kind": "move",
-      "id": "go",
-      "label": "밀기",
+      "kind": "thruster",
+      "id": "go_up",
+      "label": "위로",
       "body": "disc",
-      "mode": "xy",
+      "at": [
+        0.0,
+        0.0
+      ],
+      "dir": 1.5707963267948966,
       "max_force": 135.0,
-      "max_speed": 2.1,
-      "max_turn": 6.0,
-      "keys_up": [
+      "tank": null,
+      "fuel_per_s": 0.0,
+      "keys": [
         "Up",
         "W"
+      ]
+    },
+    {
+      "kind": "thruster",
+      "id": "go_down",
+      "label": "아래로",
+      "body": "disc",
+      "at": [
+        0.0,
+        0.0
       ],
-      "keys_down": [
+      "dir": -1.5707963267948966,
+      "max_force": 135.0,
+      "tank": null,
+      "fuel_per_s": 0.0,
+      "keys": [
         "Down",
         "S"
+      ]
+    },
+    {
+      "kind": "thruster",
+      "id": "go_left",
+      "label": "왼쪽으로",
+      "body": "disc",
+      "at": [
+        0.0,
+        0.0
       ],
-      "keys_left": [
+      "dir": 3.141592653589793,
+      "max_force": 135.0,
+      "tank": null,
+      "fuel_per_s": 0.0,
+      "keys": [
         "Left",
         "A"
+      ]
+    },
+    {
+      "kind": "thruster",
+      "id": "go_right",
+      "label": "오른쪽으로",
+      "body": "disc",
+      "at": [
+        0.0,
+        0.0
       ],
-      "keys_right": [
+      "dir": 0.0,
+      "max_force": 135.0,
+      "tank": null,
+      "fuel_per_s": 0.0,
+      "keys": [
         "Right",
         "D"
       ]
@@ -508,10 +554,10 @@
       "world_values": {
         "damping": 0.5
       },
-      "built": "40b2da9c6ebdb7063a39c27173ac58b646bf5b6abfc20bdf353514543adbe8ad",
+      "built": "c1e671e64c0fe7d60b701de6565ad1cb2e413d7be746d4bf7b63c26159f716dc",
       "templates": {
         "ball": "288a3f0179e8ea9be7f2ef80ffd77edd0360c9f776fab297435518258d5bb216",
-        "disc": "f66b09eaab941407c7256a6f18381c25065da8b2053a557008da8732a4cbfaa9",
+        "disc": "a034653e8b44c6b8e4cbf502e0655929716c6106a0445109af4acc2dd0debe7a",
         "goal": "6b70e0ef4da66edd7626640bc3c98812331637061fa235567b56df6b9d0ae735",
         "yard_top": "2cd7b41a53fd6bd05101b902aa8dc03859bae6d6c7a43a3c47570691656a585c"
       }

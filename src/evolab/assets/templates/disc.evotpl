@@ -12,10 +12,13 @@
   "root": "disc",
   "parts": {
     "bodies": [
-      {"id": "disc", "label": "선수", "pos": [0.0, 0.0], "shapes": [{"kind": "circle", "r": "=t.size * 0.4"}], "material": {"density": 50.0, "friction": 0.3, "elasticity": 0.2}, "tags": ["player"]}
+      {"id": "disc", "label": "선수", "pos": [0.0, 0.0], "shapes": [{"kind": "circle", "r": "=t.size * 0.4"}], "material": {"density": 50.0, "friction": 0.3, "elasticity": 0.2}, "tags": ["player"], "drag": "=t.size * t.size * 120"}
     ],
     "actuators": [
-      {"kind": "move", "id": "go", "label": "밀기", "body": "disc", "mode": "xy", "max_force": "=t.power * t.size * t.size * 400", "max_speed": "=t.power * 3.5", "keys_up": ["Up", "W"], "keys_down": ["Down", "S"], "keys_left": ["Left", "A"], "keys_right": ["Right", "D"]}
+      {"kind": "thruster", "id": "go_up", "label": "위로", "body": "disc", "at": [0.0, 0.0], "dir": 1.5707963267948966, "max_force": "=t.power * t.size * t.size * 400", "keys": ["Up", "W"]},
+      {"kind": "thruster", "id": "go_down", "label": "아래로", "body": "disc", "at": [0.0, 0.0], "dir": -1.5707963267948966, "max_force": "=t.power * t.size * t.size * 400", "keys": ["Down", "S"]},
+      {"kind": "thruster", "id": "go_left", "label": "왼쪽으로", "body": "disc", "at": [0.0, 0.0], "dir": 3.141592653589793, "max_force": "=t.power * t.size * t.size * 400", "keys": ["Left", "A"]},
+      {"kind": "thruster", "id": "go_right", "label": "오른쪽으로", "body": "disc", "at": [0.0, 0.0], "dir": 0.0, "max_force": "=t.power * t.size * t.size * 400", "keys": ["Right", "D"]}
     ],
     "sensors": [
       {"kind": "body_state", "id": "st", "label": "내 움직임", "body": "disc", "fields": ["vx", "vy"], "frame": "world", "scale": {"vx": 3.5, "vy": 3.5}}
