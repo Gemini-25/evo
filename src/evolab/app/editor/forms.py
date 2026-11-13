@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.editor.document import EnvDocument, JsonPath, Ref, get_path, set_path
 from evolab.spec import model as m
 from evolab.spec import symbols as sy
@@ -69,7 +70,12 @@ _ID_RE = _MODEL_ID_RE
 """이름 바꾸기가 받는 id: 환경 파일 모델과 같은 규칙(한글 허용, 40자까지)."""
 _ID_MAX = 40
 _PARAM_REF_RE = re.compile(r"=\s*p\.([A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*)\s*")
-ISSUE_COLOR = "#d9534f"
+
+
+def issue_color() -> str:
+    """오류 글·테두리 색: 지금 테마의 위험색(6.2.0 U2: 옛 상수 ISSUE_COLOR를 갈음). 부를 때마다 테마를 읽는다."""
+    return style.ui_for().danger
+
 
 SECTION_TYPES: dict[str, Any] = {
     "generators": m.Generator,
@@ -913,7 +919,7 @@ def _mark(w: QWidget, invalid: bool, issue: bool) -> None:
     if not invalid and not issue:
         w.setStyleSheet("")
         return
-    rules = f"border: 1px solid {ISSUE_COLOR};"
+    rules = f"border: 1px solid {issue_color()};"
     if invalid:
         rules += " background-color: rgba(217, 83, 79, 50);"
     w.setStyleSheet(f"{_qt_class(w)} {{ {rules} }}")
@@ -1100,7 +1106,7 @@ class FieldWidget(QWidget):
             w.setToolTip(tip)
         if self.label is not None:
             self.label.setToolTip(tip)
-            self.label.setStyleSheet(f"color: {ISSUE_COLOR};" if self._issues else "")
+            self.label.setStyleSheet(f"color: {issue_color()};" if self._issues else "")
 
 
 class NumField(FieldWidget):
@@ -1858,7 +1864,8 @@ class IdField(FieldWidget):
         edit.blockSignals(False)
         self.set_invalid(None)
         if edit.isVisible():
-            QToolTip.showText(edit.mapToGlobal(edit.rect().bottomLeft()), self.last_error, edit)
+            QToolTip.showText(edit.mapToGlobal(edit.rect().bottomLeft()),
+                              style.wrap_tip(self.last_error) or self.last_error, edit)  # 긴 풍선은 꺾음(6.2.0 U3)
 
     def flush(self) -> None:
         self._commit()
@@ -2563,7 +2570,7 @@ class ModelGroup(FieldWidget):
 
     def _restyle(self) -> None:
         self.box.setToolTip(self.tooltip())
-        self.box.setStyleSheet(f"QGroupBox {{ color: {ISSUE_COLOR}; }}" if self._issues else "")
+        self.box.setStyleSheet(f"QGroupBox {{ color: {issue_color()}; }}" if self._issues else "")
 
     def set_issues(self, issues: list[Issue]) -> None:
         # 묶음 자체를 가리키는 결과만(안쪽 칸의 결과는 그 칸이 보인다).
@@ -2654,7 +2661,7 @@ class UnionGroup(FieldWidget):
         if msgs != self._issues:
             self._issues = msgs
             self.box.setToolTip(self.tooltip())
-            self.box.setStyleSheet(f"QGroupBox {{ color: {ISSUE_COLOR}; }}" if msgs else "")
+            self.box.setStyleSheet(f"QGroupBox {{ color: {issue_color()}; }}" if msgs else "")
 
 
 class UnionListField(FieldWidget):
@@ -2751,7 +2758,7 @@ class UnionListField(FieldWidget):
         if msgs != self._issues:
             self._issues = msgs
             self.add_button.setToolTip(self.tooltip())
-            self.add_button.setStyleSheet(f"QToolButton {{ color: {ISSUE_COLOR}; }}" if msgs else "")
+            self.add_button.setStyleSheet(f"QToolButton {{ color: {issue_color()}; }}" if msgs else "")
 
 
 def make_field(ctx: FormContext, path: JsonPath, spec: FieldSpec) -> FieldWidget | None:

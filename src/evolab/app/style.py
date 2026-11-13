@@ -290,8 +290,16 @@ def _button_selector(button: QAbstractButton) -> str:
 
 
 def _paddings(button: QAbstractButton, border: int) -> tuple[int, int]:
-    """꾸민 단추의 높이가 꾸미기 전과 같아지는 위·아래 안쪽 여백(테두리 border px)."""
-    room = max(0, _native_height(button) - QFontMetrics(button.font()).height() - 2 * border)
+    """꾸민 단추의 높이가 꾸미기 전과 같아지는 위·아래 안쪽 여백(테두리 border px).
+
+    글꼴 높이로 셈하지 않고 잰다: 여백 0인 같은 스타일시트를 잠깐 입혀 그 높이를 재고 꾸미기 전 높이와의 차를 나눈다
+    (스타일시트 단추의 크기는 글꼴 높이가 아니라 줄 간격 등으로 정해져 1px씩 어긋났다).
+    """
+    native = _native_height(button)
+    cls = _button_selector(button)
+    button.setStyleSheet(f"{cls} {{ font-weight: bold; border: {border}px solid transparent; padding: 0px; }}")
+    button.ensurePolished()
+    room = max(0, native - int(button.sizeHint().height()))
     return room // 2, room - room // 2
 
 

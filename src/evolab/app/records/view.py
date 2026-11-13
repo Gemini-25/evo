@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from evolab import paths
 from evolab.app import errors
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.runs.catalog import RunSummary, branch_run, delete_run, list_runs, read_summary, set_memo
 from evolab.runs.store import RunStore, RunStoreError
 
@@ -47,7 +48,6 @@ COL_ENV, COL_METHOD, COL_STARTED, COL_GENERATIONS, COL_BEST, COL_MEMO = range(6)
 COLUMN_TITLES = (S.REC_COL_ENV, S.REC_COL_METHOD, S.REC_COL_STARTED, S.REC_COL_GENERATIONS, S.REC_COL_BEST,
                  S.REC_COL_MEMO)
 PATH_ROLE = Qt.ItemDataRole.UserRole
-COLOR_BROKEN = QColor("#9aa0aa")
 
 
 def format_started(iso: str) -> str:
@@ -272,7 +272,7 @@ class RecordsView(QWidget):
             item.setData(PATH_ROLE, str(s.path))
             item.setToolTip(tip)
             if not s.ok:
-                item.setForeground(QBrush(COLOR_BROKEN))
+                item.setForeground(QBrush(QColor(style.ui_for().muted)))
             if col in (COL_GENERATIONS, COL_BEST):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
