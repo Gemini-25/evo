@@ -3,6 +3,7 @@
 - T8: environments/running.evoenv는 형식 4, 입력 13·출력 6·유전자 326, editor.train의 예선 값, 측정에 쓴 원형 파일
   (tests/data/presets/running_measured.evoenv)과 물리 동일(physics_view), 한 세대(개체 8)가 워커 0·2에서 같다.
 - T14(PM 쪽): 내장 파일의 환경 해시 = build(load_builtin("running")), make_presets의 견주기가 문제 없음.
+- B4: disc는 추진기 넷(밀기로는 M5를 못 넘음).
 - T11(PM 쪽): biped·disc의 겉 슬라이더 귀퉁이(최소·최대 조합과 기본값)에서 L1·L2, 60스텝 자세가 유한.
 - D27: 균형 보조 체크를 끄면 부품이 빠져 형식 1이고, 나머지 물리는 원형 파일에서 균형 보조만 뺀 것과 같다.
 """
@@ -230,16 +231,21 @@ def test_biped_corner_sizes_scale_the_body_and_keep_the_feet_above_the_ground() 
 # ---------------------------------------------------------------------------
 
 
-def test_disc_template_uses_move_and_is_format_4() -> None:
+def test_disc_template_uses_four_thrusters() -> None:
+    """되돌릴 지점 B4(설계 5.3): 밀기(Move xy)로는 M5를 못 넘어(40세대 평균 −4.9·14.8·1.7) DU 원형의 추진기 넷 방식으로 바꿨다.
+    몸의 끌림(drag)이 크기² × 120이라 끝 속도는 힘 × 3.3m/s 안팎(원형 그대로)."""
     tpl = _lib().get("disc")
     assert (tpl.kind, tpl.world, tpl.root) == ("body", "top", "disc")
     parts = T.expand(tpl, tpl.defaults())
-    (move,) = parts["actuators"]
-    assert (move["kind"], move["mode"], move["body"]) == ("move", "xy", "disc")
-    assert move["keys_up"] and move["keys_down"] and move["keys_left"] and move["keys_right"]
+    assert [(a["kind"], a["id"]) for a in parts["actuators"]] == [
+        ("thruster", "go_up"), ("thruster", "go_down"), ("thruster", "go_left"), ("thruster", "go_right")]
+    assert all(a["keys"] and a["max_force"] == pytest.approx(400.0) for a in parts["actuators"])
+    (disc,) = parts["bodies"]
+    assert disc["drag"] == pytest.approx(120.0)
     for values in _corners(tpl):
         p = T.expand(tpl, values)
-        assert p["actuators"][0]["max_force"] > 0 and p["actuators"][0]["max_speed"] > 0
+        speed = p["actuators"][0]["max_force"] / p["bodies"][0]["drag"]
+        assert speed == pytest.approx(values["power"] * 400 / 120)
 
 
 def test_drill_recipe_builds_the_ball_drill() -> None:
@@ -254,13 +260,13 @@ def test_drill_recipe_builds_the_ball_drill() -> None:
     assert {r["id"]: r["pos"] for r in data["regions"]} == {"goal": [6.5, 0.0]}
     assert data["agent"]["spawn"]["x"] == -3.5
     spec = quick.spec
-    assert spec.outputs == ["go.x", "go.y"]
+    assert spec.outputs == ["go_up", "go_down", "go_left", "go_right"]
     assert [r["kind"] for r in data["editor"]["rules"]] == ["near", "reach"]
     assert "train" not in data["editor"]
     # 가만히 있으면 공은 골에 들어가지 않는다(점수 = −(공과 골의 가장 가까운 거리))
     ep = Episode(spec, None, Trial(1))
     while not ep.done:
-        ep.step([0.0, 0.0])
+        ep.step([0.0] * 4)
     assert ep.result().score < 0
 
 

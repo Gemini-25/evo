@@ -67,3 +67,23 @@ def test_builtin_running_repeats_the_prototype_learning(tmp_path: Path) -> None:
     if _same_cpu_family():
         assert rows[-1]["champion_score"] == want_champion
         assert digest == want_hash
+
+
+@pytest.mark.slow
+def test_ball_drill_learns_in_40_generations(tmp_path: Path) -> None:
+    """설계 7.1 M5(B4 뒤의 추진기 넷 disc): 개체 16, 40세대에 개체 평균 점수 80 이상(시드 1: 이 컨테이너에서 100.0)."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from evolab.presets import recipe as RC
+    from evolab.spec.io import dump_env, parse_env
+
+    env_file = tmp_path / "drill.evoenv"
+    env_file.write_text(dump_env(parse_env(RC.build(RC.load_builtin("drill")))), encoding="utf-8")
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    done = subprocess.run(
+        [sys.executable, "-m", "evolab", "train", str(env_file), "--seed", "1", "--popsize", "16", "--max-generations", "40",
+         "--no-observe", "--workers", "1", "--out", str(tmp_path / "run")],
+        capture_output=True, text=True, timeout=1800, env=env, cwd=ROOT)
+    assert done.returncode == 0, done.stderr[-2000:]
+    (stats,) = list((tmp_path / "run").glob("*/stats.csv"))
+    _, rows = stats_hash(stats)
+    assert len(rows) == 40 and float(rows[-1]["score_mean"]) >= 80.0
