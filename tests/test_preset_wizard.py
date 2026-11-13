@@ -26,6 +26,8 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
+    QApplication,
+    QCheckBox,
     QComboBox,
     QLabel,
     QLineEdit,
@@ -57,11 +59,20 @@ def iso(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
+def activate(qtbot: Any, w: QWidget) -> None:
+    """키보드 단축키(Alt+←/→, Ctrl+Enter)는 활성 창에서만 듣는다: 창을 활성으로 만들고 기다린다."""
+    w.activateWindow()
+    if w.windowHandle() is not None:
+        w.windowHandle().requestActivate()
+    qtbot.waitUntil(lambda: QApplication.activeWindow() is w, timeout=5000)
+
+
 def make(qtbot: Any, **kw: Any) -> PresetWizard:
     w = PresetWizard(**kw)
     qtbot.addWidget(w)
     w.show()
     qtbot.waitExposed(w)
+    activate(qtbot, w)
     return w
 
 
@@ -253,7 +264,10 @@ class Clicks:
         assert widget.isVisible() and widget.isEnabled(), widget.objectName()
         if self.w.scroll.viewport().isAncestorOf(widget):
             self.w.scroll.ensureWidgetVisible(widget)
-        self.qtbot.mouseClick(widget, Qt.MouseButton.LeftButton, pos=widget.rect().center())
+        pos = widget.rect().center()
+        if isinstance(widget, QCheckBox):  # 체크 상자는 표시와 글 위만 누름으로 받는다
+            pos.setX(min(8, widget.width() // 2))
+        self.qtbot.mouseClick(widget, Qt.MouseButton.LeftButton, pos=pos)
         self.n += 1
         if self.w.isVisible():
             self.ok = self.ok and l1(self.w)
@@ -354,7 +368,9 @@ def test_t24_can_leave_false_keeps_the_window_and_writes_nothing(qtbot: Any, iso
     w.finished_with.connect(lambda *a: got.append(a))
     w.btn_edit.click()
     w.btn_lab.click()
-    qtbot.keyClick(w, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    activate(qtbot, w)
+    w.rail.setFocus()
+    qtbot.keyClick(w.rail, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
     assert asked == ["edit", "lab", "lab"]
     assert w.isVisible() and not got and env_files() == []
 
@@ -586,3 +602,46 @@ def test_balance_switch_drops_to_format_1(qtbot: Any, iso: Path) -> None:
     assert w.data["version"] == 1
     assert not any(a.get("kind") == "balance" for a in w.data.get("actuators", []))
     assert l1(w)
+
+
+def test_every_control_has_a_tooltip(qtbot: Any, iso: Path) -> None:
+    """새 화면의 조작 위젯마다 풍선(규칙 2: 새 칸마다 풍선)."""
+    w = make(qtbot)
+    bare: list[str] = []
+    for start in ("running", "drill"):
+        w.choose_start(start)
+        for step in range(WZ.STEP_COUNT):
+            w.go(step)
+            for c in w.findChildren(QWidget):
+                if c.window() is not w or not c.isVisible():
+                    continue
+                if not isinstance(c, QAbstractButton | QComboBox | QLineEdit | QAbstractSpinBox | QSlider):
+                    continue
+                if isinstance(c, QLineEdit) and isinstance(c.parent(), QAbstractSpinBox | QComboBox):
+                    continue
+                if not style.tip_text(c).strip():
+                    bare.append(f"{start}/{step}: {type(c).__name__} {c.objectName()!r} {getattr(c, 'text', lambda: '')()!r}")
+    assert not bare, bare[:10]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("start", [s.id for s in RC.starters()])
+def test_s4_each_first_card_trains_three_generations(qtbot: Any, iso: Path, start: str) -> None:
+    """S4: 첫 카드마다 안내 창 → 「실험실로 보내기」 → 진짜 학습 3세대(이 프로세스 안 평가, 작은 집단)."""
+    import numpy as np
+
+    from evolab.engine.pool import WorkerPool
+    from evolab.engine.trainer import TrainConfig, Trainer
+
+    w = make(qtbot)
+    w.choose_start(start)
+    got: list[tuple[str, str, Any]] = []
+    w.finished_with.connect(lambda text, what, path: got.append((text, what, path)))
+    w.btn_lab.click()
+    assert got and got[0][1] == "lab"
+    config = TrainConfig(run_seed=1, popsize=8, trials=1, validate_every=10**9, max_generations=3)
+    with WorkerPool(0) as pool:
+        trainer = Trainer(got[0][0], config, pool, None, observe=False)
+        rows = [trainer.step() for _ in range(3)]
+    assert trainer.state.generation == 3
+    assert all(np.isfinite(float(r["score_mean"])) for r in rows), rows

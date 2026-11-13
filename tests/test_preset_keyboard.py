@@ -39,12 +39,20 @@ def iso(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
+def activate(qtbot: Any, w: QWidget) -> None:
+    """키보드 단축키(Alt+←/→, Ctrl+Enter)는 활성 창에서만 듣는다: 창을 활성으로 만들고 기다린다."""
+    w.activateWindow()
+    if w.windowHandle() is not None:
+        w.windowHandle().requestActivate()
+    qtbot.waitUntil(lambda: QApplication.activeWindow() is w, timeout=5000)
+
+
 def make(qtbot: Any, **kw: Any) -> PresetWizard:
     w = PresetWizard(**kw)
     qtbot.addWidget(w)
     w.show()
     qtbot.waitExposed(w)
-    w.activateWindow()
+    activate(qtbot, w)
     return w
 
 

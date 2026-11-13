@@ -30,7 +30,14 @@ from PySide6.QtWidgets import (
 
 from evolab.app import strings as S
 from evolab.app import style
-from evolab.app.preset.cards import Card, FlowLayout, ParamSliders, TemplateCard, clear_layout, template_icon
+from evolab.app.preset.cards import (
+    Card,
+    FlowLayout,
+    ParamSliders,
+    TemplateCard,
+    clear_layout,
+    template_icon,
+)
 from evolab.presets import rules as R
 from evolab.presets.josa import fill
 from evolab.presets.recipe import Recipe, Use
@@ -288,6 +295,8 @@ class ArenaPage(Page):
             self.props_box.addWidget(sliders)
             self.checks[tpl.id] = box
             self.prop_sliders[tpl.id] = sliders
+            if self.props_host.isVisible():
+                box.show()  # 레이아웃은 다음 이벤트 때 보이게 한다: 지금 보이게(바로 누를 수 있게)
 
     def _pick_arena(self, tid: str) -> None:
         def mutate(r: Recipe) -> None:
@@ -533,6 +542,11 @@ class RuleRow(QWidget):
                     ok = True  # 켜면 adjust가 골대를 함께 넣고 상태 줄에 알린다
                 why = "" if ok else why
             style.set_enabled(self.check, not why, why)
+            try:
+                tip = R.sentence(data, use) if use is not None else S.RULES_ADD_TIP
+            except Exception:  # noqa: BLE001 - 풍선 글뿐
+                tip = S.RULES_ADD_TIP
+            self.check.setToolTip(tip)
         args: Mapping[str, Any] = use.args if use is not None else {}
         for slot in R.RULES[self.kind].slots:
             widget = self.slots.get(slot.id)

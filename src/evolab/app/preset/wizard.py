@@ -46,7 +46,14 @@ from PySide6.QtWidgets import (
 from evolab import paths
 from evolab.app import strings as S
 from evolab.app import style
-from evolab.app.preset.pages import ArenaPage, BodyPage, Page, RulesPage, StartPage, TryPage
+from evolab.app.preset.pages import (
+    ArenaPage,
+    BodyPage,
+    Page,
+    RulesPage,
+    StartPage,
+    TryPage,
+)
 from evolab.app.preset.preview import PresetPreview
 from evolab.presets import recipe as RC
 from evolab.presets import trainable as TR

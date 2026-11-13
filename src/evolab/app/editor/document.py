@@ -606,7 +606,7 @@ def editor_checks(env: m.EnvFile, spec: EnvSpec | None) -> list[Issue]:
         if ep is not None:
             out += _overlap_checks(env, ep)
             out += _lint_scene(env, ep)
-    hidden = ignored(env.editor)
+    hidden = ignored({"editor": env.editor})
     return [i for i in out if not (i.code in IGNORABLE and ignore_key(i) in hidden)]
 
 

@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QSlider, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QSlider,
+    QToolButton,
+    QWidget,
+)
 
 from evolab import paths
 from evolab.app.preset.pages import PartsButton

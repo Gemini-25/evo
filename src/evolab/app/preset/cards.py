@@ -12,7 +12,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -292,6 +300,11 @@ class ParamSliders(QWidget):
             self._grid.addWidget(value, row, 2)
             self._rows[p.id] = (p, slider, value)
             self._show_value(p.id)
+        if self.isVisible():  # 레이아웃은 다음 이벤트 때 보이게 한다: 지금 보이게(바로 누르고 초점을 줄 수 있게)
+            for k in range(self._grid.count()):
+                item = self._grid.itemAt(k)
+                if item is not None and item.widget() is not None:
+                    item.widget().show()
 
     @staticmethod
     def _ticks(p: Param) -> int:

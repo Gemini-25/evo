@@ -197,8 +197,7 @@ class PropertyPanel(QWidget):
         """지금 폼을 자르지 않는 패널 폭: 폼이 바라는 최소 폭 + 세로 스크롤 막대 + 여백(U38 ②)."""
         bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
         m = self.layout().contentsMargins()
-        form = max(self.form.minimumSizeHint().width(), self.form.sizeHint().width() if self._ref is not None else 0,
-                   self.header.minimumSizeHint().width())
+        form = max(self.form.minimumSizeHint().width(), self.header.minimumSizeHint().width())
         return form + bar + m.left() + m.right() + 4 + 6
 
     def _fit_width(self) -> None:

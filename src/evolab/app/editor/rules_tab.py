@@ -37,10 +37,9 @@ from evolab.app import strings as S
 from evolab.app import style
 from evolab.app.editor.document import EnvDocument
 from evolab.presets import rules as R
-from evolab.presets.josa import particle
+from evolab.presets.josa import fill
 
 _FIELD_RE = re.compile(r"\{(\w+)\}")
-_PAIR_RE = re.compile(r"^([가-힣]\([가-힣]\)|\(으\)로|으로)")
 NUMBER_MAX = 1e6
 """숫자 빈칸의 위 끝(모델에는 끝이 없다: 화면에서만)."""
 
@@ -341,11 +340,9 @@ class RulesTab(QWidget):
             ed.blockSignals(False)
         for label in row.labels:
             text = str(label.property("evoRuleText"))
-            after = str(label.property("evoRuleAfter"))
-            mt = _PAIR_RE.match(text)
-            if mt and after in names and names[after]:
-                pair = "(으)로" if mt.group(1) == "으로" else mt.group(1)
-                text = particle(names[after], pair) + text[mt.end():]
+            name = names.get(str(label.property("evoRuleAfter")), "")
+            if name:  # 빈칸 바로 뒤의 조사(「이(가)」「(으)로」…)를 빈칸의 값에 맞춘다
+                text = fill("{x}" + text, {"x": name})[len(name):]
             label.setText(text)
 
     # ---- 편집 ----
