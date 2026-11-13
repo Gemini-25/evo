@@ -23,7 +23,7 @@ from evolab.app.help import anchors, content
 
 SCREEN_PAGES: Final[dict[str, str]] = {
     "editor": "editor", "lab": "lab", "compare": "compare", "records": "records", "play": "play", "race": "race",
-    "repeat": "compare", "report": "trouble", "export": "records", "main": "start",
+    "repeat": "compare", "report": "trouble", "export": "records", "main": "start", "preset": "preset",
 }
 """화면(anchors.SCREENS) → 도움말 쪽(설계 4.5)."""
 
@@ -31,7 +31,7 @@ SCREEN_HEADINGS: Final[dict[str, str]] = {"export": "HELP_HEADING_VIDEO"}
 """화면 → 그 쪽 안의 제목(strings 이름). 내보내기 대화 상자(v3.1)는 「기록과 내보내기」 쪽 「영상」 절(설계 D21)."""
 
 EDITOR_TABS: Final[tuple[tuple[str, str], ...]] = (
-    ("world_tab", "EDP_TAB_WORLD"), ("events_tab", "EDP_TAB_EVENTS"), ("scoring_tab", "EDP_TAB_SCORING"),
+    ("rules_tab", "EDP_TAB_RULES"), ("world_tab", "EDP_TAB_WORLD"), ("events_tab", "EDP_TAB_EVENTS"), ("scoring_tab", "EDP_TAB_SCORING"),
     ("random_tab", "EDP_TAB_RANDOM"), ("generators_tab", "EDP_TAB_GENERATORS"), ("eval_tab", "EDP_TAB_EVAL"),
     ("brain_tab", "EDP_TAB_BRAIN"), ("structure_tab", "ED_TAB_STRUCTURE"), ("params_tab", "EDP_TAB_PARAMS"),
     ("issues_tab", "EDP_TAB_ISSUES"),

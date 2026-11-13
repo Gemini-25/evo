@@ -10,11 +10,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QLocale, Qt, QTranslator
+from PySide6.QtCore import QLibraryInfo, QLocale, Qt, QTimer, QTranslator
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget, QWidget
 
 from evolab import __version__, paths
 from evolab.app import strings as S
+
+
+STATE_TICK_MS = 1000
+"""학습 중(시작하는 중·학습 중)에만 도는 주 창 타이머: 상태 막대 꼬리표와 창 제목의 세대를 이 간격으로만 고친다(6.2.0 U32, 세대마다 하지 않음)."""
+
+TICKING_STATES = ("starting", "running")
+"""타이머가 도는 실험실 상태."""
 
 
 class MainWindow(QMainWindow):
@@ -24,6 +31,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(S.APP_TITLE)
         self.resize(1280, 800)
+        # 6.2.0 U32: 상태 막대를 처음부터 만든다(첫 알림 때 생기며 가운데가 줄지 않게). 오른쪽 꼬리표는 실험실 상태를
+        # 다른 탭에서도 보이게 한다. 최소 폭 1: 주 창 최소 폭을 넓히지 않는다.
+        from evolab.app import style
+
+        self.state_chip = style.StateChip()
+        self.state_chip.setObjectName("state_chip")
+        self.state_chip.setMinimumWidth(1)
+        self.statusBar().addPermanentWidget(self.state_chip)
+        self._state_timer = QTimer(self)
+        self._state_timer.setInterval(STATE_TICK_MS)
+        self._state_timer.timeout.connect(self.refresh_state)
         if paths.icon_path().exists():
             from PySide6.QtGui import QIcon
 
@@ -68,6 +86,14 @@ class MainWindow(QMainWindow):
         if builtin.exists():
             self.lab.load_env(builtin)
         self._play_windows: list[QWidget] = []
+        # 꼬리표·제목은 상태가 바뀔 때(state_changed: Hb의 계약 3.3)와 학습 중 1초 타이머로만 고친다. run_started·closed는
+        # 그 신호가 없는 실험실에서도 시작·끝을 놓치지 않게 함께 받는다(같은 글이면 아무것도 하지 않는다).
+        state_changed = getattr(self.lab, "state_changed", None)
+        if state_changed is not None:
+            state_changed.connect(lambda _state: self.refresh_state())
+        self.lab.run_started.connect(lambda _p: self.refresh_state())
+        self.lab.client.closed.connect(self.refresh_state)
+        self.refresh_state()
 
         menu = self.menuBar().addMenu(S.MENU_PLAY)
         act = menu.addAction(S.MENU_PLAY_LANDER)
@@ -86,6 +112,36 @@ class MainWindow(QMainWindow):
         from evolab.app.help import setup as help_setup
 
         help_setup.install(self)
+
+    # -- 6.2.0 U32: 상태 막대 꼬리표와 창 제목 ---------------------------------------
+    def state_texts(self) -> tuple[str, str, str]:
+        """(상태 종류, 꼬리표 글, 창 제목). 실행이 없으면 꼬리표는 상태 이름만, 제목은 APP_TITLE."""
+        lab = self.lab
+        kind = str(getattr(lab, "state", "idle") or "idle")
+        name = S.LAB_STATE_NAMES.get(kind, kind)
+        gen = int(getattr(lab, "generation", 0) or 0)
+        if getattr(lab, "run_dir", None) is None:
+            return kind, name, S.APP_TITLE
+        spec = getattr(lab, "spec", None)
+        env = spec.file.name if spec is not None else ""
+        chip = S.MAIN_CHIP.format(state=name, gen=gen)
+        title = S.MAIN_TITLE_RUN.format(env=env, state=name, gen=gen, app=S.APP_TITLE) if env else S.APP_TITLE
+        return kind, chip, title
+
+    def refresh_state(self) -> None:
+        """꼬리표와 제목을 실험실 상태에 맞춘다(글이 같으면 다시 그리지 않는다). 학습 중에만 1초 타이머가 돈다."""
+        try:
+            kind, chip, title = self.state_texts()
+        except RuntimeError:  # 닫히는 중
+            return
+        self.state_chip.set_state(kind, chip)
+        if self.windowTitle() != title:
+            self.setWindowTitle(title)
+        ticking = kind in TICKING_STATES
+        if ticking and not self._state_timer.isActive():
+            self._state_timer.start()
+        elif not ticking and self._state_timer.isActive():
+            self._state_timer.stop()
 
     def _choose_and_play(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, S.MENU_PLAY_OPEN, str(paths.builtin_env_dir()), S.ENV_FILE_FILTER)
@@ -254,6 +310,7 @@ class MainWindow(QMainWindow):
         if not self.editor.maybe_save():
             event.ignore()  # type: ignore[attr-defined]
             return
+        self._state_timer.stop()
         self.lab.shutdown()
         self.compare.shutdown()
         super().closeEvent(event)  # type: ignore[arg-type]

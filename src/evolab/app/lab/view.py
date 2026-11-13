@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
-from PySide6.QtCore import QElapsedTimer, QObject, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QFileSystemWatcher, QObject, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -102,6 +102,7 @@ from evolab.engine.session import PACE_EVERY, PACE_SKIP, PACES, SessionRequest
 from evolab.engine.trainer import (
     MAX_QUALIFY_ENTRANTS,
     NEW_RUN_DEFAULTS,
+    PRESET_TRAIN_KEYS,
     RECOMMENDED_RESTART_PATIENCE,
     RESTART_FROM,
     SWITCH_QUALIFY_NEXT,
@@ -117,8 +118,8 @@ from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec import model as m
 from evolab.spec import structure as st
 from evolab.spec.compiled import EnvFileError, EnvSpec
-from evolab.spec.editor_meta import view_box
-from evolab.spec.io import compile_env, env_hash
+from evolab.spec.editor_meta import editor_train, view_box
+from evolab.spec.io import compile_env, env_hash, parse_env
 from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
 
 SPEEDS = (1, 2, 4, 8)
@@ -492,11 +493,72 @@ def _bar(v: float, width: int = 10) -> str:
 # ---------------------------------------------------------------------------
 
 
+_HASH_CACHE: dict[str, tuple[tuple[int, int], str | None]] = {}
+"""환경 파일 경로 → ((mtime_ns, 크기), env_hash 또는 읽을 수 없으면 None). 「내 프리셋」을 다시 채울 때 바뀐 파일만 다시 읽는다."""
+
+
+def _file_env_hash(path: Path) -> str | None:
+    """환경 파일의 env_hash(editor 칸 밖의 내용). 읽거나 해석할 수 없으면 None."""
+    try:
+        st_ = path.stat()
+    except OSError:
+        return None
+    key = (st_.st_mtime_ns, st_.st_size)
+    held = _HASH_CACHE.get(str(path))
+    if held is not None and held[0] == key:
+        return held[1]
+    try:
+        value: str | None = env_hash(parse_env(path.read_bytes()))
+    except (OSError, EnvFileError, ValueError):
+        value = None
+    _HASH_CACHE[str(path)] = (key, value)
+    return value
+
+
+def _untouched_copy(path: Path, builtin: Path) -> bool:
+    """첫 실행이 복사한(paths.install_examples) 내장 예제의 손대지 않은 사본인가: 바이트가 같거나 env_hash가 같다."""
+    try:
+        if path.read_bytes() == builtin.read_bytes():
+            return True
+    except OSError:
+        return False
+    mine = _file_env_hash(path)
+    return mine is not None and mine == _file_env_hash(builtin)
+
+
+def user_presets(folder: Path | None = None) -> list[Path]:
+    """실험실 환경 목록의 「내 프리셋」(설계 3.1 H): 내 환경 폴더의 *.evoenv 가운데, 같은 줄기 이름의 내장 파일과 env_hash가 같은
+    것(첫 실행이 복사한 손대지 않은 사본)을 뺀 것. 이름순."""
+    folder = paths.user_env_dir() if folder is None else folder
+    try:
+        files = sorted((p for p in folder.glob("*.evoenv") if p.is_file()), key=lambda p: (p.name.lower(), p.name))
+    except OSError:
+        return []
+    builtin = {p.stem: p for p in paths.builtin_envs()}
+    return [p for p in files if not (p.stem in builtin and _untouched_copy(p, builtin[p.stem]))]
+
+
+def builtin_status(stem: str) -> str:
+    """내장 예제의 등급(설계 5.2): 같은 이름의 내장 조리법 파일(assets/recipes/<이름>.json)의 status. 없거나 못 읽으면 "ok".
+
+    presets 꾸러미를 불러오지 않는다(실험실은 창이 뜰 때 만들어진다: 시작 시간)."""
+    try:
+        data = json.loads((paths.recipe_dir() / f"{stem}.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return "ok"
+    status = data.get("status", "ok") if isinstance(data, dict) else "ok"
+    return status if isinstance(status, str) else "ok"
+
+
 class LabView(QWidget):
     run_started = Signal(Path)
     edit_env_requested = Signal(str, str)
     env_changed = Signal()
     """새 실행을 준비할 환경을 바꿨다(use_env_text). 빈 상태 안내가 글을 바로 고친다(v3 검토 수정)."""
+    state_changed = Signal(str)
+    """(6.2.0 다듬기 3.3) self.state가 지난번에 낸 값과 달라졌을 때만(세대마다 내지 않는다). 세대·점수는 받는 쪽이 읽는다."""
+    new_preset_requested = Signal()
+    """(6.2.0 설계 3.1 H) 「새 프리셋…」 단추: 주 창이 받아 에디터의 new_preset()을 연다."""
     """(환경 내용, 이름) — 에디터에서 고치기. 멈춘 실험이면 고친 뒤 send_env_text로 이어서 학습한다."""
 
     def __init__(self, parent: QWidget | None = None, settings: QSettings | None = None) -> None:
@@ -637,10 +699,29 @@ class LabView(QWidget):
         """상태 글 끝줄: 지금 재생에 대한 알림(지도 점 재생의 GMAP_INEXACT). 다음 재생·실시간 보기·다른 실행에서 지움."""
         self._brain_job: dict[str, Any] | None = None
         """도는 뇌 추적 작업의 원천(_brain_play 또는 _brain_live 사전)."""
+        # 6.2.0: 「내 프리셋」 묶음, 프리셋 권장 설정, 상태 점과 시작 알림
+        self._preset_note = ""
+        """상태 글 끝줄(학습 전): 프리셋 권장 설정을 칸에 넣었다는 한 줄(LAB_PRESET_TRAIN_APPLIED). 실행이 바뀌면 지움."""
+        self._preset_form = False
+        """「학습 안정성」 칸에 지금 프리셋 권장값이 들어 있다(다음에 권장값 없는 환경을 고르면 새 실행 기본값으로 되돌린다)."""
+        self._emitted_state: str | None = None
+        self._stop_reason = ""
+        """학습 프로세스가 알린 멈춘 까닭(finished의 reason: "max_generations" 등). 다른 상태면 빈 글."""
+        self.start_notice = ""
+        """학습을 시작하고 첫 세대가 오기까지 캔버스 가운데에 띄운 알림 글(U6). 빈 글이면 없음."""
+        self._builtin_count = 0
+        self._user_dir: str | None = None
+        self._env_watch = QFileSystemWatcher(self)
+        self._env_watch.directoryChanged.connect(lambda _p: self._user_envs_later.start())
+        self._user_envs_later = QTimer(self)
+        self._user_envs_later.setSingleShot(True)
+        self._user_envs_later.setInterval(300)
+        self._user_envs_later.timeout.connect(self.refresh_user_envs)
 
         self._build_ui()
         self._restore_settings()
         self._method_changed(set_defaults=False)
+        self.refresh_user_envs()
         self._update_buttons()
         platform_now()  # 실행을 열 때마다 비교하는 지금 플랫폼 정보(처음 한 번 수십 ms: uname·WMI)를 시작할 때 미리
         freeze_long_lived()
@@ -736,12 +817,23 @@ class LabView(QWidget):
         self.env_label = QLabel(S.LAB_ENV_NONE)
         self.env_label.setWordWrap(True)
         self.env_combo = QComboBox()
+        self.env_combo.setObjectName("env_combo")
         self.env_combo.addItem(S.LAB_ENV_BUILTIN, None)
-        for p in paths.builtin_envs():  # 정해진 순서(착륙선, 트랙, 언덕차, 점프 게임, 글라이더), 그 밖은 이름순
-            self.env_combo.addItem(self._env_title(p), str(p))
+        builtins = paths.builtin_envs()
+        for p in builtins:  # 정해진 순서(착륙선, 트랙, 언덕차, 점프 게임, 글라이더, 바퀴, 달리기), 그 밖은 이름순
+            title = self._env_title(p)
+            if builtin_status(p.stem) == "experimental":  # 설계 5.2: 「실험」 등급의 내장 프리셋
+                title = S.LAB_ENV_EXPERIMENTAL.format(name=title)
+            self.env_combo.addItem(title, str(p))
+        self._builtin_count = len(builtins)
         self.env_combo.activated.connect(self._env_combo_chosen)
         btn_open = QPushButton(S.LAB_ENV_OPEN)
         btn_open.clicked.connect(self._choose_env)
+        # 6.2.0 설계 3.1 H: 「새 프리셋…」(에디터의 같은 단추와 같은 글·풍선, D46). 주 창이 new_preset_requested를 받는다
+        self.btn_new_preset = QPushButton(S.ED_NEW_PRESET)
+        self.btn_new_preset.setObjectName("btn_new_preset")
+        self.btn_new_preset.setToolTip(S.ED_NEW_PRESET_TIP)
+        self.btn_new_preset.clicked.connect(self.new_preset_requested.emit)
         self.btn_reload = QPushButton(S.LAB_ENV_RELOAD)
         self.btn_reload.setToolTip(S.LAB_ENV_RELOAD_TIP)
         self.btn_reload.clicked.connect(self.reload_env)
@@ -751,6 +843,7 @@ class LabView(QWidget):
         el.addWidget(self.env_label)
         el.addWidget(self.env_combo)
         el.addWidget(btn_open)
+        el.addWidget(self.btn_new_preset)
         el.addWidget(self.btn_reload)
         el.addWidget(self.btn_edit)
 
@@ -781,6 +874,10 @@ class LabView(QWidget):
         self.sa_temp = _dspin(0.0, 1e6, 0.0, 3)
         self.sa_temp.setSpecialValueText(S.LAB_SA_TEMP_AUTO)
         self.sa_cooling = _dspin(0.5, 1.0, 0.995, 4)
+        # 6.2.0 U9: 학습 중에는 이 묶음이 잠긴다는 한 줄(묶음 맨 위, 학습 중에만 보임. 접힘선 아래라 접힘 예산과 무관)
+        self.locked_note = style.note(S.LAB_LOCKED_NOTE)
+        self.locked_note.hide()
+        form.addRow(self.locked_note)
         form.addRow(S.LAB_METHOD, self.method)
         # v6.1 「뇌」 줄(설계 5.1): 학습 방법 바로 아래, CMA-ES일 때만. 「자라기」면 두 칸과 회색 안내 두 줄
         self.brain_combo = QComboBox()
@@ -851,6 +948,10 @@ class LabView(QWidget):
         sf.addRow(S.LAB_MAX_MINUTES, self.max_minutes)
         sf.addRow(S.LAB_TARGET, self.target)
         sf.addRow(S.LAB_STAGNATION, self.stagnation)
+        # 6.2.0 U9: 학습 중에 정지 조건을 바꾸면 멈춘 뒤 「설정 적용」을 눌러야 바뀐다(학습 중에만 보임)
+        self.stop_apply_note = style.note(S.LAB_STOP_APPLY_NOTE)
+        self.stop_apply_note.hide()
+        sf.addRow(self.stop_apply_note)
 
         # 학습 안정성(v1.1): 정체하면 새로 시작은 멈춘 학습에도 '적용'하고, 예선은 새 실행에서만 정한다
         stab = QGroupBox(S.LAB_STABILITY_GROUP)
@@ -915,7 +1016,14 @@ class LabView(QWidget):
         g.addWidget(self.btn_end, 2, 0, 1, 2)
         self.status = QLabel(S.LAB_STATUS_IDLE)
         self.status.setWordWrap(True)
-        g.addWidget(self.status, 3, 0, 1, 2)
+        # 6.2.0 U7: 상태 글 왼쪽에 상태 색 점 하나(칩 줄은 없다: 접힘 예산). 첫 줄 높이, 위 맞춤, 사이 4px
+        self.state_dot = style.StateDot()
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(style.SPACE[0])
+        status_row.addWidget(self.state_dot, 0, Qt.AlignmentFlag.AlignTop)
+        status_row.addWidget(self.status, 1)
+        g.addLayout(status_row, 3, 0, 1, 2)
 
         view = QGroupBox(S.LAB_VIEW_GROUP)
         vf = QFormLayout(view)
@@ -956,8 +1064,58 @@ class LabView(QWidget):
     def _env_title(path: Path) -> str:
         try:
             return str(json.loads(path.read_text(encoding="utf-8-sig")).get("name") or path.stem)
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             return path.stem
+
+    def refresh_user_envs(self) -> list[Path]:
+        """환경 목록의 「내 프리셋」 묶음을 내 환경 폴더로 다시 채운다(설계 3.1 H). 묶음 머리는 고를 수 없는 줄이고, 파일이
+        없으면 묶음도 없다. 고른 줄은 그대로 둔다. 실험실이 보일 때·폴더가 바뀔 때(저장) 다시 부른다."""
+        combo = self.env_combo
+        mine = user_presets()
+        keep = 1 + self._builtin_count
+        want = [str(p) for p in mine]
+        have = [combo.itemData(i) for i in range(keep + 1, combo.count())]
+        titles = [self._env_title(p) for p in mine]
+        if want == have and titles == [combo.itemText(i) for i in range(keep + 1, combo.count())]:
+            self._watch_user_dir()
+            return mine
+        current = combo.currentData()
+        index = combo.currentIndex()
+        combo.blockSignals(True)
+        try:
+            while combo.count() > keep:
+                combo.removeItem(combo.count() - 1)
+            if mine:
+                combo.addItem(S.LAB_ENV_GROUPS["mine"], None)
+                head = combo.model().item(keep)  # type: ignore[attr-defined]  # QStandardItemModel(QComboBox 기본)
+                head.setEnabled(False)
+                head.setToolTip(S.LAB_ENV_GROUPS_TIP["mine"])
+                for p, title in zip(mine, titles, strict=True):
+                    combo.addItem(title, str(p))
+                    combo.setItemData(combo.count() - 1, str(p), Qt.ItemDataRole.ToolTipRole)
+            found = combo.findData(current) if current else -1
+            combo.setCurrentIndex(found if found >= 0 else (0 if index >= keep else index))
+        finally:
+            combo.blockSignals(False)
+        self._watch_user_dir()
+        return mine
+
+    def _watch_user_dir(self) -> None:
+        """내 환경 폴더를 지켜본다(에디터·안내 창·다른 프로그램이 저장하면 묶음을 다시 채움). 데이터 폴더를 바꾸면 따라간다."""
+        folder = str(paths.user_env_dir())
+        if folder == self._user_dir:
+            return
+        if self._user_dir is not None and self._user_dir in self._env_watch.directories():
+            self._env_watch.removePath(self._user_dir)
+        self._user_dir = folder
+        if Path(folder).is_dir():
+            self._env_watch.addPath(folder)
+        else:
+            self._user_dir = None  # 아직 없는 폴더: 다음에 다시 본다
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.refresh_user_envs()
 
     def _restore_settings(self) -> None:
         # 네 값을 먼저 다 읽고 칸에 넣는다: 칸을 바꾸면 _save_settings가 불려 아직 안 읽은 값을 기본값으로 덮기 때문.
@@ -996,8 +1154,15 @@ class LabView(QWidget):
         finally:
             self._restoring = False
             self._brain_quiet = False
-        self.pace_combo.setEnabled(self.rb_spectate.isChecked())
+        self._update_view_rows()
         self._check_pace_notice()
+
+    def _update_view_rows(self) -> None:
+        """「보기」 묶음 칸의 켜짐(6.2.0 U9): 관전 방식·재생 배속은 관전일 때만, 고속 챔피언 간격은 고속일 때만. 줄은 그대로 보인다."""
+        on = self.rb_spectate.isChecked()
+        style.set_enabled(self.pace_combo, on, S.LAB_WHY_SPECTATE_ONLY)  # 고속이면 관전 방식은 뜻이 없다(설계 5.1)
+        style.set_enabled(self.speed_combo, on, S.LAB_WHY_SPECTATE_ONLY)
+        style.set_enabled(self.fast_interval, not on, S.LAB_WHY_FAST_ONLY)
 
     def _check_pace_notice(self) -> None:
         """기본 관전 방식을 「학습 먼저」로 바꾼 v6.0(D24): 예전 프로그램으로 실험실을 쓴 사용자(보기 칸을 저장한 lab/mode는 있고
@@ -1074,15 +1239,47 @@ class LabView(QWidget):
         # 복제할 때만 칸이 없는 설정까지 가져간다(검토 24). 그냥 환경을 불러오면 그런 값은 기본값으로 돌아간다.
         self._base_config = dict(config) if config else None
         if config:
-            self._form_from_config(config)
+            self._form_from_config(config)  # 복제한 실행은 그 실행의 설정(프리셋 권장값을 얹지 않는다)
         else:
             self._update_brain_rows()  # 이 환경의 은닉층으로 「자라기」 항목·처음 뉴런 수 최댓값·안내 줄
+            self._apply_preset_train(spec)
         if spec.file.evaluation.trials:
             self.trials.setSpecialValueText(f"{S.LAB_TRIALS_ENV} ({spec.file.evaluation.trials})")
         self._show_still_scene()
+        self._update_status()
         self._update_buttons()
         self.env_changed.emit()
         return True
+
+    def _apply_preset_train(self, spec: EnvSpec) -> None:
+        """(6.2.0 설계 D31·3.1 H) 프리셋의 권장 새 실행 설정(editor.train)을 「학습 안정성」 칸에 넣고 상태 글에 한 줄.
+
+        값은 TrainConfig.for_new_run(spec)이 받아들인 것(모르는 키·틀린 값은 빠짐)이다. 권장값이 없는 환경(옛 파일 전부)은
+        칸을 건드리지 않는다(v6.1과 같음). 다만 앞서 고른 프리셋의 권장값이 칸에 남아 있으면 새 실행 기본값으로 되돌린다.
+        """
+        raw = editor_train(spec.file.editor)
+        fresh = TrainConfig.for_new_run(spec)
+        applied = [k for k in PRESET_TRAIN_KEYS if k in raw and raw[k] == getattr(fresh, k)]
+        self._preset_note = ""
+        if not applied and not self._preset_form:
+            return
+        values = {k: getattr(fresh, k) for k in PRESET_TRAIN_KEYS}
+        for key in PRESET_TRAIN_KEYS:
+            self._form_exact.pop(key, None)
+        patience = values["restart_patience"]
+        self.restart_on.setChecked(patience is not None)
+        self.restart_patience.setValue(int(patience) if patience is not None else SHOWN_RESTART_PATIENCE)
+        if patience is not None and _shows(self.restart_patience, float(patience)):
+            self._form_exact["restart_patience"] = (self.restart_patience.value(), patience)
+        self.restart_from.setCurrentIndex(max(0, self.restart_from.findData(values["restart_from"])))
+        for widget, key in ((self.qualify_entrants, "qualify_entrants"), (self.qualify_trials, "qualify_trials")):
+            widget.setValue(int(values[key]))
+            if _shows(widget, float(values[key])):
+                self._form_exact[key] = (widget.value(), values[key])
+        self._preset_form = bool(applied)
+        if applied:
+            self._preset_note = S.LAB_PRESET_TRAIN_APPLIED.format(
+                what=" · ".join(preset_train_text(k, values[k]) for k in applied))
 
     def _show_still_scene_soon(self) -> None:
         """실행을 열 때(_adopt_run): 전시 시드의 세계를 다음 이벤트 루프 차례에 그린다. 만들기(Episode·정적 그림
@@ -1260,6 +1457,7 @@ class LabView(QWidget):
     def _form_from_config(self, c: dict[str, Any]) -> None:
         """설정을 칸에 채운다(복제, 열기, 이어하기, 학습 시작). 칸이 없는 값은 여기서 가져가지 않는다(_base_config)."""
         self._form_exact = {}
+        self._preset_form = False  # 칸은 이제 그 실행의 설정이다(프리셋 권장값이 아님)
 
         def setv(widget: Any, key: str, empty: Any, scale: float = 1.0) -> None:
             value = c.get(key)
@@ -1338,6 +1536,10 @@ class LabView(QWidget):
         req = SessionRequest(kind="new", env_text=self.env_text, config=config.to_dict(), runs_dir=str(paths.runs_dir()),
                              workers=self.workers.value(), spectate=self.rb_spectate.isChecked(), pace=self.pace)
         self.client.start(req)
+        # 6.2.0 U6: 누른 바로 그때 「시작하는 중」과 캔버스 알림(개체 수는 칸이 아니라 지금 만든 설정에서)
+        pop = config.sa_neighbors if config.method == "sa" else config.popsize
+        self._set_start_notice(S.LAB_NOTICE_FIRST_GEN.format(pop=pop))
+        self._update_status()
         self._update_buttons()
         return True
 
@@ -1366,7 +1568,33 @@ class LabView(QWidget):
         req = SessionRequest(kind="resume", run_dir=str(run_dir), generation=generation, workers=self.workers.value(),
                              spectate=self.rb_spectate.isChecked(), pace=self.pace)
         self.client.start(req)
+        self._set_start_notice(S.LAB_NOTICE_NEXT_GEN)  # 6.2.0 U6: 이어서 학습은 숫자 없는 알림
+        self._update_status()
         self._update_buttons()
+        return True
+
+    def _set_start_notice(self, text: str) -> None:
+        """(6.2.0 U6) 첫 세대가 오기까지 캔버스 가운데의 멈춘 알림 글. 캔버스의 set_notice(묶음 PL, 다듬기 3.3)에 맡긴다."""
+        if text == self.start_notice:
+            return
+        old, self.start_notice = self.start_notice, text
+        set_notice = getattr(self.canvas, "set_notice", None)
+        if callable(set_notice):
+            set_notice(text)
+        elif self.canvas.hud in ("", old):  # set_notice가 아직 없는 캔버스: HUD 상자에 띄운다(재생이 HUD를 쓰기 전까지만)
+            self.canvas.set_hud(text)
+
+    def extend_and_continue(self, generations: int = 10) -> bool:
+        """(6.2.0 U10, 다듬기 3.3) 「최대 세대」에 닿아 멈춘 학습을 n세대 더: 칸 +n → 설정 적용 → 이어서.
+
+        학습이 멈춰 있지 않거나 멈춘 까닭이 최대 세대가 아니면 False(아무것도 하지 않음)."""
+        if not (self.client.active and self.state == "finished" and self._stop_reason == "max_generations"):
+            return False
+        limit = self.config_value("max_generations")
+        base = int(limit) if isinstance(limit, (int, float)) and limit else self.generation
+        self.max_generations.setValue(max(base, self.generation) + int(generations))
+        self.apply_settings()
+        self.continue_run()
         return True
 
     def continue_run(self) -> None:
@@ -1431,7 +1659,7 @@ class LabView(QWidget):
 
     def set_spectate(self, on: bool) -> None:
         self.client.send({"type": "mode", "spectate": bool(on), "pace": self.pace})
-        self.pace_combo.setEnabled(bool(on))  # 고속이면 관전 방식은 뜻이 없다(설계 5.1)
+        self._update_view_rows()
         self._wait_log.clear()
         if not on and self._wait_note:  # 고속에서는 학습이 기다리지 않는다: 흐린 칸을 바꾸라는 알림을 지운다
             self._wait_note = ""
@@ -1480,6 +1708,7 @@ class LabView(QWidget):
     # ------------------------------------------------------------------
     def _reset_run_view(self) -> None:
         self.rows = []
+        self._preset_note = ""
         self._session_note = ""
         self._map_notice = ""
         self._build_note = ""
@@ -1498,6 +1727,8 @@ class LabView(QWidget):
         self._last_played = None
         self.last_fast_candidate = None
         self._last_video = None
+        style.set_enabled(self.btn_video, False, S.LAB_WHY_NO_VIDEO)
+        style.set_enabled(self.btn_live, False, S.LAB_WHY_LIVE)
         self._fast_last = 0
         self._replay_tag += 1  # 아직 도는 앞 실행의 다시 시뮬레이션 결과는 버린다
         self.stop_flip()
@@ -1613,6 +1844,7 @@ class LabView(QWidget):
             self._on_generation_now(msg)
 
     def _on_generation_now(self, msg: dict[str, Any]) -> None:
+        self._set_start_notice("")
         row = msg["row"]
         self.generation = int(msg["generation"])
         self.rows.append(row)
@@ -1738,6 +1970,7 @@ class LabView(QWidget):
     def _on_state(self, msg: dict[str, Any]) -> None:
         self.state = str(msg.get("state"))
         self._update_status()
+        self._stop_reason = str(msg.get("reason")) if self.state == "finished" else ""
         if self.state == "finished":
             reason = S.TRAIN_STOP_REASONS.get(str(msg.get("reason")), str(msg.get("reason")))
             self._stopped_line = S.LAB_STOPPED_BECAUSE.format(reason=reason)
@@ -1787,11 +2020,13 @@ class LabView(QWidget):
             show_error(self, S.LAB_ERROR_TITLE, found[0], message=found[1])
         else:
             show_error(self, S.LAB_ERROR_TITLE, message)
+        self._set_start_notice("")
         if fatal:
             self.state = "closed"
             self._update_buttons()
 
     def _on_closed(self) -> None:
+        self._set_start_notice("")
         self.state = "closed" if self.run_dir is not None else "idle"
         self.queue.clear()
         self._drop_scene_jobs()
@@ -1802,7 +2037,8 @@ class LabView(QWidget):
     def _update_status(self) -> None:
         if not self.rows:
             text = S.LAB_STATE_NAMES.get(self.state, self.state)
-            for note in (self._session_note, self._map_notice, self._build_note, self._pace_note, self._wait_note):
+            for note in (self._session_note, self._map_notice, self._build_note, self._pace_note, self._wait_note,
+                         self._preset_note):
                 if note:
                     text += "\n" + note
             self.status.setText(text)
@@ -1810,10 +2046,10 @@ class LabView(QWidget):
         last = self.rows[-1]
         champ = last.get("champion_score", "")
         try:
-            champ_text = f"{float(champ):.2f}" if champ not in ("", None) else "-"
+            champ_text = f"{float(champ):.2f}" if champ not in ("", None) else S.LAB_STATUS_CHAMP_PENDING
             evals = int(float(last.get("evaluations", 0)))
         except (TypeError, ValueError):
-            champ_text, evals = "-", 0
+            champ_text, evals = S.LAB_STATUS_CHAMP_PENDING, 0
         text = S.LAB_STATUS.format(state=S.LAB_STATE_NAMES.get(self.state, self.state), gen=self.generation,
                                    evals=evals, champ=champ_text)
         learner = self._learner_status(last)
@@ -1920,8 +2156,9 @@ class LabView(QWidget):
             self.btn_continue.setToolTip(getattr(self, "_continue_tip", ""))
         self.btn_step.setEnabled(paused)
         self.btn_end.setEnabled(active)
-        self.btn_apply.setEnabled(paused)
-        self.btn_reload.setEnabled(paused and self.env_path is not None)
+        # 6.2.0 U9: 꺼진 까닭은 풍선에만(style.set_enabled: toolTip()은 도움말 글 그대로)
+        style.set_enabled(self.btn_apply, paused, S.LAB_WHY_PAUSED_ONLY)
+        style.set_enabled(self.btn_reload, paused and self.env_path is not None, S.LAB_WHY_PAUSED_ONLY if not paused else "")
         self.btn_edit.setEnabled(self.env_text is not None and (paused or not active))
         for w in (self.method, self.seed, self.popsize, self.sigma, self.workers, self.env_combo, self.ipop,
                   self.ga_elites, self.ga_crossover, self.ga_mut_rate, self.ga_mut_sigma, self.ga_decay,
@@ -1930,10 +2167,31 @@ class LabView(QWidget):
             w.setEnabled(not active)
         self._update_stability()  # 예선 칸(qualify_entrants, qualify_trials)도 학습 중이면 끈다
         has_gen = self.generation > 0 and self.run_dir is not None
-        self.btn_timeline.setEnabled(has_gen)
-        self.btn_versus.setEnabled(has_gen)
-        self.btn_flip.setEnabled(self.generation >= 2 or self._flip_timer.isActive())
-        self.btn_race.setEnabled(self.generation >= 2 and self.run_dir is not None)
+        style.set_enabled(self.btn_timeline, has_gen, S.LAB_WHY_NEED_GEN)
+        style.set_enabled(self.btn_versus, has_gen, S.LAB_WHY_NEED_GEN)
+        style.set_enabled(self.btn_flip, self.generation >= 2 or self._flip_timer.isActive(), S.LAB_WHY_NEED_TWO)
+        style.set_enabled(self.btn_race, self.generation >= 2 and self.run_dir is not None, S.LAB_WHY_NEED_TWO)
+        style.set_enabled(self.btn_video, self._last_video is not None, S.LAB_WHY_NO_VIDEO)
+        style.set_enabled(self.btn_live, self.view_mode == "replay", S.LAB_WHY_LIVE)
+        # 학습 중에만 보이는 안내 두 줄(묶음이 접힘선 아래라 접힘 예산과 무관)
+        if self.locked_note.isHidden() == active:
+            self.locked_note.setVisible(active)
+            self.stop_apply_note.setVisible(active)
+        self._update_roles(active)
+
+    def _update_roles(self, active: bool) -> None:
+        """(6.2.0 U7) 「진행」 묶음의 으뜸 단추 하나와 상태 점. 같으면 바로 돌아간다(세대마다 불림). 상태가 바뀌었을 때만
+        state_changed를 낸다."""
+        if active:
+            primary = self.btn_pause if self.state in ("starting", "running") else self.btn_continue
+        else:
+            primary = self.btn_continue if self.run_dir is not None and self.generation > 0 else self.btn_start
+        for button in (self.btn_start, self.btn_pause, self.btn_continue):
+            style.set_role(button, "primary" if button is primary else "normal")
+        self.state_dot.set_kind(self.state)
+        if self.state != self._emitted_state:
+            self._emitted_state = self.state
+            self.state_changed.emit(self.state)
 
     # ------------------------------------------------------------------
     # 관전 재생
@@ -2197,7 +2455,7 @@ class LabView(QWidget):
             self.inspect.set_replay(index, result[0], held[1] if held is not None and held[0] == seq else frozenset())
             self.inspect.show()
             rep = result[0]
-            self.canvas.set_overlay([(rep.trajectory, rep.agent, COLOR_NOW, str(index))])
+            self.canvas.set_overlay([(rep.trajectory, rep.agent, COLOR_NOW, S.LAB_LABEL_PICKED)])  # 6.2.0 U8
             self.canvas.set_rays(rep.rays, rep.trajectory.dt)
             if self.view_mode != "live" or self.playing is None:  # 재생이 끝난 세대를 클릭했으면 다시 돌린다
                 self._start_clock()
@@ -2207,6 +2465,7 @@ class LabView(QWidget):
         self.canvas.set_population([])
         colors = [COLOR_OLD, COLOR_NOW] if len(reps) > 1 else [COLOR_NOW]
         self._last_video = (list(zip(reps, colors, info, strict=True)), self._replay_label)
+        style.set_enabled(self.btn_video, True)  # 6.2.0 U9: 다시 보기가 하나 생겼다
         self.canvas.set_overlay([(r.trajectory, r.agent, c, label)
                                  for r, c, label in zip(reps, colors, info, strict=True)])
         self.loop_overlay = True
@@ -2315,6 +2574,7 @@ class LabView(QWidget):
             return False
         self.view_mode = "replay"
         self._ack_pending()
+        self._update_buttons()  # 6.2.0 U9: 「실시간 보기」가 켜진다
         self._replay_label = S.LAB_LABEL_REP.format(gen=generation)
         spec = self.spec_for(None, generation)
         self._next_brain = (self._replay_label, generation)
@@ -2333,6 +2593,7 @@ class LabView(QWidget):
             return False
         self.view_mode = "replay"
         self._ack_pending()
+        self._update_buttons()  # 6.2.0 U9: 「실시간 보기」가 켜진다
         labels = [S.LAB_LABEL_REP.format(gen=1), S.LAB_LABEL_CHAMPION.format(gen=gen)]
         self._replay_label = " vs ".join(labels)
         trial = seeds.display_trial()
@@ -2373,6 +2634,7 @@ class LabView(QWidget):
         elif self.playing is None:
             # 타임라인·겹쳐 보기 재생만 멈춘다. 관전 중인 세대는 계속 재생해야 끝 알림(played)이 가서 학습이 이어진다.
             self._timer.stop()
+        self._update_buttons()  # 6.2.0 U9: 「실시간 보기」가 꺼진다
 
     def _inspect_shown(self) -> bool:
         """클릭 검사한 개체의 관전 세대가 아직 캔버스에 있다(재생 중이거나, 재생이 끝나 그대로 남음)."""
@@ -2716,6 +2978,7 @@ class LabView(QWidget):
                 notice = S.GMAP_INEXACT.format(gen=gen)
         self.view_mode = "replay"
         self._ack_pending()
+        self._update_buttons()  # 6.2.0 U9: 「실시간 보기」가 켜진다
         self._replay_label = label
         spec = self.spec_for(None, gen)
         self._next_brain = (label, gen)
@@ -2940,6 +3203,19 @@ def _trajectory_end(msg: Mapping[str, Any], index: int) -> float:
     if traj is None or not getattr(traj, "frames", 0):
         return 0.0
     return float(traj.duration)
+
+
+def preset_train_text(key: str, value: Any) -> str:
+    """LAB_PRESET_TRAIN_APPLIED의 {what} 한 칸: 「학습 안정성」 칸 이름과 값(설계 3.1 H)."""
+    if key == "qualify_entrants":
+        return f"{S.LAB_QUALIFY} {S.LAB_QUALIFY_OFF if int(value) <= 1 else int(value)}"
+    if key == "qualify_trials":
+        return f"{S.LAB_QUALIFY_TRIALS} {style.fmt_count(int(value))}{S.LAB_UNIT_TRIALS}"
+    if key == "restart_patience":
+        if value is None:
+            return f"{S.LAB_RESTART} {S.LAB_QUALIFY_OFF}"
+        return f"{S.LAB_RESTART_PATIENCE} {style.fmt_count(int(value))}{S.LAB_UNIT_TRIALS}"
+    return f"{S.LAB_RESTART_FROM} {S.RESTART_FROM_NAMES_SHORT.get(str(value), str(value))}"
 
 
 def _int_value(v: Any) -> int | None:

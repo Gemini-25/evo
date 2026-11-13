@@ -115,7 +115,9 @@ def test_back_to_live_while_spectating_keeps_playing(qtbot: Any, lab: LabView) -
     lab.max_generations.setValue(3)
     assert lab.start_new()
     qtbot.waitUntil(lambda: lab.playing is not None, timeout=120000)
-    lab.btn_live.click()
+    # 6.2.0 U9(다듬기 3.4): 실시간으로 보는 중에는 「실시간 보기」 단추가 꺼져 있어 click()이 아무 일도 안 한다. 그 동작을 직접 부른다
+    assert not lab.btn_live.isEnabled()
+    lab.back_to_live()
     assert lab._timer.isActive()  # 보던 세대를 끝까지 재생해 끝 알림(played)을 보낸다
     wait_state(qtbot, lab, "finished")
     qtbot.waitUntil(lambda: lab.playing is None and not lab.queue, timeout=120000)

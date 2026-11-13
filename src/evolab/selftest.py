@@ -695,6 +695,18 @@ def _check_help() -> str:
     return S.SELFTEST_HELP_DETAIL.format(pages=len(content.PAGES))
 
 
+def _check_presets() -> str:
+    """새 프리셋(6.2.0, 최종 설계 T40): 내장 틀 전부를 읽고 내장 조리법 전부를 만들어 L1·L2를 보고 달리기 한 세대를 돌린다(Qt 없이).
+
+    실패하면 깨진 틀 파일이나 조리법의 이름이 든 글(presets.trainable.selftest_check)."""
+    from evolab.presets.trainable import selftest_check
+
+    ok, text = selftest_check()
+    if not ok:
+        raise SelfTestError(text)
+    return text
+
+
 def _check_logs() -> str:
     """빈 임시 상태 폴더의 로그 폴더에 써 보고 오류 보고 묶음을 만들어 확인한다(Qt 없이, report/bundle.self_check).
 
@@ -961,6 +973,7 @@ def selftest_checks(workers: int, check_gui: bool = True, tour: str = "gen1") ->
         (S.SELFTEST_CHECK_FASTPATH, _check_fastpath),
         (S.SELFTEST_CHECK_EXPORT, _check_export),
         (S.SELFTEST_CHECK_HELP, _check_help),
+        (S.SELFTEST_CHECK_PRESETS, _check_presets),
         (S.SELFTEST_CHECK_LOGS, _check_logs),
     ]
     if check_gui:

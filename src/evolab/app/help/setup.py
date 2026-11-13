@@ -130,7 +130,7 @@ def add_corner_button(window: QMainWindow) -> QPushButton:
     btn = QPushButton(S.HELP_CORNER_BUTTON)
     btn.setObjectName(CORNER_NAME)
     btn.setToolTip(S.HELP_CORNER_TIP)
-    btn.setFlat(True)
+    btn.setFlat(False)  # 6.2.0 U32: 맨 글처럼 보이지 않게 보통 단추 모양(글에 물음표가 있어 아이콘은 달지 않는다)
     btn.clicked.connect(lambda _checked=False: open_screen_help(window))
     window.tabs.setCornerWidget(btn)  # type: ignore[attr-defined]
     return btn

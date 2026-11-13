@@ -3219,3 +3219,10 @@ PRESET_RESET_NOTHING: Final = "이 단계에는 고를 것이 없습니다."
 PRESET_BTN_BACK_TIP: Final = "앞 단계로 갑니다 (Alt+←)."
 PRESET_BTN_NEXT_TIP: Final = "다음 단계로 갑니다 (Alt+→). 단계는 어떤 차례로 건너뛰어도 됩니다."
 PRESET_FIX_TIP: Final = "고칠 곳이 있는 단계로 갑니다."
+
+# ---------------------------------------------------------------------------
+# 6.2.0 묶음 Hb (실험실 app/lab/view.py, 직접 조종 app/play/window.py)가 더한 것
+# ---------------------------------------------------------------------------
+# 직접 조종의 밀기(Move) 키 설명(PLAY_KEY_LINE의 {label}): 앞으로·뒤로·왼쪽·오른쪽은 PLAY_KEY_FORWARD 등 그대로
+PLAY_KEY_UP: Final = "{name} 위로"
+PLAY_KEY_DOWN: Final = "{name} 아래로"

@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | 실험실 캔버스 | 학습 프로세스 없음(`not lab.client.active`), 실행을 열지 않음(`lab.run_dir is None`) | HINT_LAB_IDLE_TITLE, HINT_LAB_IDLE_ANY | 「▶ 학습 시작」(= 패널의 `btn_start`를 누름), HINT_LAB_TOUR(안내 상태가 done이면 숨김) |
 | 대시보드 | 학습 중이거나 실행을 열었고 통계 줄이 0 / 1 | HINT_DASH_EMPTY / HINT_DASH_ONE | — (마우스는 아래로) |
-| 에디터 캔버스 | 문서에 그려지는 부품이 없음(`anchors.editor_is_empty`) | HINT_EDITOR_EMPTY | 「내장 예제에서 시작」 메뉴를 펼침 |
+| 에디터 캔버스 | 문서에 그려지는 부품이 없음(`anchors.editor_is_empty`) | HINT_EDITOR_EMPTY | 「내장 예제에서 시작」 메뉴를 펼침, 「새 프리셋…」(에디터의 그 액션, 6.2.0) |
 
 - `attach_hint`: 대상의 자식 카드(`HintFrame`, QFrame)와 단추 줄(대상의 다른 자식). 카드는 대상 가운데에 놓고 대상 크기가 바뀌면
   다시 놓는다. 조건과 글은 300ms마다(대상이 보일 때만)와 단추를 누른 뒤 다시 본다. passthrough=True면 카드는 마우스를 받지 않아
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
+from evolab.app import style
 
 CHECK_MS: Final = 300
 """조건을 다시 보는 간격(설계 4.3)."""
@@ -100,6 +101,8 @@ class HintFrame(QFrame):
         bl.setSpacing(8)
         self.buttons: list[QPushButton] = []
         self._states: list[Callable[[], bool | None] | None] = []
+        self.whys: list[Callable[[], str] | None] = []
+        """단추마다 「꺼진 까닭」을 돌려주는 함수(없으면 None). 꺼진 단추의 풍선에 붙는다(style.set_enabled, 6.2.0)."""
         for spec in buttons:
             btn = QPushButton(spec[0], self.bar)
             slot = spec[1]
@@ -107,6 +110,7 @@ class HintFrame(QFrame):
             bl.addWidget(btn)
             self.buttons.append(btn)
             self._states.append(spec[2] if len(spec) > 2 else None)  # type: ignore[misc]
+            self.whys.append(None)
         self._bar_space = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         if self.buttons:
             lay.addSpacing(4)
@@ -156,9 +160,9 @@ class HintFrame(QFrame):
         if self.text_label.text() != text:
             self.text_label.setText(text)
         states = tuple(True if state is None else state() for state in self._states)
-        for btn, on in zip(self.buttons, states, strict=True):
+        for btn, on, why in zip(self.buttons, states, self.whys, strict=True):
             btn.setVisible(on is not None)
-            btn.setEnabled(bool(on))
+            style.set_enabled(btn, bool(on), why() if why is not None and not on else "")
         self.bar.setVisible(any(on is not None for on in states))
         key = (self.target.width(), self.target.height(), title, text, states)
         if key != self._placed or self.isHidden():  # 바뀐 것이 없으면 다시 배치하지 않는다(300ms마다 배치를 흔들지 않게)
@@ -261,6 +265,9 @@ def lab_hint(window: QMainWindow) -> HintFrame:
                       lambda: not lab.client.active and lab.run_dir is None, buttons, True,
                       lambda: S.HINT_LAB_IDLE_TITLE if lab.spec is not None else "")
     frame.buttons[0].setToolTip(S.HELP_TIPS.get("lab.start", ""))  # 패널의 그 단추와 같은 풍선(이건 뭐예요?도 같은 글)
+    # 6.2.0 U7: 카드의 「▶ 학습 시작」도 으뜸(패널의 그 단추와 같은 행동이라 한 쌍으로 센다). 카드는 늘 어두우므로 어두운 테마 값
+    style.set_role(frame.buttons[0], "primary", on_dark_card=True)
+    frame.whys[0] = lambda: style.why_off(lab.btn_start)  # 패널 단추가 꺼진 까닭을 그대로
     signals = [lab.client.started, lab.client.closed, lab.client.state_changed, lab.run_started]
     # 환경·개체 수가 바뀌면 글을 바로 고친다(300ms 확인을 기다리지 않게)
     signals += [getattr(lab, name) for name in ("env_changed",) if hasattr(lab, name)]
@@ -290,10 +297,22 @@ def editor_hint(window: QMainWindow) -> HintFrame:
         btn = holder[0].buttons[0]
         editor.builtin_menu.popup(btn.mapToGlobal(QPoint(0, btn.height())))
 
+    def new_preset() -> None:
+        # 에디터 도구 줄의 「새 프리셋…」과 같은 길(같은 액션: 저장 물음·창 띄우기를 에디터가 맡는다)
+        action = getattr(editor, "act_new_preset", None)
+        if action is not None:
+            action.trigger()
+
+    buttons: list[ButtonSpec] = [(S.ED_FROM_BUILTIN, popup)]
+    if getattr(editor, "act_new_preset", None) is not None:  # 6.2.0(DU 4.8): 단추 둘. 옛 단추 차례(첫째 = 내장 예제)는 그대로
+        buttons.append((S.ED_NEW_PRESET, new_preset,
+                        lambda: editor.act_new_preset.isEnabled()))  # type: ignore[union-attr]
     text = S.HINT_EDITOR_EMPTY.format(preset=S.ED_NEW_PRESET, shapes=S.EDC_GROUP_SHAPES, builtin=S.ED_FROM_BUILTIN)
-    frame = HintFrame(editor.canvas, lambda: text, lambda: anchors.editor_is_empty(window), ((S.ED_FROM_BUILTIN, popup),))
+    frame = HintFrame(editor.canvas, lambda: text, lambda: anchors.editor_is_empty(window), buttons)
     holder.append(frame)
     frame.buttons[0].setToolTip(S.HELP_TIPS.get("editor.builtin", ""))
+    if len(frame.buttons) > 1:
+        frame.buttons[1].setToolTip(S.ED_NEW_PRESET_TIP)
     editor.doc.changed.connect(lambda *_a, f=frame: f.refresh())
     return frame
 

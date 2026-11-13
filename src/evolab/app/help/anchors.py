@@ -30,11 +30,14 @@ WINDOW_SCREENS: Final[dict[str, str]] = {
     "RepeatDialog": "repeat",
     "ReportDialog": "report",
     "ExportDialog": "export",
+    # 6.2.0: 「새 프리셋」 창과 틀 보관함 창(안내 창과 에디터 「틀」 단추가 띄움). 둘 다 「새 프리셋 만들기」 쪽(DU 4.8)
+    "PresetWizard": "preset",
+    "TemplatePicker": "preset",
 }
 """따로 뜨는 창의 클래스 이름 → 화면 이름(하위 클래스도 같은 화면)."""
 
 MAIN_WINDOW_CLASS: Final = "MainWindow"
-SCREENS: Final = ("main", *TAB_SCREENS, *WINDOW_SCREENS.values())
+SCREENS: Final = tuple(dict.fromkeys(("main", *TAB_SCREENS, *WINDOW_SCREENS.values())))
 """화면 이름 전부. "main"은 주 창에서 탭 밖(메뉴 막대, 탭 줄 모서리, 상태 줄)."""
 
 EDITOR_DRAWN_SECTIONS: Final = ("bodies", "generators", "regions", "checkpoints")
@@ -46,7 +49,7 @@ class Anchor:
     """연결표 한 줄. path·text·tile 가운데 하나만 쓴다."""
 
     screen: str
-    """화면 이름(SCREENS): main, editor, lab, compare, records, play, race, repeat, report, export."""
+    """화면 이름(SCREENS): main, editor, lab, compare, records, play, race, repeat, report, export, preset."""
     path: str | None = None
     """그 화면 맨 위(주 창 또는 그 창)에서 속성 경로, 예 "lab.btn_start"."""
     text: str | None = None

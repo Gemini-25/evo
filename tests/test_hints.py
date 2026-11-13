@@ -217,7 +217,8 @@ def test_editor_empty_document_hint(window: Any, qtbot: Any) -> None:
     qtbot.waitUntil(frame.isVisible, timeout=2000)  # 문서가 바뀌면 곧바로, 아니어도 300ms마다
     assert frame.text() == S.HINT_EDITOR_EMPTY.format(preset=S.ED_NEW_PRESET, shapes=S.EDC_GROUP_SHAPES,
                                                       builtin=S.ED_FROM_BUILTIN)
-    (btn,) = frame.buttons
+    btn, new_btn = frame.buttons  # 6.2.0(설계 4.5·DU 4.8): 단추 둘(「내장 예제에서 시작」, 「새 프리셋…」)
+    assert new_btn.text() == S.ED_NEW_PRESET
     assert btn.text() == S.ED_FROM_BUILTIN
     pressed = Presses(editor.canvas)
     click(window, editor.canvas, QPoint(4, 4))

@@ -163,7 +163,28 @@ def key_bindings(spec: EnvSpec) -> list[KeyBinding]:
             add(i, a.keys_neg, S.PLAY_KEY_CW.format(name=name), -1.0)
         elif isinstance(a, m.Jump) and a.keys:
             add(i, a.keys, a.label or a.id, 1.0)  # 누르고 있는 동안 출력 1: 착지할 때마다 다시 뛴다
+        elif isinstance(a, m.Move):
+            _move_keys(a, channel, i, add)
     return out
+
+
+def _move_keys(a: m.Move, channel: str, i: int, add: Callable[[int, list[str], str, float], None]) -> None:
+    """밀기(형식 4, 설계 3.1 H)의 키. 채널 꼬리는 spec.symbols.MOVE_FIELDS[mode]:
+    xy → x: 오른쪽 +1·왼쪽 −1, y: 위 +1·아래 −1 · x → 좌우만 · heading → forward: 위 +1·아래 −1, turn: 왼쪽 +1·오른쪽 −1."""
+    name = a.label or a.id
+    tail = channel.rsplit(".", 1)[-1]
+    if tail == "x":
+        add(i, a.keys_right, S.PLAY_KEY_RIGHT.format(name=name), 1.0)
+        add(i, a.keys_left, S.PLAY_KEY_LEFT.format(name=name), -1.0)
+    elif tail == "y":
+        add(i, a.keys_up, S.PLAY_KEY_UP.format(name=name), 1.0)
+        add(i, a.keys_down, S.PLAY_KEY_DOWN.format(name=name), -1.0)
+    elif tail == "forward":
+        add(i, a.keys_up, S.PLAY_KEY_FORWARD.format(name=name), 1.0)
+        add(i, a.keys_down, S.PLAY_KEY_BACK.format(name=name), -1.0)
+    elif tail == "turn":
+        add(i, a.keys_left, S.PLAY_KEY_LEFT.format(name=name), 1.0)
+        add(i, a.keys_right, S.PLAY_KEY_RIGHT.format(name=name), -1.0)
 
 
 def uses_space(bindings: list[KeyBinding]) -> bool:

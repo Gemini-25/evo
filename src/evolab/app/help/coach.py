@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRegion
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -62,6 +62,35 @@ INK_COLOR: Final = "#202020"
 FAINT_INK_COLOR: Final = "#6b5d3a"
 BUBBLE_WIDTH: Final = 360
 BUBBLE_GAP: Final = 12
+BUBBLE_PAD_X: Final = 16
+BUBBLE_PAD_Y: Final = 12
+BUBBLE_ROW_GAP: Final = 8
+DEFAULT_PROPERTY: Final = "coachDefault"
+"""말풍선의 기본 단추(Enter가 누르는 것) 표시(동적 속성). 스타일시트가 이 속성으로 호박색 채움을 고른다(6.2.0 U33)."""
+
+
+def bubble_style_sheet() -> str:
+    """말풍선 스타일시트(만들 때 한 번). 종이 위 단추는 테마와 무관한 고정 색이다(어두운 테마에서 크림 종이 위 어두운 단추가 뜨지 않게):
+    기본 단추 = 호박색 채움 + 글 #202020(7.98:1) + 굵게 + 1px 테두리 #6b5d3a, 나머지 = 종이색 + 같은 테두리(종이와 6.21:1).
+    올림·키보드 초점은 테두리만 글 색으로(새 색을 만들지 않는다: 계획 1.2)."""
+    button = "#coachBubble QPushButton#coachButton"
+    return (
+        f"#coachBubble {{ background: {PAPER_COLOR}; border: 2px solid {RING_COLOR}; border-radius: 10px; }}"
+        f"#coachBubble QLabel {{ color: {INK_COLOR}; background: transparent; }}"
+        f"#coachBubble QLabel#coachCounter, #coachBubble QLabel#coachStatus {{ color: {FAINT_INK_COLOR}; }}"
+        f"{button} {{ background: {PAPER_COLOR}; color: {INK_COLOR}; border: 1px solid {FAINT_INK_COLOR};"
+        f" border-radius: 4px; padding: 3px 12px; }}"
+        f"{button}:hover, {button}:focus {{ border: 1px solid {INK_COLOR}; }}"
+        f"{button}:disabled {{ color: {FAINT_INK_COLOR}; background: transparent; }}"
+        f"{button}[{DEFAULT_PROPERTY}=\"true\"] {{ background: {RING_COLOR}; color: {INK_COLOR}; font-weight: bold; }}"
+        f"{button}[{DEFAULT_PROPERTY}=\"true\"]:disabled {{ background: transparent; color: {FAINT_INK_COLOR};"
+        f" font-weight: normal; }}"
+    )
+
+
+def is_card(step: CoachStep) -> bool:
+    """제목이 있는 환영 종류의 카드(처음 실행 환영, 이어서 하기): 제목 +2pt, 단계 수 숨김(6.2.0 U33)."""
+    return step.kind == "welcome" and bool(step.title)
 EDGE: Final = 8
 POINT_SECONDS: Final = 4.0
 MISSES_BEFORE_CENTER: Final = 3
@@ -217,10 +246,7 @@ class CoachOverlay(QWidget):
         self.bubble = QFrame(self)
         self.bubble.setObjectName("coachBubble")
         self.bubble.setFixedWidth(BUBBLE_WIDTH)
-        self.bubble.setStyleSheet(
-            f"#coachBubble {{ background: {PAPER_COLOR}; border: 2px solid {RING_COLOR}; border-radius: 10px; }}"
-            f"#coachBubble QLabel {{ color: {INK_COLOR}; background: transparent; }}"
-            f"#coachBubble QLabel#coachCounter, #coachBubble QLabel#coachStatus {{ color: {FAINT_INK_COLOR}; }}")
+        self.bubble.setStyleSheet(bubble_style_sheet())
         font = QApplication.font()
         if font.pointSizeF() > 0:
             font.setPointSizeF(font.pointSizeF() + 1)
@@ -228,8 +254,8 @@ class CoachOverlay(QWidget):
             font.setPixelSize(font.pixelSize() + 1)
         self.bubble.setFont(font)
         lay = QVBoxLayout(self.bubble)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(BUBBLE_PAD_X, BUBBLE_PAD_Y, BUBBLE_PAD_X, BUBBLE_PAD_Y)  # 6.2.0 간격 표(SPACE): 16·12, 줄 사이 8
+        lay.setSpacing(BUBBLE_ROW_GAP)
         self.counter = QLabel()
         self.counter.setObjectName("coachCounter")
         self.title_label = QLabel()
@@ -238,6 +264,12 @@ class CoachOverlay(QWidget):
         bold = self.title_label.font()
         bold.setBold(True)
         self.title_label.setFont(bold)
+        self._title_font = QFont(bold)
+        self._card_title_font = QFont(bold)  # 환영 카드의 제목: +2pt(6.2.0 U33, style.font의 "title"과 같은 규칙)
+        if bold.pointSizeF() > 0:
+            self._card_title_font.setPointSizeF(bold.pointSizeF() + 2)
+        elif bold.pixelSize() > 0:
+            self._card_title_font.setPixelSize(bold.pixelSize() + 2)
         self.text_label = QLabel()
         self.text_label.setObjectName("coachText")
         self.text_label.setWordWrap(True)
@@ -248,7 +280,7 @@ class CoachOverlay(QWidget):
             label.setTextFormat(Qt.TextFormat.PlainText)
             lay.addWidget(label)
         self.button_row = QHBoxLayout()
-        self.button_row.setSpacing(6)
+        self.button_row.setSpacing(BUBBLE_ROW_GAP)
         lay.addLayout(self.button_row)
 
         self._timer = QTimer(self)
@@ -441,6 +473,7 @@ class CoachOverlay(QWidget):
 
     def _add_button(self, label: str, callback: Callable[[], None]) -> QPushButton:
         b = QPushButton(label, self.bubble)
+        b.setObjectName("coachButton")
         b.setAutoDefault(False)
         b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         b.clicked.connect(lambda _checked=False, cb=callback: self._pressed(cb))
@@ -478,6 +511,10 @@ class CoachOverlay(QWidget):
         self.button_row.addStretch(1)
         if step.kind != "welcome" and not self.point_mode:
             self._add_button(S.ONB_SKIP, self.skip)
+        if self._default_btn is not None:  # 기본 단추(Enter)만 호박색 채움(6.2.0 U33). 스타일시트는 말풍선에 한 번 걸려 있다
+            self._default_btn.setProperty(DEFAULT_PROPERTY, True)
+            self._default_btn.style().unpolish(self._default_btn)
+            self._default_btn.style().polish(self._default_btn)
         self._enable_buttons()
 
     def _enable_buttons(self) -> None:
@@ -498,8 +535,8 @@ class CoachOverlay(QWidget):
         self.bubble.resize(BUBBLE_WIDTH, max(height, lay.totalMinimumSize().height()))
 
     def _counter_text(self, step: CoachStep) -> str:
-        if self.point_mode or not step.counted:
-            return ""
+        if self.point_mode or not step.counted or is_card(step):
+            return ""  # 환영 카드는 단계 수(「1/7」)를 숨긴다(6.2.0 U33)
         counted = [s for s in self.steps if s.counted]
         if step not in counted:
             return ""
@@ -511,6 +548,10 @@ class CoachOverlay(QWidget):
         if step is None:
             return
         changed = force
+        if force:
+            font = self._card_title_font if is_card(step) else self._title_font
+            if self.title_label.font() != font:
+                self.title_label.setFont(font)
         for label, value in ((self.counter, self._counter_text(step)), (self.title_label, step.title),
                              (self.text_label, step.text()),
                              (self.status_label, step.status() if step.status is not None else "")):

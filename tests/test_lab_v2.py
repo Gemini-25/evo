@@ -545,7 +545,9 @@ def test_lab_and_repeat_env_lists_use_the_builtin_order(qtbot: QtBot, lab: Any, 
     assert [Path(p).stem for p in want][:5] == ["lander", "track_car", "hill_car", "jump", "glider"]
     combo = lab.env_combo
     assert combo.itemData(0) is None
-    assert [combo.itemData(i) for i in range(1, combo.count())] == want
+    # 6.2.0(설계 4.5): 내장 묶음의 항목 == 내장 목록. 그 뒤에는 「내 프리셋」 묶음(머리 줄 + 내 환경 파일)이 올 수 있다
+    assert [combo.itemData(i) for i in range(1, 1 + len(want))] == want
+    assert combo.count() == 1 + len(want) or combo.itemData(1 + len(want)) is None
     dlg = RepeatDialog(runs_dir=tmp_path, workers=1)
     qtbot.addWidget(dlg)
     assert [dlg.env_combo.itemData(i) for i in range(dlg.env_combo.count())] == want
