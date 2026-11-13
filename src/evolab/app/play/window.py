@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.errors import reason, show_error
 from evolab.app.play.record import PlayRecord, align_record, new_record
 from evolab.spec import model as m
@@ -100,6 +101,9 @@ COLOR_LEG = QColor("#a3be8c")
 COLOR_WORLD_BODY = QColor("#81a1c1")
 COLOR_FLAME = QColor("#ff9f43")
 COLOR_HUD = QColor("#e5e9f0")
+COLOR_HUD_BOX = QColor(11, 14, 20, 190)
+"""HUD·결과 띠의 둥근 상자(실험실 캔버스 lab/canvas.py의 같은 이름 색과 같은 값. 두 캔버스의 그리기 함수는 6.3.0에 합친다)."""
+COLOR_HUD_EDGE = QColor(255, 255, 255, 40)
 
 
 def qt_key(name: str) -> int | None:
@@ -269,6 +273,8 @@ class PlayCanvas(QWidget):
         self.geometry_: WorldGeometry | None = None
         self.frame: FrameState | None = None
         self.follow_index = 0
+        self.result: tuple[str, str] | None = None
+        """(6.2.0 U13 ②) 한 판이 끝났을 때 캔버스 가운데 결과 띠의 두 줄(결과, 키 안내). 진행 중이면 None."""
         self.scale = 22.0
         self.zoom = 1.0
         self.center = (0.0, 0.0)
@@ -467,9 +473,46 @@ class PlayCanvas(QWidget):
             p.restore()
 
         p.resetTransform()
-        p.setPen(COLOR_HUD)
-        p.drawText(12, 22, self.hud)
+        self._draw_hud(p)
+        self._draw_result(p)
         p.end()
+
+    def _draw_hud(self, p: QPainter) -> None:
+        """(6.2.0 U13 ①) HUD를 실험실 캔버스와 같은 둥근 상자에."""
+        if not self.hud:
+            return
+        fm = p.fontMetrics()
+        rect = fm.boundingRect(QRectF(0, 0, 10000, 10000), int(Qt.AlignmentFlag.AlignLeft), self.hud)
+        box = QRectF(10.0, 10.0, rect.width() + 16.0, rect.height() + 10.0)
+        p.setPen(QPen(COLOR_HUD_EDGE, 1.0))
+        p.setBrush(QBrush(COLOR_HUD_BOX))
+        p.drawRoundedRect(box, 4.0, 4.0)
+        p.setPen(COLOR_HUD)
+        p.drawText(box.adjusted(8.0, 5.0, -8.0, -5.0), int(Qt.AlignmentFlag.AlignLeft), self.hud)
+
+    def _draw_result(self, p: QPainter) -> None:
+        """(6.2.0 U13 ②) 끝난 판의 결과 띠: 캔버스 가운데, 굵은 결과 한 줄과 키 안내 한 줄."""
+        if self.result is None:
+            return
+        head, keys = self.result
+        bold = style.font(self, "title")
+        p.setFont(bold)
+        fm_head = p.fontMetrics()
+        p.setFont(self.font())
+        fm_keys = p.fontMetrics()
+        width = max(fm_head.horizontalAdvance(head), fm_keys.horizontalAdvance(keys)) + 32.0
+        height = fm_head.height() + fm_keys.height() + 22.0
+        box = QRectF((self.width() - width) / 2.0, (self.height() - height) / 2.0, width, height)
+        p.setPen(QPen(COLOR_HUD_EDGE, 1.0))
+        p.setBrush(QBrush(COLOR_HUD_BOX))
+        p.drawRoundedRect(box, 6.0, 6.0)
+        p.setPen(COLOR_HUD)
+        p.setFont(bold)
+        top = QRectF(box.left(), box.top() + 8.0, box.width(), fm_head.height())
+        p.drawText(top, int(Qt.AlignmentFlag.AlignHCenter), head)
+        p.setFont(self.font())
+        p.drawText(QRectF(box.left(), top.bottom() + 6.0, box.width(), fm_keys.height()),
+                   int(Qt.AlignmentFlag.AlignHCenter), keys)
 
     def _draw_movers(self, p: QPainter, pen: Callable[[QColor, float], QPen], t: float) -> None:
         """정해진 움직임 세계 물체를 시각 t의 자세(pose_at)로. 런타임이 그 스텝에 놓은 자리와 같다(설계 D7)."""
