@@ -140,7 +140,7 @@ class _NeuronCoords:
     BrainFrame.active_neurons(유전자)와 같은 답을 넘파이 호출 셋으로 낸다(화면용).
 
     뇌 그림은 통계 줄이 올 때마다 보는 세대 대표·그때 챔피언의 켜짐을 판단한다. 측정 M12에서 그 순간의 넘파이 호출은 캐시가
-    식어 있어 호출 수가 곧 비용이었다(16칸 틀: active_neurons 한 번 약 0.04ms, 이 표로 약 0.01ms). 학습(learners/grow.py)은
+    식어 있어 호출 수가 곧 비용이었다(16칸 틀: active_neurons 한 번 약 0.04ms, 이 표로 0.01~0.02ms). 학습(learners/grow.py)은
     이 표를 쓰지 않는다."""
 
     def __init__(self, frame: BrainFrame) -> None:
