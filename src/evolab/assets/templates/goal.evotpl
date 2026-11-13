@@ -1,0 +1,12 @@
+{
+  "format": "evolab-template", "version": 1,
+  "id": "goal", "kind": "prop", "world": "any", "name_id": "goal",
+  "params": [
+    {"id": "width", "label_id": "width", "value": 3.0, "min": 1.0, "max": 8.0, "step": 0.5, "unit_id": "m", "main": true}
+  ],
+  "parts": {
+    "regions": [
+      {"id": "goal", "label": "골", "kind": "goal", "tags": ["goal"], "shape": {"kind": "box", "w": 1.0, "h": "=t.width"}}
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "format": "evolab-template", "version": 1,
+  "id": "ground_flat", "kind": "prop", "world": "side", "name_id": "ground_flat",
+  "params": [
+    {"id": "length", "label_id": "length", "value": 40.0, "min": 10.0, "max": 200.0, "step": 5.0, "unit_id": "m", "main": true}
+  ],
+  "parts": {
+    "bodies": [
+      {"id": "ground", "label": "땅", "owner": "world", "type": "static", "tags": ["ground"],
+       "shapes": [{"kind": "chain", "points": [["=-t.length / 2", 0.0], ["=t.length / 2", 0.0]], "radius": 0.05}],
+       "material": {"friction": 1.0}}
+    ]
+  }
+}

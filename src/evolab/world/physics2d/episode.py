@@ -508,6 +508,35 @@ class _Vehicle:
 
 
 @dataclass
+class _Move:
+    """밀기(이동) 구동기(형식 4, DE 4.2). 힘 = 출력 x 힘 − (힘 / 최고 속도) x 속도를 한 스텝 동안 지수로 적분한다:
+    다음 속도 = 속도 x decay + 출력 x 최고 속도 x (1 − decay), decay = exp(−(힘 / 최고 속도 / 질량) x dt). 그 속도 변화를
+    힘(질량 x 변화 / dt)으로 바꿔 _acc 칸에 더하므로 최고 속도가 정확히 max_speed다(차량 구동기의 구름 저항과 같은 식)."""
+
+    body: pymunk.Body
+    bid: str
+    mode: int
+    """0: xy(세계 좌표 두 방향), 1: x(세계 x만), 2: heading(몸 +x 방향으로 밀고 각속도를 바로 씀)."""
+    ch0: int
+    """xy·x: <id>.x, heading: <id>.forward의 채널 번호."""
+    ch1: int
+    """xy: <id>.y, heading: <id>.turn의 채널 번호(x는 -1)."""
+    speed: float
+    """최고 속도(m/s)."""
+    turn: float
+    """heading에서 출력 1의 각속도(rad/s)."""
+    decay: float
+    """한 스텝 동안 남는 속도 비율."""
+    k: float
+    """질량 / dt: 속도 변화를 힘으로 바꾸는 곱수."""
+    sign: float = 1.0
+    """세계 x 방향의 부호(6.3.0의 거울 선수가 −1을 쓴다. 6.2.0은 늘 1)."""
+    slot: int = 0
+    raw: Any = None
+    """cpBody 포인터(_setup_c_paths, v6 D7). None이면 공개 API를 쓴다."""
+
+
+@dataclass
 class _Motor:
     constraint: pymunk.SimpleMotor
     channel_index: int
@@ -654,6 +683,8 @@ class Episode:
         b = w.bounds
         self.bounds = (self._num(b[0], "world"), self._num(b[1], "world"), self._num(b[2], "world"), self._num(b[3], "world"))
         self.space.gravity = self.gravity
+        if w.damping != 1.0:  # 바닥 마찰(형식 4). 1이면 쓰지 않는다: 옛 파일은 pymunk 기본값 그대로(v6.1과 같은 연산)
+            self.space.damping = float(w.damping)
 
         self._build_regions()
         self._build_bodies()
@@ -1479,6 +1510,39 @@ class Episode:
                 slot_of[bid] = len(self._force_bodies)
                 self._force_bodies.append((bid, self.bodies[bid]))
             self._drag_slots.append((slot_of[bid], k))
+        # 형식 4 부품(6.2.0). 없으면 두 목록이 비고 위의 칸 순서·스텝 연산이 v6.1과 같다.
+        self._balances: list[tuple[str, int, float, float, float, float]] = []
+        """균형 보조: (물체 id, 칸 번호, 세우는 힘, 흔들림 줄임, 최대 토크, 목표 각도). 원형 eng/wtb의 패치 그대로."""
+        for a in self.env.actuators:
+            if isinstance(a, m.Balance) and a.body in self.bodies:  # 없는 물체(v2.1)면 보조도 없다
+                if a.body not in slot_of:
+                    slot_of[a.body] = len(self._force_bodies)
+                    self._force_bodies.append((a.body, self.bodies[a.body]))
+                self._balances.append((a.body, slot_of[a.body], _clamp(self._num(a.stiffness, "agent"), 0.0, 1e9),
+                                       _clamp(self._num(a.damping, "agent"), 0.0, 1e9),
+                                       _clamp(self._num(a.max_torque, "agent"), 0.0, FORCE_LIMIT),
+                                       self._num(a.target, "agent")))
+        self._moves: list[_Move] = []
+        for a in self.env.actuators:
+            if not isinstance(a, m.Move):
+                continue
+            names = [f"{a.id}.{f}" for f in sy.MOVE_FIELDS[a.mode]]
+            if a.body in absent:
+                dead += [index[n] for n in names]
+                continue
+            body = self.bodies[a.body]
+            force = _clamp(self._num(a.max_force, "agent"), 0.0, FORCE_LIMIT)
+            speed = _clamp(self._num(a.max_speed, "agent"), 1e-6, FIELD_LIMIT)
+            mass = float(body.mass)
+            mv = _Move(body, a.body, ("xy", "x", "heading").index(a.mode), index[names[0]],
+                       index[names[1]] if len(names) > 1 else -1, speed,
+                       _clamp(self._num(a.max_turn, "agent"), 0.0, 1e4),
+                       math.exp(-(force / speed / mass) * self.dt) if mass > 0.0 else 1.0, mass / self.dt)
+            if a.body not in slot_of:
+                slot_of[a.body] = len(self._force_bodies)
+                self._force_bodies.append((a.body, body))
+            mv.slot = slot_of[a.body]
+            self._moves.append(mv)
         self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
         dead.sort()
         self._build_aero()  # 없는 물체의 공기역학은 그 물체가 self.bodies에 없어 건너뛴다(출력 채널 없음)
@@ -1811,10 +1875,43 @@ class Episode:
             acc = self._acc[v.slot]
             target = fwd * v.decay + u[v.ch_throttle] * v.accel * v.gain
             acc[0] += (target - fwd) * v.mass / self.dt
+        if self._moves:
+            self._apply_moves(u)
+        for bid, slot, k, c_, tmax, tgt in self._balances:
+            # 균형 보조(형식 4): 토크 = clamp(−k(각도 − 목표) − c·각속도, ±최대). 원형 eng/wtb의 패치 그대로(같은 연산·순서).
+            st_ = self._bstate(bid)
+            tq = -k * (st_[2] - tgt) - c_ * st_[5]
+            tq = tmax if tq > tmax else (-tmax if tq < -tmax else tq)
+            self._acc[slot][2] += tq
         self._u_applied = applied
         sums = self._abs_sum
         for i, x in enumerate(applied):
             sums[i] += x if x >= 0.0 else -x
+
+    def _apply_moves(self, u: list[float]) -> None:
+        """밀기(형식 4): 이번 스텝의 속도 변화를 힘으로 바꿔 _acc 칸(물체 좌표)에 더한다. heading의 도는 출력은 각속도를 바로 쓴다."""
+        for mv in self._moves:
+            _x, _y, ang, vx, vy, _w = self._bstate(mv.bid)
+            acc = self._acc[mv.slot]
+            d = mv.decay
+            top = mv.speed * (1.0 - d)
+            lose = 1.0 - d
+            c, s_ = math.cos(ang), math.sin(ang)
+            if mv.mode == 2:  # heading: 몸 +x 방향으로만 밀고, 도는 속도는 출력 x max_turn
+                fwd = vx * c + vy * s_
+                acc[0] += (u[mv.ch0] * top - fwd * lose) * mv.k
+                omega = u[mv.ch1] * mv.turn
+                raw = mv.raw
+                if raw is not None:  # 공개 API와 같은 C 함수(v6 D7)
+                    _CP_SET_ANGULAR_VELOCITY(raw, omega)
+                else:
+                    mv.body.angular_velocity = omega
+                self._cache.pop(mv.bid, None)
+                continue
+            fx = (u[mv.ch0] * mv.sign * top - vx * lose) * mv.k  # 세계 좌표의 힘
+            fy = (u[mv.ch1] * top - vy * lose) * mv.k if mv.mode == 0 else 0.0
+            acc[0] += fx * c + fy * s_  # _apply_forces가 물체 각도로 다시 돌린다
+            acc[1] += -fx * s_ + fy * c
 
     # ------------------------------------------------------------------
     # 접촉
@@ -1853,6 +1950,8 @@ class Episode:
             v.raw = self._raw[v.bid]
         for jp in self._jumps:
             jp.raw = self._raw[jp.bid]
+        for mv in self._moves:
+            mv.raw = self._raw[mv.bid]
         # 공기역학(v6 D12): 물체마다 (물체, id, 포인터, 1/질량, 1/관성, 부품마다 (qk, slope, cd90, stall, friction, induced,
         # 변 목록)). 물체 질량·관성은 모양을 모두 단 뒤 바뀌지 않는다(_apply_aero가 스텝마다 나누던 값과 같다).
         self._aero_fast: list[tuple[pymunk.Body, str, Any, float, float, list[tuple[Any, ...]]]] = [

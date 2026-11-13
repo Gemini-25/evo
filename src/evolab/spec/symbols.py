@@ -240,7 +240,13 @@ def actuator_channels(env: m.EnvFile) -> list[Channel]:
             out.append(Channel(a.id, a.id, -1.0, 1.0))
         elif isinstance(a, m.Jump):
             out.append(Channel(a.id, a.id, 0.0, 1.0))
+        elif isinstance(a, m.Move):  # 형식 4(6.2.0). 균형 보조(Balance)는 출력 채널이 없다
+            out += [Channel(f"{a.id}.{f}", a.id, -1.0, 1.0) for f in MOVE_FIELDS[a.mode]]
     return out
+
+
+MOVE_FIELDS: dict[str, tuple[str, ...]] = {"xy": ("x", "y"), "x": ("x",), "heading": ("forward", "turn")}
+"""밀기(Move) 방식마다 출력 채널의 꼬리(<id>.<꼬리>, 범위 −1..1, 이 순서)."""
 
 
 def key_allowed(actuator: m.Actuator, key: str) -> bool:

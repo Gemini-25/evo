@@ -3187,3 +3187,14 @@ PLAY_WHY_SAVE: Final = "한 판이 끝나면 저장할 수 있습니다."
 # ---- 날짜 (app/style.py: fmt_when. 기록·비교의 시작 시각) ----
 STYLE_WHEN: Final = "{month}월 {day}일 {hour:02d}:{minute:02d}"
 STYLE_WHEN_YEAR: Final = "{year}년 {month}월 {day}일 {hour:02d}:{minute:02d}"
+
+# ---------------------------------------------------------------------------
+# 6.2.0 묶음 P (프리셋 층: presets/*, cli.py 「evolab preset」)가 더한 것
+# ---------------------------------------------------------------------------
+# 틀을 읽을 때 슬라이더 귀퉁이 이름(TPL_ERR_EXPAND의 {which})과 내장 틀 슬라이더의 단위(unit_id, D55)
+TPL_EXPAND_WHICH: Final = {"value": "기본값", "min": "최솟값", "max": "최댓값"}
+TPL_UNIT_NAMES: Final = {"times": "배", "m": "m", "s": "초"}
+# 명령줄 「evolab preset <조리법.json> [-o 파일]」
+CLI_HELP_PRESET_RECIPE: Final = "조리법 JSON 파일, 또는 내장 조리법 이름(예: running)"
+CLI_HELP_PRESET_OUT: Final = "만든 환경 파일을 쓸 곳(없으면 조리법 이름으로 지금 폴더에)"
+CLI_PRESET_SAVED: Final = "환경 파일을 만들었습니다: {path} (형식 {version}, 입력 {inputs}개, 출력 {outputs}개)"

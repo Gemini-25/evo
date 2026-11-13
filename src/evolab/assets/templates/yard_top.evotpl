@@ -1,0 +1,23 @@
+{
+  "format": "evolab-template", "version": 1,
+  "id": "yard_top", "kind": "arena", "world": "top", "name_id": "yard_top",
+  "params": [
+    {"id": "length", "label_id": "length", "value": 14.0, "min": 6.0, "max": 40.0, "step": 1.0, "unit_id": "m", "main": true},
+    {"id": "width", "label_id": "width", "value": 8.0, "min": 4.0, "max": 30.0, "step": 1.0, "unit_id": "m", "main": true}
+  ],
+  "parts": {
+    "bodies": [
+      {"id": "wall_top", "label": "위 벽", "owner": "world", "type": "static", "tags": ["wall"],
+       "pos": [0.0, "=t.width / 2 + 0.25"], "shapes": [{"kind": "box", "w": "=t.length + 1", "h": 0.5}]},
+      {"id": "wall_bottom", "label": "아래 벽", "owner": "world", "type": "static", "tags": ["wall"],
+       "pos": [0.0, "=-t.width / 2 - 0.25"], "shapes": [{"kind": "box", "w": "=t.length + 1", "h": 0.5}]},
+      {"id": "wall_left", "label": "왼 벽", "owner": "world", "type": "static", "tags": ["wall"],
+       "pos": ["=-t.length / 2 - 0.25", 0.0], "shapes": [{"kind": "box", "w": 0.5, "h": "=t.width"}]},
+      {"id": "wall_right", "label": "오른 벽", "owner": "world", "type": "static", "tags": ["wall"],
+       "pos": ["=t.length / 2 + 0.25", 0.0], "shapes": [{"kind": "box", "w": 0.5, "h": "=t.width"}]}
+    ]
+  },
+  "bounds": ["=-t.length / 2 - 5", "=-t.width / 2 - 5", "=t.length / 2 + 5", "=t.width / 2 + 5"],
+  "view": ["=-t.length / 2 - 1", "=-t.width / 2 - 1", "=t.length / 2 + 1", "=t.width / 2 + 1"],
+  "spawns": {"start": [["=-t.length / 4", 0.0]], "center": [[0.0, 0.0]], "goal": [["=t.length / 2 - 0.5", 0.0]]}
+}

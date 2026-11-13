@@ -171,14 +171,17 @@ class _Compiler:
         self.issues: list[Issue] = []
         self.resolver = sy.QueryResolver(env)
 
-    def error(self, where: str, message: str) -> None:
-        self.issues.append(Issue("error", where, message))
+    # code(6.2.0, 계약 C11): 문구 상수 이름에서 SPEC_를 뺀 소문자. 다만 화면의 「고치기」가 묶어 보는 이름 몇은 따로:
+    # 없는 물체·영역·관절·연료 탱크·체크포인트·구동기 = unknown_ref, 없는 꼬리표 = unknown_tag, 없는 사건 = unknown_event,
+    # 없는 채널 = unknown_channel, 점수 없음 = no_scoring, 수식 오류 = expr. 모든 검사 글에 코드가 있다(T6).
+    def error(self, where: str, message: str, code: str) -> None:
+        self.issues.append(Issue("error", where, message, code))
 
-    def warn(self, where: str, message: str) -> None:
-        self.issues.append(Issue("warning", where, message))
+    def warn(self, where: str, message: str, code: str) -> None:
+        self.issues.append(Issue("warning", where, message, code))
 
-    def info(self, where: str, message: str) -> None:
-        self.issues.append(Issue("info", where, message))
+    def info(self, where: str, message: str, code: str) -> None:
+        self.issues.append(Issue("info", where, message, code))
 
     def compile(
         self, where: str, source: str, symbols: dict[str, Sym], *, want: Literal["num", "bool"], max_phase: str
@@ -186,7 +189,7 @@ class _Compiler:
         try:
             return compile_expr(source, symbols, want=want, max_phase=max_phase, query=self.resolver)  # type: ignore[arg-type]
         except ExprError as exc:
-            self.error(where, str(exc))
+            self.error(where, str(exc), "expr")
             return None
 
     # ------------------------------------------------------------------
@@ -199,6 +202,7 @@ class _Compiler:
         self._check_refs()
         self._check_not_yet()
         self._check_v2()
+        self._check_v4()
         formulas = self._compile_formulas()
         events, order = self._compile_events()
         blocks, formula = self._compile_scoring()
@@ -227,57 +231,57 @@ class _Compiler:
     def _check_world(self) -> None:
         w = self.env.world
         if w.kind != "physics2d":
-            self.error("world.kind", S.SPEC_GRID_NOT_YET)
+            self.error("world.kind", S.SPEC_GRID_NOT_YET, "grid_not_yet")
         if isinstance(w.bounds[0], float) and isinstance(w.bounds[2], float) and w.bounds[0] >= w.bounds[2]:
-            self.error("world.bounds", S.SPEC_BOUNDS_ORDER)
+            self.error("world.bounds", S.SPEC_BOUNDS_ORDER, "bounds_order")
         if isinstance(w.bounds[1], float) and isinstance(w.bounds[3], float) and w.bounds[1] >= w.bounds[3]:
-            self.error("world.bounds", S.SPEC_BOUNDS_ORDER)
+            self.error("world.bounds", S.SPEC_BOUNDS_ORDER, "bounds_order")
 
     def _check_ids(self) -> None:
         seen: dict[str, str] = {}
         for group, i in sy.component_ids(self.env):
             if i in sy.RESERVED:
-                self.error(group, S.SPEC_ID_RESERVED.format(id=i))
+                self.error(group, S.SPEC_ID_RESERVED.format(id=i), "id_reserved")
             if i in seen:
-                self.error(group, S.SPEC_ID_DUPLICATE.format(id=i, other=seen[i]))
+                self.error(group, S.SPEC_ID_DUPLICATE.format(id=i, other=seen[i]), "id_duplicate")
             seen.setdefault(i, group)
         for group, ids in (("params", [p.id for p in self.env.params]), ("randomize", [v.id for v in self.env.randomize])):
             dup = {i for i in ids if ids.count(i) > 1}
             for i in sorted(dup):
-                self.error(group, S.SPEC_ID_DUPLICATE.format(id=i, other=group))
+                self.error(group, S.SPEC_ID_DUPLICATE.format(id=i, other=group), "id_duplicate")
             for i in ids:
                 if i in sy.RESERVED:
-                    self.error(group, S.SPEC_ID_RESERVED.format(id=i))
+                    self.error(group, S.SPEC_ID_RESERVED.format(id=i), "id_reserved")
         all_ids = [i for _, i in sy.component_ids(self.env)] + [p.id for p in self.env.params] + [
             v.id for v in self.env.randomize
         ]
         for i in sorted({i for i in all_ids if "__" in i}):
-            self.error("", S.SPEC_ID_DUNDER.format(id=i))
+            self.error("", S.SPEC_ID_DUNDER.format(id=i), "id_dunder")
 
     def _check_params(self) -> None:
         for i, p in enumerate(self.env.params):
             where = f"params[{i}]"
             if p.evolve:
                 if p.min is None or p.max is None:
-                    self.error(where, S.SPEC_PARAM_RANGE_MISSING.format(id=p.id))
+                    self.error(where, S.SPEC_PARAM_RANGE_MISSING.format(id=p.id), "param_range_missing")
                 elif not p.min < p.max:
-                    self.error(where, S.SPEC_PARAM_RANGE_ORDER.format(id=p.id))
+                    self.error(where, S.SPEC_PARAM_RANGE_ORDER.format(id=p.id), "param_range_order")
                 elif not p.min <= p.value <= p.max:
-                    self.error(where, S.SPEC_PARAM_VALUE_OUT.format(id=p.id))
+                    self.error(where, S.SPEC_PARAM_VALUE_OUT.format(id=p.id), "param_value_out")
         for i, v in enumerate(self.env.randomize):
             where = f"randomize[{i}]"
             numbers = [x for x in (v.low, v.high, v.mean, v.std, *(v.values or [])) if x is not None]
             if any(not math.isfinite(x) or abs(x) > RAND_LIMIT for x in numbers):
-                self.error(where, S.SPEC_RAND_HUGE.format(id=v.id))
+                self.error(where, S.SPEC_RAND_HUGE.format(id=v.id), "rand_huge")
                 continue
             if v.dist in ("uniform", "int"):
                 if v.low is None or v.high is None or not v.low <= v.high:
-                    self.error(where, S.SPEC_RAND_RANGE.format(id=v.id))
+                    self.error(where, S.SPEC_RAND_RANGE.format(id=v.id), "rand_range")
             elif v.dist == "normal":
                 if v.mean is None or v.std is None or v.std < 0:
-                    self.error(where, S.SPEC_RAND_NORMAL.format(id=v.id))
+                    self.error(where, S.SPEC_RAND_NORMAL.format(id=v.id), "rand_normal")
             elif v.dist == "choice" and not v.values:
-                self.error(where, S.SPEC_RAND_CHOICE.format(id=v.id))
+                self.error(where, S.SPEC_RAND_CHOICE.format(id=v.id), "rand_choice")
 
     def _check_materials(self) -> None:
         """숫자로 적은 재료 값이 음수면 알려 준다(수식 결과는 런타임이 범위를 잡는다)."""
@@ -285,10 +289,10 @@ class _Compiler:
             for name in ("density", "friction", "elasticity"):
                 value = getattr(b.material, name)
                 if isinstance(value, float) and value < 0:
-                    self.error(f"bodies[{i}].material.{name}", S.SPEC_NEGATIVE.format(name=name))
+                    self.error(f"bodies[{i}].material.{name}", S.SPEC_NEGATIVE.format(name=name), "negative")
         for i, g in enumerate(self.env.generators):
             if isinstance(g, m.HeightmapGen) and isinstance(g.friction, float) and g.friction < 0:
-                self.error(f"generators[{i}].friction", S.SPEC_NEGATIVE.format(name="friction"))
+                self.error(f"generators[{i}].friction", S.SPEC_NEGATIVE.format(name="friction"), "negative")
 
     def _check_refs(self) -> None:
         env = self.env
@@ -301,7 +305,7 @@ class _Compiler:
 
         def body_ref(where: str, ref: str) -> None:
             if ref not in bodies:
-                self.error(where, S.SPEC_REF_BODY.format(ref=ref))
+                self.error(where, S.SPEC_REF_BODY.format(ref=ref), "unknown_ref")
 
         dynamic = {b.id for b in env.bodies if b.type == "dynamic"}
         agent_dynamic = {b.id for b in env.bodies if b.type == "dynamic" and b.owner == "agent"}
@@ -310,48 +314,49 @@ class _Compiler:
             # 정적 물체(지형 등)는 위치가 원점이라 거리 대상으로 쓰면 뜻이 없다. 영역을 쓰게 한다.
             if ref in regions or (allow_body and ref in dynamic):
                 return
-            self.error(where, S.SPEC_REF_REGION.format(ref=ref))
+            self.error(where, S.SPEC_REF_REGION.format(ref=ref), "unknown_ref")
 
         def hit_ref(where: str, ref: str, who: str | None = None) -> None:
             if ref in bodies or (ref.startswith("tag.") and ref[4:] in tags):
                 if who is not None and sy.owner_of(env, who) == "agent" and sy.agent_only_selector(env, ref):
-                    self.error(where, S.SPEC_AGENT_SELF_CONTACT.format(a=who, b=ref))
+                    self.error(where, S.SPEC_AGENT_SELF_CONTACT.format(a=who, b=ref), "agent_self_contact")
                 return
-            self.error(where, S.SPEC_REF_BODY_OR_TAG.format(ref=ref))
+            code = "unknown_tag" if ref.startswith("tag.") else "unknown_ref"
+            self.error(where, S.SPEC_REF_BODY_OR_TAG.format(ref=ref), code)
 
         if env.actuators and not agent_bodies:
-            self.error("bodies", S.SPEC_NO_AGENT_BODY)
+            self.error("bodies", S.SPEC_NO_AGENT_BODY, "no_agent_body")
         own = {b.id: b for b in env.bodies}
         for i, b in enumerate(env.bodies):
             where = f"bodies[{i}]"
             if b.owner == "agent" and b.type == "static":
-                self.warn(where, S.SPEC_AGENT_NOT_DYNAMIC.format(id=b.id))
+                self.warn(where, S.SPEC_AGENT_NOT_DYNAMIC.format(id=b.id), "agent_not_dynamic")
             if b.place_by is not None:
                 j = joints.get(b.place_by)
                 if j is None:
-                    self.error(f"{where}.place_by", S.SPEC_REF_JOINT.format(ref=b.place_by))
+                    self.error(f"{where}.place_by", S.SPEC_REF_JOINT.format(ref=b.place_by), "unknown_ref")
                 elif j.b != b.id:
-                    self.error(f"{where}.place_by", S.SPEC_PLACE_BY_CHILD.format(joint=j.id, body=b.id))
+                    self.error(f"{where}.place_by", S.SPEC_PLACE_BY_CHILD.format(joint=j.id, body=b.id), "place_by_child")
                 elif j.a not in own or own[j.a].owner != b.owner:
                     # 부모와 자식의 좌표계(에이전트 좌표 / 세계 좌표)가 같아야 앵커가 맞는다.
-                    self.error(f"{where}.place_by", S.SPEC_PLACE_BY_OWNER.format(joint=j.id, body=b.id))
+                    self.error(f"{where}.place_by", S.SPEC_PLACE_BY_OWNER.format(joint=j.id, body=b.id), "place_by_owner")
         if self._place_cycle():
-            self.error("bodies", S.SPEC_PLACE_CYCLE)
+            self.error("bodies", S.SPEC_PLACE_CYCLE, "place_cycle")
         for i, j in enumerate(env.joints):
             body_ref(f"joints[{i}].a", j.a)
             body_ref(f"joints[{i}].b", j.b)
             if j.a == j.b:
-                self.error(f"joints[{i}]", S.SPEC_JOINT_SAME_BODY.format(id=j.id))
+                self.error(f"joints[{i}]", S.SPEC_JOINT_SAME_BODY.format(id=j.id), "joint_same_body")
             elif j.a in bodies and j.b in bodies and not (sy.is_dynamic(env, j.a) or sy.is_dynamic(env, j.b)):
-                self.error(f"joints[{i}]", S.SPEC_JOINT_NO_DYNAMIC.format(id=j.id))
+                self.error(f"joints[{i}]", S.SPEC_JOINT_NO_DYNAMIC.format(id=j.id), "joint_no_dynamic")
             if j.collide and sy.owner_of(env, j.a) == "agent" and sy.owner_of(env, j.b) == "agent":
-                self.warn(f"joints[{i}].collide", S.SPEC_AGENT_COLLIDE.format(id=j.id))
+                self.warn(f"joints[{i}].collide", S.SPEC_AGENT_COLLIDE.format(id=j.id), "agent_collide")
         for i, a in enumerate(env.actuators):
             where = f"actuators[{i}]"
-            if isinstance(a, (m.Thruster, m.Vehicle, m.Jump, m.Aero)):
+            if isinstance(a, (m.Thruster, m.Vehicle, m.Jump, m.Aero, m.Move, m.Balance)):
                 body_ref(f"{where}.body", a.body)
                 if a.body in bodies and a.body not in agent_dynamic:
-                    self.error(f"{where}.body", S.SPEC_ACTUATOR_BODY.format(ref=a.body))
+                    self.error(f"{where}.body", S.SPEC_ACTUATOR_BODY.format(ref=a.body), "actuator_body")
             if isinstance(a, m.Jump):
                 for k, ref in enumerate(a.ground):
                     hit_ref(f"{where}.ground[{k}]", ref, a.body)
@@ -359,21 +364,21 @@ class _Compiler:
                 if sy.key_allowed(a, key):
                     continue
                 if key in sy.JUMP_ONLY_KEYS:
-                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_SPACE_JUMP_ONLY.format(id=a.id))
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_SPACE_JUMP_ONLY.format(id=a.id), "key_space_jump_only")
                 elif key in sy.RESERVED_KEYS:
-                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_RESERVED.format(key=key))
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_RESERVED.format(key=key), "key_reserved")
                 else:
-                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_UNKNOWN.format(key=key))
+                    self.error(f"{where}.keys[{k}]", S.SPEC_KEY_UNKNOWN.format(key=key), "key_unknown")
             if isinstance(a, m.Thruster) and a.tank is not None and a.tank not in tanks:
-                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=a.tank))
+                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=a.tank), "unknown_ref")
             if isinstance(a, m.Motor) and a.joint not in joints:
-                self.error(f"{where}.joint", S.SPEC_REF_JOINT.format(ref=a.joint))
+                self.error(f"{where}.joint", S.SPEC_REF_JOINT.format(ref=a.joint), "unknown_ref")
             elif isinstance(a, m.Motor):
                 jm = joints[a.joint]
                 if jm.kind not in ("pivot", "rot_spring"):
-                    self.error(f"{where}.joint", S.SPEC_MOTOR_JOINT_KIND.format(ref=a.joint))
+                    self.error(f"{where}.joint", S.SPEC_MOTOR_JOINT_KIND.format(ref=a.joint), "motor_joint_kind")
                 elif not ({jm.a, jm.b} & agent_dynamic):
-                    self.error(f"{where}.joint", S.SPEC_MOTOR_NOT_AGENT.format(ref=a.joint))
+                    self.error(f"{where}.joint", S.SPEC_MOTOR_NOT_AGENT.format(ref=a.joint), "motor_not_agent")
         for i, s in enumerate(env.sensors):
             where = f"sensors[{i}]"
             if isinstance(s, (m.BodyState, m.Target, m.ContactSensor, m.Rays)):
@@ -387,15 +392,15 @@ class _Compiler:
                 for k, ref in enumerate(s.hits):
                     hit_ref(f"{where}.hits[{k}]", ref)
             if isinstance(s, m.JointAngle) and s.joint not in joints:
-                self.error(f"{where}.joint", S.SPEC_REF_JOINT.format(ref=s.joint))
+                self.error(f"{where}.joint", S.SPEC_REF_JOINT.format(ref=s.joint), "unknown_ref")
             if isinstance(s, m.FuelLeft) and s.tank not in tanks:
-                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=s.tank))
+                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=s.tank), "unknown_ref")
         events = {e.id for e in env.events} | set(sy.BUILTIN_EVENTS)
         actuator_ids = {a.id for a in env.actuators if not isinstance(a, m.FuelTank)}
         for i, b in enumerate(env.scoring.blocks):
             where = f"scoring.blocks[{i}]"
             if isinstance(b, m.EventBlock) and b.event not in events:
-                self.error(f"{where}.event", S.SPEC_REF_EVENT.format(ref=b.event))
+                self.error(f"{where}.event", S.SPEC_REF_EVENT.format(ref=b.event), "unknown_event")
             if isinstance(b, (m.DistanceBlock, m.ProgressBlock, m.SpeedBlock, m.TiltBlock, m.ContactTimeBlock)):
                 body_ref(f"{where}.body", b.body)
             if isinstance(b, m.DistanceBlock):
@@ -404,41 +409,41 @@ class _Compiler:
                 for k, ref in enumerate(b.with_):
                     hit_ref(f"{where}.with[{k}]", ref, b.body)
             if isinstance(b, m.FuelBlock) and b.tank not in tanks:
-                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=b.tank))
+                self.error(f"{where}.tank", S.SPEC_REF_TANK.format(ref=b.tank), "unknown_ref")
             if isinstance(b, m.CheckpointBlock) and b.checkpoints not in sy.checkpoint_ids(env):
-                self.error(f"{where}.checkpoints", S.SPEC_REF_CHECKPOINTS.format(ref=b.checkpoints))
+                self.error(f"{where}.checkpoints", S.SPEC_REF_CHECKPOINTS.format(ref=b.checkpoints), "unknown_ref")
             if isinstance(b, (m.EnergyBlock, m.SmoothnessBlock)) and b.actuators != "all":
                 for k, ref in enumerate(b.actuators):
                     if ref not in actuator_ids:
-                        self.error(f"{where}.actuators[{k}]", S.SPEC_REF_ACTUATOR.format(ref=ref))
+                        self.error(f"{where}.actuators[{k}]", S.SPEC_REF_ACTUATOR.format(ref=ref), "unknown_ref")
         for i, c in enumerate(env.checkpoints):
             if c.body is not None:
                 body_ref(f"checkpoints[{i}].body", c.body)
             if c.loop and len(c.lines) < 3:
-                self.error(f"checkpoints[{i}].lines", S.SPEC_CHECKPOINTS_LOOP_MIN.format(id=c.id))
+                self.error(f"checkpoints[{i}].lines", S.SPEC_CHECKPOINTS_LOOP_MIN.format(id=c.id), "checkpoints_loop_min")
         tracks = [g for g in env.generators if isinstance(g, m.TrackGen)]
         for i, g in enumerate(env.generators):
             if isinstance(g, m.TrackGen) and g.source == "drawn" and (g.centerline is None or len(g.centerline) < 3):
-                self.error(f"generators[{i}].centerline", S.SPEC_TRACK_CENTERLINE)
+                self.error(f"generators[{i}].centerline", S.SPEC_TRACK_CENTERLINE, "track_centerline")
         if len([g for g in tracks if g.source == "generated"]) > 1:
-            self.error("generators", S.SPEC_TRACK_ONE_SET)
+            self.error("generators", S.SPEC_TRACK_ONE_SET, "track_one_set")
         if env.checkpoints or tracks:
             if not [a for a in env.actuators if isinstance(a, m.Vehicle)] and not agent_bodies:
-                self.error("checkpoints", S.SPEC_NO_AGENT_BODY)
+                self.error("checkpoints", S.SPEC_NO_AGENT_BODY, "no_agent_body")
         if not sy.actuator_channels(env) and sy.evolved_params(env):
             # 뇌 없는 환경(v2 설계 D20): 출력이 없고 몸 수치가 진화하면 일부러 만든 환경이라 경고 대신 안내 하나.
-            self.info("brain", S.SPEC_BRAINLESS)
+            self.info("brain", S.SPEC_BRAINLESS, "brainless")
             if env.brain.hidden:
                 # 은닉층이 남아 있으면 출력이 없어도 그 가중치가 유전자에 들어가 헛되이 진화한다(D20: 유전자 = 몸 수치).
                 # 배치를 바꾸면 이미 있는 실행의 유전자 길이가 달라지므로 고치지 않고 알리기만 한다.
-                self.warn("brain.hidden", S.SPEC_BRAINLESS_HIDDEN)
+                self.warn("brain.hidden", S.SPEC_BRAINLESS_HIDDEN, "brainless_hidden")
         else:
             if not env.sensors:
-                self.warn("sensors", S.SPEC_NO_SENSORS)
-            if not [a for a in env.actuators if not isinstance(a, (m.FuelTank, m.Aero))]:
-                self.warn("actuators", S.SPEC_NO_ACTUATORS)
+                self.warn("sensors", S.SPEC_NO_SENSORS, "no_sensors")
+            if not [a for a in env.actuators if not isinstance(a, (m.FuelTank, m.Aero, m.Balance))]:
+                self.warn("actuators", S.SPEC_NO_ACTUATORS, "no_actuators")
         if not env.scoring.blocks and env.scoring.formula is None:
-            self.warn("scoring", S.SPEC_NO_SCORE)
+            self.warn("scoring", S.SPEC_NO_SCORE, "no_scoring")
 
     def _place_cycle(self) -> bool:
         joints = {j.id: j for j in self.env.joints}
@@ -460,7 +465,7 @@ class _Compiler:
         def walk(value: Any, path: str) -> None:
             milestone = NOT_YET.get(type(value))
             if milestone is not None:
-                self.error(path, S.SPEC_NOT_YET.format(milestone=milestone))
+                self.error(path, S.SPEC_NOT_YET.format(milestone=milestone), "not_yet")
                 return
             if isinstance(value, BaseModel):
                 for name in type(value).model_fields:
@@ -479,53 +484,53 @@ class _Compiler:
         for i, b in enumerate(env.bodies):
             where = f"bodies[{i}]"
             if b.type == "kinematic" and b.owner == "agent":
-                self.error(f"{where}.type", S.SPEC_KINEMATIC_AGENT.format(id=b.id))
+                self.error(f"{where}.type", S.SPEC_KINEMATIC_AGENT.format(id=b.id), "kinematic_agent")
             if b.motion is not None and b.type != "kinematic":
-                self.error(f"{where}.motion", S.SPEC_MOTION_NOT_KINEMATIC.format(id=b.id))
+                self.error(f"{where}.motion", S.SPEC_MOTION_NOT_KINEMATIC.format(id=b.id), "motion_not_kinematic")
             elif b.motion is None and b.type == "kinematic" and b.owner == "world":
-                self.warn(f"{where}.type", S.SPEC_KINEMATIC_NO_MOTION.format(id=b.id))
+                self.warn(f"{where}.type", S.SPEC_KINEMATIC_NO_MOTION.format(id=b.id), "kinematic_no_motion")
             if b.motion is not None:
                 self._check_motion(f"{where}.motion", b)
             for k, s in enumerate(b.shapes):
                 swhere = f"{where}.shapes[{k}]"
                 if isinstance(s, m.Wing) and (_below(s.chord, 0.0, strict=False) or _below(s.thick, 0.0, strict=False)):
-                    self.error(swhere, S.SPEC_WING_SIZE.format(id=b.id))
+                    self.error(swhere, S.SPEC_WING_SIZE.format(id=b.id), "wing_size")
                 density = getattr(s, "density", None)
                 if density is None:
                     continue
                 if b.type != "dynamic":
-                    self.warn(f"{swhere}.density", S.SPEC_SHAPE_DENSITY_STATIC.format(id=b.id))
+                    self.warn(f"{swhere}.density", S.SPEC_SHAPE_DENSITY_STATIC.format(id=b.id), "shape_density_static")
                 elif _below(density, 0.0):
-                    self.error(f"{swhere}.density", S.SPEC_NEGATIVE.format(name="density"))
+                    self.error(f"{swhere}.density", S.SPEC_NEGATIVE.format(name="density"), "negative")
         for i, r in enumerate(env.regions):
             if getattr(r.shape, "density", None) is not None:
-                self.warn(f"regions[{i}].shape.density", S.SPEC_REGION_DENSITY.format(id=r.id))
+                self.warn(f"regions[{i}].shape.density", S.SPEC_REGION_DENSITY.format(id=r.id), "region_density")
         own = {b.id: b for b in env.bodies}
         aero_bodies: set[str] = set()
         for i, a in enumerate(env.actuators):
             where = f"actuators[{i}]"
             if isinstance(a, m.Jump):
                 if _below(a.speed, 0.0):
-                    self.error(f"{where}.speed", S.SPEC_NEGATIVE.format(name="speed"))
+                    self.error(f"{where}.speed", S.SPEC_NEGATIVE.format(name="speed"), "negative")
             elif isinstance(a, m.Aero):
                 if a.body in aero_bodies:  # 같은 테두리를 두 번 센다(상한은 물체마다라 터지지는 않지만 힘이 겹침)
-                    self.warn(f"{where}.body", S.SPEC_AERO_TWICE.format(body=a.body))
+                    self.warn(f"{where}.body", S.SPEC_AERO_TWICE.format(body=a.body), "aero_twice")
                 aero_bodies.add(a.body)
                 for name in ("density", "span", "aspect_ratio", "friction"):
                     if _below(getattr(a, name), 0.0):
-                        self.error(f"{where}.{name}", S.SPEC_AERO_RANGE.format(id=a.id, name=name))
+                        self.error(f"{where}.{name}", S.SPEC_AERO_RANGE.format(id=a.id, name=name), "aero_range")
                 stall = _number(a.stall)
                 if stall is not None and not 0.0 < stall <= AERO_STALL_MAX:
-                    self.error(f"{where}.stall", S.SPEC_AERO_RANGE.format(id=a.id, name="stall"))
+                    self.error(f"{where}.stall", S.SPEC_AERO_RANGE.format(id=a.id, name="stall"), "aero_range")
                 body = own.get(a.body)
                 if body is not None and not any(_takes_air(s, a.surfaces) for s in body.shapes):
-                    self.warn(f"{where}.surfaces", S.SPEC_AERO_NO_EDGES.format(id=a.id, body=a.body))
+                    self.warn(f"{where}.surfaces", S.SPEC_AERO_NO_EDGES.format(id=a.id, body=a.body), "aero_no_edges")
         for i, g in enumerate(env.generators):
             if not isinstance(g, m.ObstacleGen):
                 continue
             where = f"generators[{i}]"
             if _below(g.gap[0], 0.0, strict=False) or _below(g.gap[1], 0.0, strict=False):
-                self.error(f"{where}.gap", S.SPEC_OBSTACLES_GAP.format(id=g.id))
+                self.error(f"{where}.gap", S.SPEC_OBSTACLES_GAP.format(id=g.id), "obstacles_gap")
             values = [_number(v) for v in (g.x, g.y, g.direction)]
             starts = self._agent_starts()
             if starts and all(v is not None for v in values):
@@ -535,7 +540,38 @@ class _Compiler:
                 ux, uy = -math.cos(d), -math.sin(d)
                 lead = min(x + (0.0 - px) * ux + (y - py) * uy for px, py in starts)
                 if lead < OBSTACLES_MIN_LEAD:
-                    self.warn(f"{where}.x", S.SPEC_OBSTACLES_START.format(id=g.id))
+                    self.warn(f"{where}.x", S.SPEC_OBSTACLES_START.format(id=g.id), "obstacles_start")
+
+    # ------------------------------------------------------------------
+    # 형식 4 (6.2.0, 스포츠 설계 DE 2.6): 세계 종류·바닥 마찰, 밀기, 균형 보조. 숫자로 적은 칸만 본다.
+    # ------------------------------------------------------------------
+    def _check_v4(self) -> None:
+        env = self.env
+        for i, a in enumerate(env.actuators):
+            where = f"actuators[{i}]"
+            if isinstance(a, m.Move):
+                if _below(a.max_speed, 0.0, strict=False):
+                    self.error(f"{where}.max_speed", S.SPEC_MOVE_SPEED.format(id=a.id), "move_speed")
+                for name in ("max_force", "max_turn"):
+                    if _below(getattr(a, name), 0.0):
+                        self.error(f"{where}.{name}", S.SPEC_NEGATIVE.format(name=name), "negative")
+            elif isinstance(a, m.Balance):
+                for name in ("stiffness", "damping", "max_torque"):
+                    if _below(getattr(a, name), 0.0):
+                        self.error(f"{where}.{name}", S.SPEC_NEGATIVE.format(name=name), "negative")
+        w = env.world
+        if w.view != "top":
+            return
+        gx, gy = _number(w.gravity[0]), _number(w.gravity[1])
+        if (gx is not None and gx != 0.0) or (gy is not None and gy != 0.0):
+            self.error("world.gravity", S.SPEC_TOP_GRAVITY, "top_gravity")
+        for i, a in enumerate(env.actuators):
+            if isinstance(a, (m.Jump, m.Aero)):
+                kind = S.EDP_VALUE_NAMES.get(a.kind, a.kind)
+                self.warn(f"actuators[{i}]", S.SPEC_TOP_PART.format(id=a.id, kind=kind), "top_part")
+        # 바닥 마찰이 1(줄지 않음)이고 항력(drag)도 없는 움직이는 물체가 있으면 한 번 밀린 것이 멈추지 않는다.
+        if w.damping >= 1.0 and any(b.type == "dynamic" and _number(b.drag) == 0.0 for b in env.bodies):
+            self.warn("world.damping", S.SPEC_TOP_NO_DAMPING, "top_no_damping")
 
     def _agent_starts(self) -> list[tuple[float, float]]:
         """에이전트 물체마다 숫자로 알 수 있는 세계 시작점(런타임 배치: 시작 위치 + 시작 각도로 돌린 pos). 관절로 놓는
@@ -562,7 +598,7 @@ class _Compiler:
         if isinstance(mo, m.WaveMotion):
             period = _number(mo.period)
             if period is not None and period <= 0:
-                self.error(f"{where}.period", S.SPEC_MOTION_PERIOD.format(id=b.id))
+                self.error(f"{where}.period", S.SPEC_MOTION_PERIOD.format(id=b.id), "motion_period")
             return
         assert isinstance(mo, m.PathMotion)
         if _number(mo.spin) != 0.0:
@@ -571,7 +607,7 @@ class _Compiler:
         still_path = len(pts) == 1 and None not in next(iter(pts))  # 숫자로 적은 점이 모두 같다: 길이 0
         still_speed = _below(mo.speed, 0.0, strict=False) and _below(mo.accel, 0.0, strict=False)
         if still_path or still_speed:
-            self.warn(where, S.SPEC_MOTION_STILL.format(id=b.id))
+            self.warn(where, S.SPEC_MOTION_STILL.format(id=b.id), "motion_still")
 
     # ------------------------------------------------------------------
     # v2.1 몸 구조 (설계 2.3, D33·D36·D37). 있음 칸 수식이 p.*만 쓰는지는 만들기 단계 structure가 본다(_compile_formulas).
@@ -589,14 +625,14 @@ class _Compiler:
             if b.exists is None:
                 continue
             if b.owner != "agent":
-                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_WORLD.format(id=b.id))
+                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_WORLD.format(id=b.id), "exists_world")
             elif b.id == root:
-                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_ROOT.format(id=b.id))
+                self.error(f"bodies[{i}].exists", S.SPEC_EXISTS_ROOT.format(id=b.id), "exists_root")
                 root_has_exists = True
         # 있음 칸이 "=p.<id>"인데 범위 가운데가 0.5가 아니면 GA·담금질의 구조 뒤집기가 건드리지 않는다(안내, 쓸 수는 있음)
         order_of = {b.id: k for k, b in enumerate(env.bodies)}
         for body_id, param_id in st.off_centre_exists(env):
-            self.info(f"bodies[{order_of[body_id]}].exists", S.SPEC_EXISTS_FLIP_RANGE.format(id=body_id, param=param_id))
+            self.info(f"bodies[{order_of[body_id]}].exists", S.SPEC_EXISTS_FLIP_RANGE.format(id=body_id, param=param_id), "exists_flip_range")
         if root_has_exists:
             # 뿌리의 있음 칸은 위에서 오류로 알렸다. 그것까지 넣으면 모든 부품이 없어질 수 있다고 나와 아래 오류가 쏟아진다.
             bodies = [b.model_copy(update={"exists": None}) if b.id == root else b for b in env.bodies]
@@ -609,7 +645,7 @@ class _Compiler:
 
         def refuse(where: str, refs: set[str], place: str) -> None:
             for body in sorted(refs, key=order.__getitem__):
-                self.error(where, S.SPEC_EXISTS_REF.format(body=body, where=place))
+                self.error(where, S.SPEC_EXISTS_REF.format(body=body, where=place), "exists_ref")
 
         for i, e in enumerate(env.events):
             if e.id in events:
@@ -661,7 +697,7 @@ class _Compiler:
                 out[e.id] = c
         order = sy.event_order(self.env, {k: v.names for k, v in out.items()})
         if order is None:
-            self.error("events", S.SPEC_EVENT_CYCLE)
+            self.error("events", S.SPEC_EVENT_CYCLE, "event_cycle")
             order = [e.id for e in self.env.events]
         return out, [e for e in order if e in out]
 
@@ -687,14 +723,14 @@ class _Compiler:
         outputs = sy.brain_outputs(self.env)
         for k, name in enumerate(inputs):
             if name not in sensors:
-                self.error(f"brain.inputs[{k}]", S.SPEC_REF_CHANNEL.format(ref=name))
+                self.error(f"brain.inputs[{k}]", S.SPEC_REF_CHANNEL.format(ref=name), "unknown_channel")
         for k, name in enumerate(outputs):
             if name not in actuators:
-                self.error(f"brain.outputs[{k}]", S.SPEC_REF_CHANNEL.format(ref=name))
+                self.error(f"brain.outputs[{k}]", S.SPEC_REF_CHANNEL.format(ref=name), "unknown_channel")
         for group, names in (("brain.inputs", inputs), ("brain.outputs", outputs)):
             dup = sorted({n for n in names if names.count(n) > 1})
             for n in dup:
-                self.error(group, S.SPEC_ID_DUPLICATE.format(id=n, other=group))
+                self.error(group, S.SPEC_ID_DUPLICATE.format(id=n, other=group), "id_duplicate")
         return inputs, outputs
 
     def _check_termination(self) -> list[m.End]:
@@ -702,7 +738,7 @@ class _Compiler:
         ends = list(self.env.termination)
         for i, t in enumerate(ends):
             if t.event not in events:
-                self.error(f"termination[{i}].event", S.SPEC_REF_EVENT.format(ref=t.event))
+                self.error(f"termination[{i}].event", S.SPEC_REF_EVENT.format(ref=t.event), "unknown_event")
         if not any(t.event == "timeout" for t in ends):
             ends.append(m.End(event="timeout", outcome="neutral", label=S.END_TIMEOUT))
         return ends
@@ -733,6 +769,8 @@ def _keys_of(a: m.Actuator) -> list[str]:
         return [*a.keys_pos, *a.keys_neg]
     if isinstance(a, m.Jump):
         return list(a.keys)
+    if isinstance(a, m.Move):
+        return [*a.keys_up, *a.keys_down, *a.keys_left, *a.keys_right]
     return []
 
 
