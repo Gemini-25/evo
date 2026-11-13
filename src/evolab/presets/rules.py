@@ -74,8 +74,8 @@ RULES: dict[str, RuleKind] = {
     "touch_penalty": RuleKind("touch_penalty", "any", _slots(
         RuleSlot("part", "part"), RuleSlot("what", "what", "tag.ground"), RuleSlot("per_s", "number", 1.0, low=0.0)),
         ("agent",), True),
-    "reach": RuleKind("reach", "any", _slots(
-        RuleSlot("part", "part"), RuleSlot("where", "where"), RuleSlot("outcome", "choice", "success", OUTCOMES),
+    "reach": RuleKind("reach", "any", _slots(  # 들어가는 것은 몸의 부분이나 세계의 움직이는 물체(공 넣기: 공이 골에)
+        RuleSlot("part", "thing"), RuleSlot("where", "where"), RuleSlot("outcome", "choice", "success", OUTCOMES),
         RuleSlot("bonus", "number", 100.0, low=0.0)), ("agent", "region"), True),
     "near": RuleKind("near", "any", _slots(
         RuleSlot("thing", "thing"), RuleSlot("where", "where"), RuleSlot("per_m", "number", 1.0, low=0.0),

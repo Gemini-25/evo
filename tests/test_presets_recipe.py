@@ -408,25 +408,78 @@ def test_adjust_reports_what_it_changed(lib: Library) -> None:
 
 @pytest.mark.slow
 def test_every_choice_combination_gives_an_l1_file(tmp_path: Path) -> None:
-    """S2: T15의 모든 조합(첫 카드 × 몸 틀 × 물건 부분집합 × 규칙 부분집합(셋까지) × 슬라이더 귀퉁이). 상한 5분."""
+    """S2: T15의 조합 전부 — 첫 카드 × 세계 × 몸 틀 × 슬라이더 귀퉁이 × 물건 부분집합(둘까지) × 규칙(없음·하나), 그리고 규칙 둘의
+    모든 짝 × 세계 × 몸 틀 × (물건 없음·넷 다). 상한 5분(리눅스 4코어·부하 3.7~4.0에서 57초)."""
     import time
 
     lib = stand_in_library(tmp_path)
     space = _choice_space(lib)
     t0 = time.perf_counter()
     count = 0
+
+    def run(start: str, world: str, body: str, corner: str, props: list[str], rs: tuple[int, ...]) -> None:
+        nonlocal count
+        recipe = RC.default_recipe(start, lib)
+        recipe.world = world
+        tpl = lib.get(body)
+        recipe.roles[0].body = RC.Use(body, {p.id: getattr(p, corner) for p in tpl.params})
+        recipe.props = [RC.Use(p, {}, spawn="center") for p in props]
+        recipe.rules = [copy.deepcopy(RULE_CHOICES[i]) for i in rs] + [{"rule": "time_limit", "seconds": 15.0}]
+        _check_combo(recipe, lib)
+        count += 1
+        assert time.perf_counter() - t0 < 300, count
+
     prop_sets = [list(c) for k in range(3) for c in itertools.combinations(PROP_CHOICES[:4], k)]
-    rule_sets = [list(c) for k in range(3) for c in itertools.combinations(range(len(RULE_CHOICES)), k)]
+    singles = [()] + [(i,) for i in range(len(RULE_CHOICES))]
     for start, world, body, corner in itertools.product(space["start"], space["world"], space["body"], space["corner"]):
         for props in prop_sets:
-            for rs in rule_sets:
-                recipe = RC.default_recipe(start, lib)
-                recipe.world = world
-                tpl = lib.get(body)
-                recipe.roles[0].body = RC.Use(body, {p.id: getattr(p, corner) for p in tpl.params})
-                recipe.props = [RC.Use(p, {}, spawn="center") for p in props]
-                recipe.rules = [copy.deepcopy(RULE_CHOICES[i]) for i in rs] + [{"rule": "time_limit", "seconds": 15.0}]
-                _check_combo(recipe, lib)
-                count += 1
-                assert time.perf_counter() - t0 < 300, count
-    assert count > 1000
+            for rs in singles:
+                run(start, world, body, corner, props, rs)
+    for world, body in itertools.product(space["world"], space["body"]):
+        for props in ([], PROP_CHOICES[:4]):
+            for rs in itertools.combinations(range(len(RULE_CHOICES)), 2):
+                run(space["start"][0], world, body, "value", props, rs)
+    assert count > 5000
+
+
+# ---------------------------------------------------------------------------
+# G1의 모양(D29 (1)): 측정에 쓴 몸을 틀로 옮기면 조리법이 원형 파일과 물리 동일한 환경을 만든다.
+# 진짜 biped·running 조리법의 같은 확인은 묶음 PM의 T8이다. 여기서는 build·규칙 표·track_side가 그 모양을 낼 수 있는지만 본다.
+# ---------------------------------------------------------------------------
+
+
+def test_measured_running_shape_is_reachable_by_a_recipe(tmp_path: Path) -> None:
+    measured = json.loads((ROOT / "tests" / "data" / "presets" / "running_measured.evoenv").read_text(encoding="utf-8"))
+    body = copy.deepcopy(measured)
+    for s in body["sensors"]:
+        if s["kind"] == "contact":
+            s["with"] = ["$ground"]
+    tpl = {"format": "evolab-template", "version": 1, "id": "measured_biped", "kind": "body", "world": "side",
+           "name": "측정한 몸", "params": [], "root": "torso",
+           "parts": {"bodies": [b for b in body["bodies"] if b["id"] != "ground"], "joints": body["joints"],
+                     "actuators": body["actuators"], "sensors": body["sensors"]},
+           "slots": {"$ground": {"tags": ["ground"], "label": "땅"}},
+           "randoms": body["randomize"], "spawn": body["agent"]["spawn"]}
+    folder = tmp_path / "t"
+    folder.mkdir()
+    (folder / "measured_biped.evotpl").write_text(json.dumps(tpl, ensure_ascii=False), encoding="utf-8")
+    library = Library([BUILTIN, folder])
+    recipe = RC.Recipe.from_json({
+        "recipe": 1, "start": "running", "name": "달리기", "world": "side",
+        "arena": {"template": "track_side", "values": {}},
+        "roles": [{"id": "runner", "label": "", "body": {"template": "measured_biped", "values": {}}}], "props": [],
+        "rules": [{"rule": "distance", "part": "torso", "direction": "right", "per_m": 1.0},
+                  {"rule": "fall", "parts": ["torso", "thigh_l", "thigh_r"], "what": "$ground", "root": "torso",
+                   "height": 0.8, "penalty": 1.0},
+                  {"rule": "save_energy", "weight": 0.02}, {"rule": "out_ends", "outcome": "failure"},
+                  {"rule": "time_limit", "seconds": 15.0}],
+        "players": {"mode": "solo", "seats": [{"role": "runner", "count": 1, "spawn": "start"}]},
+        "evaluation": {"trials": 3, "aggregate": "mean"},
+        "train": {"qualify_entrants": 3, "qualify_trials": 9600}})
+    data = RC.build(recipe, library)
+    assert RC.physics_view(data) == RC.physics_view(measured)
+    assert data["version"] == 4 and data["editor"]["train"] == {"qualify_entrants": 3, "qualify_trials": 9600}
+    assert [r["kind"] for r in data["editor"]["rules"]] == ["distance", "fall", "save_energy", "out_ends"]
+    ground = data["bodies"][0]
+    assert (ground["id"], ground["tags"]) == ("ground", ["ground"])  # track_side의 땅(설계 3.1)
+    assert RC.adjust(recipe, library)[1] == []
