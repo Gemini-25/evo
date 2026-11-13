@@ -74,9 +74,10 @@ PHONE_TEXT_KEYS = {"play", "pause", "restart", "speed", "seconds", "camera_fit",
                    "legend_hint", "rotate", "newer", "noscript", "footer"}
 """폰 재생기가 자료 JSON의 "text"에서 찾는 키(설계 2.8, 6절)."""
 
-HELP_PAGE_IDS = ("start", "lab", "dashboard", "editor", "play", "compare", "race", "records", "examples", "trouble",
-                 "words", "install")
-"""설계 D19의 쪽 순서(v3.0판 「설치와 제거」 포함 12쪽)."""
+HELP_PAGE_IDS = ("start", "lab", "dashboard", "editor", "preset", "play", "compare", "race", "records", "examples",
+                 "trouble", "words", "install")
+"""설계 D19의 쪽 순서(v3.0판 「설치와 제거」 포함 12쪽) + 6.2.0의 「새 프리셋 만들기」(에디터 쪽 바로 뒤: 스포츠 설계 4.5, 13쪽).
+6.3.0-B가 match·vsplay를 더한다."""
 
 SCREEN_PAGES = {"editor": "editor", "lab": "lab", "compare": "compare", "records": "records", "play": "play",
                 "race": "race", "repeat": "compare", "report": "trouble", "export": "records", "main": "start"}

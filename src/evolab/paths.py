@@ -59,9 +59,9 @@ def builtin_env_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "environments"
 
 
-BUILTIN_ORDER: tuple[str, ...] = ("lander", "track_car", "hill_car", "jump", "glider", "wheels")
-"""내장 예제의 정해진 순서(파일 이름에서 .evoenv를 뺀 것): 착륙선, 트랙 자동차, 언덕 넘는 자동차, 점프 게임, 글라이더,
-(v2.1) 바퀴 고르는 언덕차."""
+BUILTIN_ORDER: tuple[str, ...] = ("lander", "track_car", "hill_car", "jump", "glider", "wheels", "running")
+"""내장 환경의 정해진 순서(파일 이름에서 .evoenv를 뺀 것): 내장 예제 여섯(착륙선, 트랙 자동차, 언덕 넘는 자동차, 점프 게임,
+글라이더, (v2.1) 바퀴 고르는 언덕차), 그 뒤는 종목 프리셋((6.2.0) 달리기. 6.3.0에 권투·축구: 관문을 넘은 것만)."""
 
 
 def builtin_envs() -> list[Path]:
@@ -86,6 +86,50 @@ def bundle_dir(name: str) -> Path:
 
 def icon_path() -> Path:
     return bundle_dir("assets") / "icon.png"
+
+
+def recipe_dir() -> Path:
+    """내장 조리법 폴더(assets/recipes/<이름>.json, 6.2.0). 폴더가 없을 수도 있다(읽는 쪽이 본다)."""
+    return bundle_dir("assets") / "recipes"
+
+
+def user_template_dir() -> Path:
+    """사용자 틀 폴더: 문서\\진화실험실\\templates (6.2.0은 읽기만 한다. 만들지 않는다)."""
+    return data_dir() / "templates"
+
+
+def template_dirs() -> list[Path]:
+    """틀(.evotpl)을 찾는 폴더: 내장(assets/templates) → 사용자 폴더 순서. 없는 폴더도 그대로 돌려준다(읽는 쪽이 건너뜀)."""
+    return [bundle_dir("assets") / "templates", user_template_dir()]
+
+
+_BAD_FILE_CHARS = frozenset('\\/:*?"<>|')
+"""윈도우 파일 이름에 쓸 수 없는 글자."""
+_RESERVED_FILE_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL", *(f"{dev}{n}" for dev in ("COM", "LPT") for n in "123456789\u00b9\u00b2\u00b3")]
+)
+"""윈도우 장치 이름(대소문자 무관, 첫 점 앞부분이 이것이면 확장자가 있어도 열 수 없다)."""
+SAFE_STEM_MAX = 80
+"""safe_file_stem이 돌려주는 줄기의 최대 글자 수."""
+
+
+def safe_file_stem(name: str) -> str:
+    """사용자가 적은 이름을 윈도우에서도 안전한 파일 줄기(확장자 없는 이름)로 바꾼다(6.2.0, 설계 D42).
+
+    \\ / : * ? " < > | 와 제어 글자는 "_"로, 앞뒤 빈칸과 끝의 점은 떼고, SAFE_STEM_MAX(80)자에서 자르고, CON·NUL 같은 장치
+    이름이면 그 뒤에 "_"를 붙인다. 남는 것이 없으면 S.PRESET_NAME_FALLBACK. 같은 입력이면 늘 같은 결과이고, 결과를 다시
+    넣어도 그대로다.
+    """
+    text = "".join("_" if (ch in _BAD_FILE_CHARS or ord(ch) < 32 or ord(ch) == 127) else ch for ch in str(name))
+    text = text.strip().rstrip(". ")[:SAFE_STEM_MAX].rstrip(". ")
+    if not text:
+        from evolab.app import strings as S
+
+        text = S.PRESET_NAME_FALLBACK
+    head, dot, tail = text.partition(".")
+    if head.rstrip().upper() in _RESERVED_FILE_NAMES:
+        text = (head.rstrip() + "_" + dot + tail)[:SAFE_STEM_MAX].rstrip(". ")
+    return text
 
 
 def documents_dir() -> Path:

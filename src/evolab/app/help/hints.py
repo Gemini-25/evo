@@ -290,7 +290,7 @@ def editor_hint(window: QMainWindow) -> HintFrame:
         btn = holder[0].buttons[0]
         editor.builtin_menu.popup(btn.mapToGlobal(QPoint(0, btn.height())))
 
-    text = S.HINT_EDITOR_EMPTY.format(shapes=S.EDC_GROUP_SHAPES, builtin=S.ED_FROM_BUILTIN)
+    text = S.HINT_EDITOR_EMPTY.format(preset=S.ED_NEW_PRESET, shapes=S.EDC_GROUP_SHAPES, builtin=S.ED_FROM_BUILTIN)
     frame = HintFrame(editor.canvas, lambda: text, lambda: anchors.editor_is_empty(window), ((S.ED_FROM_BUILTIN, popup),))
     holder.append(frame)
     frame.buttons[0].setToolTip(S.HELP_TIPS.get("editor.builtin", ""))

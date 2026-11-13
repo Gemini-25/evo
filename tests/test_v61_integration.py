@@ -36,12 +36,16 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 STRINGS = SRC / "evolab" / "app" / "strings.py"
 V61_HEADER = "# v6.1 자라는 뇌"
+NEXT_RELEASE_HEADER = "\n# 6.2.0 프리셋 만들기"
+"""v6.1 블록의 끝: strings.py 맨 끝에 덧붙인 다음 출시 블록의 머리말(6.2.0 바탕 단계. v3.1·v6.0 블록의 테스트와 같은 방식)."""
 LANDER_TEXT = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="utf-8")
 
 
 def _v61_constant_names() -> list[str]:
     text = STRINGS.read_text(encoding="utf-8")
-    block = text[text.index(V61_HEADER):]
+    start = text.index(V61_HEADER)
+    end = text.find(NEXT_RELEASE_HEADER, start)
+    block = text[start:end] if end != -1 else text[start:]
     return re.findall(r"^([A-Z][A-Z0-9_]+): Final", block, flags=re.MULTILINE)
 
 

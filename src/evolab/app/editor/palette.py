@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.editor.tools import INSTANT_TOOLS, TOOL_GROUPS, TOOL_HINTS, TOOL_IDS, TOOL_LABELS
 
 __all__ = ["Palette", "TOOL_IDS", "tool_icon"]
@@ -261,7 +262,9 @@ class Palette(QWidget):
         lay.setSpacing(2)
         for group, ids in TOOL_GROUPS:
             title = QLabel(GROUP_LABELS[group])
-            title.setStyleSheet("font-weight: bold; color: #8a93a6; padding-top: 6px;")
+            style.tone(title, "muted")  # 흐린 글(6.2.0 U2). 굵기와 위 여백은 글꼴·여백으로(tone이 스타일시트를 쓴다)
+            title.setFont(style.font(title, "strong"))
+            title.setContentsMargins(0, 6, 0, 0)
             lay.addWidget(title)
             if group == "shapes":
                 lay.addWidget(self._owner_row())

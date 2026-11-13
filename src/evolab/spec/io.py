@@ -36,6 +36,7 @@ def _fields_added_only(data: dict[str, Any]) -> dict[str, Any]:
 MIGRATIONS: dict[int, Migration] = {
     1: _fields_added_only,  # 1 -> 2 (v2.0): 정해진 움직임, 장애물 줄, 점프, 공기역학, 날개 모양, 모양별 밀도
     2: _fields_added_only,  # 2 -> 3 (v2.1): 물체의 있음 칸(exists)
+    3: _fields_added_only,  # 3 -> 4 (6.2.0): 세계 종류(view), 바닥 마찰(damping), 밀기 구동기(Move), 균형 보조(Balance)
 }
 
 # ---------------------------------------------------------------------------
@@ -46,11 +47,13 @@ FIELD_SINCE: dict[tuple[type[BaseModel], str], int] = {
     (m.Box, "density"): 2, (m.Circle, "density"): 2, (m.Poly, "density"): 2, (m.Radial, "density"): 2,
     (m.Body, "motion"): 2,
     (m.Body, "exists"): 3,  # v2.1
+    (m.World, "view"): 4, (m.World, "damping"): 4,  # 6.2.0
 }
 """옛 모델에 더한 칸(모델, 파이썬 칸 이름) -> 생긴 형식. 기본값이 아니면 그 형식이 필요하고, 그보다 낮은 형식 글에서는
 지운다. 새로 더하는 칸은 반드시 다음 형식 번호로(이미 나간 형식에 더하면 그 형식 파일들의 해시가 바뀐다)."""
 KIND_SINCE: dict[type[BaseModel], int] = {
     m.Wing: 2, m.Jump: 2, m.Aero: 2, m.ObstacleGen: 2, m.PathMotion: 2, m.WaveMotion: 2,
+    m.Move: 4, m.Balance: 4,  # 6.2.0
 }
 """새 모델(종류) -> 생긴 형식. 파일에 하나라도 있으면 그 형식이다. 그 모델의 칸은 따로 등록하지 않는다."""
 VALUE_SINCE: dict[tuple[type[BaseModel], str, object], int] = {

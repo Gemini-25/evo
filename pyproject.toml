@@ -1,6 +1,6 @@
 [project]
 name = "evolab"
-version = "6.1.0"
+version = "6.2.0"
 description = "진화 실험실: 직접 만든 2D 실험 환경에서 진화 전략이 해법을 찾아가는 과정을 보는 데스크톱 프로그램"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

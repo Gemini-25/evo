@@ -1,0 +1,2592 @@
+[
+{
+"name": "ED_NEW",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDC_OWNER_LABEL",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDC_OWNER_AGENT",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_OWNER_WORLD",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_HINT_JOINT",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_HINT_JOINT_SECOND",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_HINT_THRUSTER",
+"stage": "6.3.0-EP",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_HINT_SELECT",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_CHECK_UNATTACHED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_TAB_ISSUES",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_TAB_ISSUES_COUNT",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_TAB_EVENTS",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_TAB_SCORING",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_ISSUES_HEADERS",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_ISSUES_HINT",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_ISSUES_SEVERITY",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "EDP_PANEL_ISSUES",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "ED_STATUS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "ED_STATUS_OK",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "ED_HAS_ERRORS",
+"stage": "6.2.0",
+"action": "기존 상수의 값 바꿈(DU 6.1)"
+},
+{
+"name": "HINT_EDITOR_EMPTY",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_BRAIN_CHANNEL",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_NEW_PRESET",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_NEW_PRESET_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "MENU_FILE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "MENU_NEW_PRESET",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "LAB_ENV_NEW_PRESET",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "HINT_EDITOR_NEW_PRESET",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_TITLE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_STEPS",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "PRESET_STEPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_STEP_TIPS",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "PRESET_STEP_TIPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_STEP_DONE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_STEP_CHANGED_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_NAME",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_NAME_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_NAME_DEFAULT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PREVIEW",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PREVIEW_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_START",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_START_SUB",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_PAGE_BODY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_BODY_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_ARENA",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_ARENA_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_RULES",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_RULES_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_PLAYERS",
+"stage": "6.3.0-B",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_PAGE_PLAYERS_SUB",
+"stage": "6.3.0-B",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_PAGE_TRY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PAGE_TRY_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_BLANK_SIDE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_BLANK_SIDE_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_BLANK_TOP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_BLANK_TOP_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_DRILL",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_DRILL_SUB",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_START_LATER",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_START_LATER_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_EVOLVE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_EVOLVE_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_MORE_PARAMS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_MORE_PARAMS_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PROP_LOCKED_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_RULE_SUMMARY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_RULE_SUMMARY_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PLAYERS_MODES",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "PRESET_PLAYERS_MODES",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_PLAYERS_MODE_TIPS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "PRESET_PLAYERS_MODE_TIPS",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_MIRROR",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_MIRROR_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_ROLE_BODY",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_ROLE_BODY_CHANGE",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_ROLE_BODY_CHANGE_TIP",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_SUMMARY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_KEYS_TITLE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_STATUS_OK",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_STATUS_BODY_ONLY",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_STATUS_BAD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_STATUS_ADJUSTED",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_ADJUST_BODY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_ADJUST_RULE_OFF",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_ADJUST_PROP_ON",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PROBE_RUNNING",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PROBE_OK",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_PROBE_FLAT",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_ALIVE_INSTANT",
+"stage": "6.2.0",
+"action": "이름 바꿈 ← `PRESET_PROBE_INSTANT`"
+},
+{
+"name": "PRESET_PROBE_BUILD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_EDIT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_EDIT_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_PLAY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_PLAY_TIP",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_BTN_LAB",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_BTN_LAB_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_BACK",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_BTN_NEXT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_SAVED",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_SAVE_FAILED",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "PRESET_DISCARD_TITLE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PRESET_DISCARD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "PRESET_REOPEN",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_REOPEN_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_REOPEN_DIVERGED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_UNDO_REBUILD",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_COACH",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RECIPE_ERR_FORMAT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RECIPE_ERR_NEWER",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RECIPE_ERR_TEMPLATE",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_GROUP_TEMPLATES",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_TOOL_TPL_BODY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_TOOL_TPL_PROP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_TOOL_TPL_RULE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDC_HINT_TPL_BODY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_HINT_TPL_PROP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_HINT_TPL_RULE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TPL_PICKER_TITLE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_BUILTIN",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_MINE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_CARD_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_PARAM_VALUE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_PARAM_TIPS",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "TPL_PARAM_TIPS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "TPL_PARAM_TIPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "TPL_MIRROR",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_MIRROR_TIP",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "TPL_INSERT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_INSERT_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_INSERT_HINT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_INSERTED",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_UNDO_INSERT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_NEEDS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_NEEDS_ADD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_NEEDS_ADD_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_WRONG_WORLD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_WORLD_NAMES",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_FORMAT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_NEWER",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_FIELD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_REF",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_SLOT",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_ERR_PARAM_RANGE",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "TPL_ERR_EXPAND",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "TPL_LIB_PROBLEMS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "TPL_SAVE_MINE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TPL_SAVE_MINE_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TPL_SAVE_NAME",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TPL_SAVED",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDC_OWNER_AGENT_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_OWNER_WORLD_TIP",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_WORLD_MOTION",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_WORLD_MOTION_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDC_CURSOR_OWNER",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_GROUP_TOGGLE_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_GROUP_COUNT",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_TOOL_BACK_TO_SELECT",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_MOTOR",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_MOTOR_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_SENSOR",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_SENSOR_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_LIMIT",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_LIMIT_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_DROP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_MADE",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_JOINT_MADE_EXTRAS",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_PICK_CYCLE",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_NUMBERED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_JOINT_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_MOTOR_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_ANGLE_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_CONTACT_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_STATE_OF",
+"stage": "6.3.0-EP",
+"action": "값 바꿈"
+},
+{
+"name": "EDC_LABEL_RAYS_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_TARGET_OF",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDC_LABEL_THRUSTER_DIR",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "REF_WITH_ID",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "CHANNEL_NAME",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "CHANNEL_FIELD_NAMES",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_PROPS_DETAIL",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_PROPS_DETAIL_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_PROPS_HIDDEN_ISSUES",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_WORLD_KIND",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_WORLD_KINDS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_WORLD_KIND_TIPS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_UNDO_WORLD_KIND",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_TAB_RULES",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_ADD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_ADD_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_REMOVE_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_EMPTY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_ADVANCED",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_ADVANCED_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_FORMULA_NOTE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_NEEDS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_UNDO_ADD",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_UNDO_REMOVE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULES_UNDO_SET",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULE_TITLES",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_TITLES",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_TITLES",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RULE_SENTENCES",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_SENTENCES",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_SENTENCES",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RULE_SLOT_TIPS",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_SLOT_TIPS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "RULE_SLOT_TIPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RULE_DIRECTIONS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULE_OUTCOMES",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULE_WHEN",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "RULE_SUMMARY_TERMS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "RULE_SUMMARY_NONE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_GROUND_IS_BODY",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "ED_CHECK_SCORE_FAR",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_SCORE_STATIC",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_CHECK_NO_KEYS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_KEY_TWICE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_CHECK_MOTOR_TWICE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_JOINT_APART",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_NEVER_STOPS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_CHECK_FALLS",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_CHECK_BRAIN_MISSES",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "FIX_BUTTON",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "FIX_IGNORE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "FIX_IGNORE_TIP",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "FIX_DONE",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "FIX_LABELS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "FIX_TIPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "ED_SIM_LABEL",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_MODES",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_MODE_TIPS",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_PLAY_TIP",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_ENDED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_NOT_ENDED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_BUILD_FAILED",
+"stage": "6.3.0-EP",
+"action": "단계 옮김"
+},
+{
+"name": "ED_SIM_TASTE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_SIM_TASTE_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_SIM_TASTE_RESULT",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDP_TAB_PLAYERS",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "PLAYERS_ADD",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "PLAYERS_ADD_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "PLAYERS_COLUMNS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "PLAYERS_COLUMNS",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "PLAYERS_COLUMN_TIPS",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "PLAYERS_MIRROR_COPY",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "PLAYERS_MIRROR_COPY_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TEAM_NAMES",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "TEAM_PLAYER",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_HUD_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_HUD_MATCH_REPLAY",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_OPP_SNAPSHOT",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_OPP_REP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_OPP_REFERENCE",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `LAB_OPP_SCRIPTS` · 값 바꿈"
+},
+{
+"name": "LAB_SCORE_LINE",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_SCORE_CLOCK",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_SCORE_STATE",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "LAB_SCORE_STATE",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_SCORE_SEEN",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "LAB_LEGEND_MATCH",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_LEGEND_HUMAN",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_POOL_STRIP",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_POOL_STRIP_TIP",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_POOL_CHIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_POOL_CHIP_NO_ELO",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_POOL_CHIP_TIP",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_POOL_EMPTY",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_VERSUS_MATCH",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_VERSUS_MATCH_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_RACE_MATCH",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "LAB_RACE_MATCH_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "LAB_VS_HUMAN",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_VS_HUMAN_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "LAB_WATCH_ROLE",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "LAB_WATCH_ROLE_TIP",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "LAB_ENV_GROUPS",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "LAB_ENV_GROUPS",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "LAB_ENV_GROUPS_TIP",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "HINT_LAB_IDLE_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "HINT_LAB_IDLE_SPORT",
+"stage": "6.3.0 통합",
+"action": "제자리 고침"
+},
+{
+"name": "HINT_LAB_IDLE_SPORT",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "HINT_LAB_IDLE_SPORT",
+"stage": "6.2.0 통합",
+"action": "값 바꿈"
+},
+{
+"name": "HINT_LAB_MATCH_TOUR",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "DASH_PAGES['match']",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_PAGES_TIP['match']",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_PAGE_MATCH_OFF_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_TILE_TITLES.update()",
+"stage": "6.4.0",
+"action": "값 바꿈"
+},
+{
+"name": "DASH_TILE_HELP.update()",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "DASH_TREND_MATCH_NOTE",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_ELO_CHAMPION",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_ELO_MEASURED",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `DASH_ELO_REP` · 값 바꿈"
+},
+{
+"name": "DASH_ELO_POOL",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "DASH_ELO_ME",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_ELO_ME_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_WIN_SERIES",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_MATCH_EMPTY_SOLO",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_MATCH_EMPTY_WAIT",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "DASH_POOL_AXES",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "DASH_CROSSTAB_RUNNING",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "MENU_PLAY_VS",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "VSPLAY_TITLE",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_TITLE`"
+},
+{
+"name": "VS_SIDE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "VS_SIDE_TIP",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "VSPLAY_OPPONENT",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_OPPONENT`"
+},
+{
+"name": "VSPLAY_LEVELS",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_LEVELS`"
+},
+{
+"name": "VSPLAY_LEVEL_TIPS",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_LEVEL_TIPS` · 값 바꿈"
+},
+{
+"name": "VSPLAY_GENERATION",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_GENERATION`"
+},
+{
+"name": "VSPLAY_GENERATION_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_GENERATION_TIP`"
+},
+{
+"name": "VSPLAY_OPP_LINE",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_OPP_LINE`"
+},
+{
+"name": "VSPLAY_OPP_LINE_NO_ELO",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_OPP_LINE_NO_ELO`"
+},
+{
+"name": "VSPLAY_SLOW",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_SLOW`"
+},
+{
+"name": "VSPLAY_SLOW_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_SLOW_TIP`"
+},
+{
+"name": "VSPLAY_START",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_START`"
+},
+{
+"name": "VSPLAY_START_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_START_TIP`"
+},
+{
+"name": "VSPLAY_AGAIN",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_AGAIN`"
+},
+{
+"name": "VSPLAY_AGAIN_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_AGAIN_TIP`"
+},
+{
+"name": "VSPLAY_NEXT",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_NEXT`"
+},
+{
+"name": "VSPLAY_NEXT_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_NEXT_TIP`"
+},
+{
+"name": "VSPLAY_ME",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_ME`"
+},
+{
+"name": "VSPLAY_MATE_NOTE",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_MATE_NOTE`"
+},
+{
+"name": "VSPLAY_RESULT",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_RESULT`"
+},
+{
+"name": "VSPLAY_TALLY",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_TALLY`"
+},
+{
+"name": "VSPLAY_RATING",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_RATING`"
+},
+{
+"name": "VSPLAY_RATING_TIP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_RATING_TIP`"
+},
+{
+"name": "VSPLAY_RATING_FEW",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_RATING_FEW`"
+},
+{
+"name": "VS_KEYS_TITLE",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "VSPLAY_HELP",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_HELP`"
+},
+{
+"name": "VS_NO_OPPONENTS",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "VSPLAY_PRE_TRAIN_NOTE",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_PRE_TRAIN_NOTE` · 값 바꿈"
+},
+{
+"name": "VSPLAY_RECORD_NEWER",
+"stage": "6.3.0-B",
+"action": "이름 바꿈 ← `VS_RECORD_NEWER`"
+},
+{
+"name": "PLAY_KEY_CHORD",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "PLAY_KEYS_MORE",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "PLAY_KEYS_MORE_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "KEY_CHORD_LABELS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "KEY_CHORD_LABELS",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "REC_ENV_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "REC_BEST_MATCH",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "REC_BEST_MATCH_NO_ELO",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "REC_VS_BUTTON",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "REC_VS_BUTTON_TIP",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "CMP_METRICS_MATCH",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "CMP_SUCCESS_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "CMP_SUCCESS_TIP_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "CMP_ELO_NOTE",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "CMP_ELO_NOTE",
+"stage": "6.3.0-B",
+"action": "값 바꿈"
+},
+{
+"name": "CMP_MATCH_BUTTON",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "CMP_MATCH_BUTTON_TIP",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_TITLE_MATCH",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "RACE_TITLE_MATCH_GENERATIONS",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "RACE_LANE_MATCH",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_LANE_MATCH_DONE",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_RESULT_MATCH",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_RESULT_MATCH_ITEM",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_MATCH_DIFFERENT",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "RACE_MATCH_TOO_MANY",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EXPORT_NAME_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "TOUR_MATCH_STEPS",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "TOUR_MATCH_OFFER",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "TOUR_END_NEXT_PRESET",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TOUR_END_NEXT_MATCH",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "ED_BUILTIN_RUNNING",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "ED_BUILTIN_DRILL",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "ED_BUILTIN_BOXING",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "ED_BUILTIN_SOCCER",
+"stage": "6.3.0-B",
+"action": "그대로"
+},
+{
+"name": "ED_BUILTIN_BASEBALL",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "ED_BUILTIN_HIDE_SEEK",
+"stage": "6.4.0",
+"action": "이름 바꿈 ← `ED_BUILTIN_HIDE`"
+},
+{
+"name": "SPORT_BLURBS",
+"stage": "6.3.0 통합",
+"action": "제자리 고침"
+},
+{
+"name": "SPORT_BLURBS",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "SPORT_BLURBS",
+"stage": "6.2.0 통합",
+"action": "값 바꿈"
+},
+{
+"name": "SELFTEST_CHECK_PRESETS",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "SELFTEST_PRESETS_DETAIL",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "SELFTEST_ERR_PRESET",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "CLI_HELP_PRESET",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "HELP_TIPS.update()",
+"stage": "6.3.0-EP",
+"action": "제자리 고침"
+},
+{
+"name": "HELP_TIPS.update()",
+"stage": "6.3.0-B",
+"action": "제자리 고침"
+},
+{
+"name": "HELP_TIPS.update()",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "HELP_TIPS.update()",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "SPEC_TOP_GRAVITY",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_TOP_PART",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_TOP_NO_DAMPING",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "SPEC_MOVE_SPEED",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "SPEC_GRIP_JOINT",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "SPEC_NEEDS_MATCH",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_ROLE_MISSING",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_ROLE_UNKNOWN",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_ROLE_MIXED",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_ROLE_UNRESOLVED",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_ROLE_NO_OUTPUT",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_PARAM_TWO_ROLES",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_PLAYER_ROLE",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_SYMMETRIC_TEAM",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "SPEC_MATCH_SYMMETRIC_ROLES",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_ONE_TEAM",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_TOO_MANY",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_NOT_WITH",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_WHAT_TRACKS",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_WHAT_EXISTS",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_SIDE_NEEDS_SYMMETRIC",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_OPP_UNKNOWN",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_ALWAYS_DRAW",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_ODD_TRIALS",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MATCH_NOT_MIRRORED",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "SPEC_MIRROR_AERO",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "SPEC_SIGHT_NO_OPAQUE",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "RT_NEEDS_MATCH",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "RT_SEATS_SIZE",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_STARTED",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_SETTINGS",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_SWAP",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_PROGRESS",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_ROLE_PROGRESS",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_NO_QUALIFY",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_NO_RESTART",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_VS_NO_IPOP",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "TRAIN_RESUME_VS_FIXED",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "TRAIN_ENV_SEATS_CHANGED",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TRAIN_VS_RERATED",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "TRAIN_VS_CHAMPION",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "CLI_HELP_POOL",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "CLI_HELP_LATEST",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "CLI_HELP_PLAY_VERSUS",
+"stage": "6.3.0-B",
+"action": "단계 옮김"
+},
+{
+"name": "CLI_HELP_PLAY_SEAT",
+"stage": "6.4.0",
+"action": "그대로"
+},
+{
+"name": "JUDGE_VS_RESULT",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "JUDGE_VS_RUNG",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "BENCH_VS_SINGLE",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "END_MATCH_BUILD_FAILED",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "PLAY_RECORD_NO_OPPONENT",
+"stage": "6.3.0-B",
+"action": "단계 옮김"
+},
+{
+"name": "SELFTEST_CHECK_VERSUS",
+"stage": "6.3.0-A",
+"action": "이름 바꿈 ← `SELFTEST_VERSUS`"
+},
+{
+"name": "SELFTEST_VERSUS_FAIL",
+"stage": "6.3.0-A",
+"action": "그대로"
+},
+{
+"name": "EDP_VALUE_NAMES[move]",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_VALUE_NAMES[balance]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_VALUE_NAMES[grip]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_VALUE_NAMES[other]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_VALUE_NAMES[signal]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_VALUE_NAMES[result]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[World.view]",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[World.damping]",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[RandVar.per]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Move.mode]",
+"stage": "6.2.0",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[Move.max_force]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Move.max_speed]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Move.max_turn]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Balance.stiffness]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Balance.damping]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Balance.max_torque]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Balance.target]",
+"stage": "6.2.0",
+"action": "그대로"
+},
+{
+"name": "EDP_FIELD[Grip.joint]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Grip.once]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.who]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.rank]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.part]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.sight]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.range]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.fov]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Other.remember]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Signal.count]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Region.side]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Body.role]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Role.brain]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Player.team]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Player.role]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Player.spawn]",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "EDP_FIELD[Player.spawn]",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[Match.sides]",
+"stage": "6.4.0",
+"action": "제자리 고침"
+},
+{
+"name": "EDP_FIELD[Match.sides]",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[Match.center]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Match.swap_sides]",
+"stage": "6.3.0-A",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Match.timeout_margin]",
+"stage": "6.3.0-A",
+"action": "값 바꿈"
+},
+{
+"name": "EDP_FIELD[Match.opaque]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[Match.pool_admit]",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDP_FIELD[Match.pool_size]",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDP_FIELD[Match.latest_share]",
+"stage": "뺌",
+"action": "뺌"
+},
+{
+"name": "EDP_FIELD[_Block.role]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "EDP_FIELD[End.role]",
+"stage": "6.4.0",
+"action": "단계 옮김"
+},
+{
+"name": "PRESET_NAME_FALLBACK",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_NAME_NUMBERED",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_BTN_RESET_STEP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_BTN_RESET_STEP_TIP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_ALIVE_NO_SCORE",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_ALIVE_NO_IO",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_ALIVE_STILL_END",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_ALIVE_FIXES",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_BADGE_EXPERIMENTAL",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "PRESET_BADGE_EXPERIMENTAL_TIP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "LAB_ENV_EXPERIMENTAL",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "LAB_PRESET_TRAIN_APPLIED",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "SETTINGS_PRESET_USAGE_LOG",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "SETTINGS_PRESET_USAGE_LOG_TIP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "TPL_NAMES",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "TPL_BLURBS",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "TPL_PARAM_LABELS",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "EDC_TOOL_MOVE",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "EDC_HINT_MOVE",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "RULES_READONLY_TIP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "RULES_TO_ADVANCED",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "RULES_FIXED_TIP",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "EDP_VALUE_NAMES[mode.*·view.*]",
+"stage": "6.2.0",
+"action": "새로"
+},
+{
+"name": "SPEC_MATCH_PART",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "TRAIN_VS_NO_REPLACE",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "TRAIN_VS_FIXED",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "CLI_HELP_POOL_ADMIT",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "BENCH_VS_BUILD",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "OBSERVE_NO_MATCH",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "EDP_VALUE_NAMES[per.*·side.*·sides.*]",
+"stage": "6.3.0-A",
+"action": "새로"
+},
+{
+"name": "PRESET_REOPEN_TEMPLATES_CHANGED",
+"stage": "6.3.0-EP",
+"action": "새로"
+},
+{
+"name": "PRESET_PLAYERS_SYMMETRIC_NOTE",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_OPP_CHAMPION",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_TARGET_ELO",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_TARGET_ELO_TIP",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_VS_POOL_SIZE",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_VS_POOL_SIZE_TIP",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_VS_LATEST",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "LAB_VS_LATEST_TIP",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "DASH_ELO_MEDIAN",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "DASH_EMPTY_MATCH",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "CMP_TO_TARGET_MATCH_TIP",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "RACE_NO_MATCH_RUNS",
+"stage": "6.3.0-B",
+"action": "새로"
+},
+{
+"name": "VSPLAY_ROLE",
+"stage": "6.4.0",
+"action": "새로"
+},
+{
+"name": "VSPLAY_ROLE_TIP",
+"stage": "6.4.0",
+"action": "새로"
+}
+]

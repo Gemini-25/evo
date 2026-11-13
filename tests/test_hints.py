@@ -90,7 +90,7 @@ def test_lab_idle_hint_starts_training_and_hides_while_training(window: Any, qtb
     assert frame.isVisible() and frame.title_label.text() == S.HINT_LAB_IDLE_TITLE
     assert frame.text() == S.HINT_LAB_IDLE_ANY.format(start=S.LAB_START, env=lab.spec.file.name,
                                                       pop=lab.popsize.value())
-    start, tour_btn = frame.buttons
+    start, tour_btn = frame.buttons[:2]  # 카드에 단추가 더 생겨도(다듬기 U10) 앞의 둘이 이 둘이다
     assert (start.text(), tour_btn.text()) == (S.LAB_START, S.HINT_LAB_TOUR)
     assert start.isVisible() and start.isEnabled() and tour_btn.isVisible()
     # 카드는 캔버스 가운데, 캔버스 안, 단추 줄은 카드 안
@@ -215,7 +215,8 @@ def test_editor_empty_document_hint(window: Any, qtbot: Any) -> None:
     frame = hint_of(editor.canvas)
     assert frame is not None
     qtbot.waitUntil(frame.isVisible, timeout=2000)  # 문서가 바뀌면 곧바로, 아니어도 300ms마다
-    assert frame.text() == S.HINT_EDITOR_EMPTY.format(shapes=S.EDC_GROUP_SHAPES, builtin=S.ED_FROM_BUILTIN)
+    assert frame.text() == S.HINT_EDITOR_EMPTY.format(preset=S.ED_NEW_PRESET, shapes=S.EDC_GROUP_SHAPES,
+                                                      builtin=S.ED_FROM_BUILTIN)
     (btn,) = frame.buttons
     assert btn.text() == S.ED_FROM_BUILTIN
     pressed = Presses(editor.canvas)

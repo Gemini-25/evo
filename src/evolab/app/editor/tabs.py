@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.editor.document import (
     EnvDocument,
     JsonPath,
@@ -48,7 +49,6 @@ from evolab.app.editor.document import (
     where_to_ref,
 )
 from evolab.app.editor.forms import (
-    ISSUE_COLOR,
     FieldWidget,
     FormContext,
     ModelForm,
@@ -56,6 +56,7 @@ from evolab.app.editor.forms import (
     UnionKindField,
     field_name,
     field_tip,
+    issue_color,
     issues_at,
     kind_name,
     kinds_of,
@@ -95,7 +96,7 @@ class IssueLine(QLabel):
         self.doc = doc
         self.wheres = wheres
         self.setWordWrap(True)
-        self.setStyleSheet(f"color: {ISSUE_COLOR};")
+        style.tone(self, "danger")
         doc.checked.connect(self.update_issues)
         self.update_issues(list(doc.issues))
 
@@ -295,7 +296,7 @@ class RecordTable(QWidget):
             header = self.table.verticalHeaderItem(r)
             if header is not None:
                 exact = issues_at(mine, (*self.path, r), exact=True)
-                header.setForeground(QBrush(QColor(ISSUE_COLOR)) if exact else QBrush())
+                header.setForeground(QBrush(QColor(issue_color())) if exact else QBrush())
                 header.setToolTip(_issue_text(exact))
 
     def cell(self, row: int, key: str) -> FieldWidget | None:
@@ -712,7 +713,7 @@ class ChannelList(QWidget):
         bl.addLayout(row)
         self.message = QLabel()
         self.message.setWordWrap(True)
-        self.message.setStyleSheet(f"color: {ISSUE_COLOR};")
+        style.tone(self.message, "danger")
         bl.addWidget(self.message)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -773,7 +774,7 @@ class ChannelList(QWidget):
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
                 if not known:
-                    item.setForeground(QBrush(QColor(ISSUE_COLOR)))
+                    item.setForeground(QBrush(QColor(issue_color())))
                 self.list.addItem(item)
                 if name == current_name:
                     self.list.setCurrentItem(item)
@@ -847,7 +848,7 @@ class BrainTab(QWidget):
         self.grow_note = QLabel(S.EDP_BRAIN_GROW_NOTE)
         """v6.1 자라는 뇌 안내(은닉층이 있는 뇌일 때, 검사 오류로 배치를 모를 때도 보임)."""
         self.grow_note.setWordWrap(True)
-        self.grow_note.setStyleSheet("color: #8a93a6;")  # 흐린 글(실험실 안내 줄과 같은 색)
+        style.tone(self.grow_note, "ink2")  # 보조 글(실험실 안내 줄과 같은 색)
         self.param_count: int | None = None
         """뇌 파라미터 수(가중치 + 편향). 검사 오류가 있으면 None."""
         self.genome_dim: int | None = None

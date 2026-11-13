@@ -31,6 +31,15 @@ NEW_IMPORT = b"from tests.oracle.episode_v31 import Episode, EpisodeBuildError, 
 ORACLE_SOURCES = {"episode_v31.py": "src/evolab/world/physics2d/episode.py", "evaluate_v31.py": "src/evolab/engine/evaluate.py"}
 """오라클 파일 → v3.1 출시판의 원본 경로(설계 7.1 0 묶음)."""
 FIXTURE_KEYS = {"genome", "env_file", "env_sha256", "layout_signature", "generation", "run_seed", "score", "source"}
+OLD_BUILTINS = ("lander", "track_car", "hill_car", "jump", "glider", "wheels")
+"""옛 내장 예제 여섯(v6.1까지의 내장 전부). 이 파일의 옛 오라클(v3.1 사본)과 고정 챔피언은 이 여섯만 본다(스포츠 설계 4.5):
+6.2.0부터 내장에 종목 프리셋(달리기 …)이 더해지고, 그것들은 얼린 출시 나무 쪽(tests/oracle/frozen.py)이 맡는다."""
+
+
+def _old_builtin_envs() -> list[Path]:
+    envs = [p for p in paths.builtin_envs() if p.stem in OLD_BUILTINS]
+    assert [p.stem for p in envs] == list(OLD_BUILTINS)  # 여섯이 모두 있고 정해진 순서의 맨 앞
+    return envs
 
 
 def _sha(data: bytes) -> str:
@@ -45,6 +54,8 @@ def _sources_table() -> tuple[str, dict[str, tuple[str, str, str, str]]]:
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split()
+        if parts[0].startswith("frozen"):  # 6.2.0: 얼린 출시 나무의 줄(tests/oracle/frozen.py가 읽고 tests/test_frozen_oracle.py가 지킨다)
+            continue
         if parts[0] == "commit":
             commit = parts[1]
             continue
@@ -89,7 +100,9 @@ def test_oracle_modules_import_and_are_separate_from_the_runtime() -> None:
 
 def test_oracle_folder_holds_only_the_listed_files() -> None:
     files = sorted(p.name for p in ORACLE.iterdir() if p.is_file())
-    assert files == ["SOURCES.txt", "__init__.py", "episode_v31.py", "evaluate_v31.py"], files
+    # 6.2.0 바탕이 더한 둘: 얼린 v6.1.0 출시 나무의 묶음과 그것을 돌리는 frozen.py(스크립트는 scripts/ 폴더, tests/test_frozen_oracle.py)
+    assert files == ["SOURCES.txt", "__init__.py", "episode_v31.py", "evaluate_v31.py", "frozen.py",
+                     "v6.1.0-src.tar.gz"], files
     commit, rows = _sources_table()
     assert set(rows) == set(ORACLE_SOURCES)
     assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
@@ -149,8 +162,9 @@ def test_one_champion_per_builtin_env_matching_the_current_layout() -> None:
     from evolab.policy.genome import layout_for
     from evolab.spec.io import load_env
 
-    envs = paths.builtin_envs()
+    envs = _old_builtin_envs()
     assert len(envs) == 6  # 착륙선, 트랙, 언덕차, 점프, 글라이더, 바퀴 고르는 언덕차
+    assert [p.stem for p in paths.builtin_envs()][:6] == list(OLD_BUILTINS)  # 종목 프리셋은 그 뒤에 온다
     assert sorted(p.stem for p in CHAMPIONS.glob("*.npz")) == sorted(p.stem for p in envs)
     readme = (CHAMPIONS / "README.txt").read_text(encoding="utf-8")
     for env_file in envs:
@@ -177,7 +191,7 @@ def test_oracle_and_current_evaluator_agree_on_each_champion() -> None:
     from tests.oracle.evaluate_v31 import evaluate as evaluate_v31
 
     trial = validation_trials(1)[0]
-    for env_file in paths.builtin_envs():
+    for env_file in _old_builtin_envs():
         spec = load_env(env_file)
         layout = layout_for(spec)
         genomes = _fixture(env_file.stem)["genome"][None, :]

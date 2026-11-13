@@ -80,7 +80,7 @@ def _heat_map(theme: Theme) -> pg.ColorMap:
 
 def _style_bar(bar: pg.ColorBarItem, theme: Theme) -> None:
     bar.axis.setPen(_pen(theme.axis, 1))
-    bar.axis.setTextPen(_pen(theme.muted, 1))
+    bar.axis.setTextPen(_pen(theme.tick, 1))
 
 
 def density_lut() -> np.ndarray:

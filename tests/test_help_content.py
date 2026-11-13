@@ -30,9 +30,9 @@ from evolab.app import strings as S
 from evolab.app.help import anchors, content, context
 from evolab.app.help import window as HW
 
-PAGE_IDS = ("start", "lab", "dashboard", "editor", "play", "compare", "race", "records", "examples", "trouble", "words",
-            "install")
-"""설계 D19의 쪽(v3.0판 「설치와 제거」 포함 12쪽)."""
+PAGE_IDS = ("start", "lab", "dashboard", "editor", "preset", "play", "compare", "race", "records", "examples", "trouble",
+            "words", "install")
+"""설계 D19의 쪽(v3.0판 「설치와 제거」 포함 12쪽) + 6.2.0의 「새 프리셋 만들기」(스포츠 설계 4.5: 13쪽)."""
 
 RENDER_LIMIT_MS = 50.0
 """쪽 하나 그리기 상한(설계 T11: 최종 글 중앙값 1.81ms를 잰 값의 여유 있는 위)."""

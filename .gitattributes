@@ -14,3 +14,8 @@ environments/*.evoenv text eol=lf
 # 그림(아이콘·보고서 그림)은 바이너리
 *.png binary
 *.ico binary
+# 6.2.0 프리셋: 내장 틀·조리법은 배포본에 그대로 실리고 해시·바이트로 확인하므로 윈도우 체크아웃에서도 LF.
+# 시험용 틀·조리법(tests/fixtures)은 tests/data와 같이 바이트 그대로.
+src/evolab/assets/templates/*.evotpl text eol=lf
+src/evolab/assets/recipes/*.json text eol=lf
+tests/fixtures/** -text

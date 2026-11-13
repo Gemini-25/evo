@@ -1,0 +1,17 @@
+{
+  "recipe": 1, "start": "blank_top", "name": "시험용 위 세계", "world": "top",
+  "arena": {"template": "yard_top", "values": {}},
+  "roles": [
+    {"id": "player", "label": "둥근 몸",
+     "body": {"template": "fixture_puck", "values": {"size": 1.0, "power": 1.0}}}
+  ],
+  "props": [],
+  "rules": [
+    {"rule": "distance", "who": "player", "part": "disc", "direction": "right", "per_m": 1.0},
+    {"rule": "save_energy", "weight": 0.05},
+    {"rule": "time_limit", "seconds": 8.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "player", "count": 1, "spawn": "start"}]},
+  "brain": {"hidden": [8]},
+  "evaluation": {"trials": 2}
+}

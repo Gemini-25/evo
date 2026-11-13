@@ -35,6 +35,8 @@ class Issue:
     where: str
     """문제가 있는 칸의 경로. 예: bodies[1].shapes[0].h"""
     message: str
+    code: str = ""
+    """검사의 이름(문구 상수 이름의 소문자: no_sensors, unknown_ref, top_gravity …). 화면의 「고치기」가 이것으로 고른다. 빈 글이면 이름 없는 검사."""
 
     def __str__(self) -> str:
         return f"{self.where}: {self.message}" if self.where else self.message

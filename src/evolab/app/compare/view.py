@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.compare.repeat import RepeatDialog, RepeatPlan, RepeatRunner
 from evolab.app.lab.dashboard import (
     AXIS_WIDTH,
@@ -96,7 +97,6 @@ GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 LIST_COL_ENV, LIST_COL_METHOD, LIST_COL_SEED, LIST_COL_GENERATIONS, LIST_COL_GROUP = range(5)
 (TABLE_COL_NAME, TABLE_COL_METHOD, TABLE_COL_SEED, TABLE_COL_FINAL, TABLE_COL_TARGET, TABLE_COL_TIME,
  TABLE_COL_SUCCESS) = range(7)
-COLOR_BROKEN = QColor("#9aa0aa")
 
 _NAN = math.nan
 
@@ -812,7 +812,7 @@ class CompareView(QWidget):
         self.legend.setStyleSheet(f"color: {t.ink2};")
         self.note_label = QLabel()
         self.note_label.setWordWrap(True)
-        self.note_label.setStyleSheet(f"color: {t.muted};")
+        self.note_label.setStyleSheet(f"color: {t.tick};")
         self.note_label.hide()
         self.plot_widget = _PlotWidget(background=t.surface)
         self.plot = self.plot_widget.getPlotItem()
@@ -1028,7 +1028,7 @@ class CompareView(QWidget):
         else:
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemNeverHasChildren)
             for col in range(5):
-                item.setForeground(col, QBrush(COLOR_BROKEN))
+                item.setForeground(col, QBrush(QColor(style.ui_for().muted)))
         return item
 
     def _leaf_items(self) -> list[QTreeWidgetItem]:
@@ -1204,7 +1204,7 @@ class CompareView(QWidget):
         for name in ("left", "bottom"):
             ax = p.getAxis(name)
             ax.setPen(_pen(t.axis, 1))
-            ax.setTextPen(_pen(t.muted, 1))
+            ax.setTextPen(_pen(t.tick, 1))
             ax.enableAutoSIPrefix(False)
         p.getAxis("left").setWidth(AXIS_WIDTH)
 

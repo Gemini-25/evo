@@ -1,0 +1,48 @@
+{
+  "format": "evolab-template", "version": 1,
+  "id": "fixture_walker", "kind": "body", "world": "side",
+  "name": "시험용 걷는 몸",
+  "description": "몸통 하나와 두 다리. 형식 1 부품만 씁니다(회전 관절, 모터, 접촉·몸 상태 센서).",
+  "params": [
+    {"id": "size", "label": "크기", "value": 1.0, "min": 0.6, "max": 1.6, "step": 0.05, "unit": "배", "main": true},
+    {"id": "power", "label": "힘", "value": 1.0, "min": 0.4, "max": 2.5, "step": 0.1, "unit": "배", "main": true}
+  ],
+  "root": "torso",
+  "parts": {
+    "bodies": [
+      {"id": "torso", "label": "몸통", "pos": [0.0, "=t.size * 0.3"],
+       "shapes": [{"kind": "box", "w": "=t.size * 0.4", "h": "=t.size * 0.6"}],
+       "material": {"density": 200.0, "friction": 0.5}, "tags": ["torso"]},
+      {"id": "leg_l", "label": "왼 다리", "place_by": "hip_l",
+       "shapes": [{"kind": "box", "w": "=t.size * 0.12", "h": "=t.size * 0.6"}],
+       "material": {"density": 150.0, "friction": 1.0}, "tags": ["foot"]},
+      {"id": "leg_r", "label": "오른 다리", "place_by": "hip_r",
+       "shapes": [{"kind": "box", "w": "=t.size * 0.12", "h": "=t.size * 0.6"}],
+       "material": {"density": 150.0, "friction": 1.0}, "tags": ["foot"]}
+    ],
+    "joints": [
+      {"id": "hip_l", "label": "왼 엉덩이", "kind": "pivot", "a": "torso", "b": "leg_l",
+       "anchor_a": [0.0, "=-t.size * 0.3"], "anchor_b": [0.0, "=t.size * 0.3"], "limit": [-0.9, 1.2]},
+      {"id": "hip_r", "label": "오른 엉덩이", "kind": "pivot", "a": "torso", "b": "leg_r",
+       "anchor_a": [0.0, "=-t.size * 0.3"], "anchor_b": [0.0, "=t.size * 0.3"], "limit": [-0.9, 1.2]}
+    ],
+    "actuators": [
+      {"kind": "motor", "id": "m_hip_l", "label": "왼 엉덩이 모터", "joint": "hip_l",
+       "max_torque": "=t.power * t.size * 120", "max_speed": 6.0, "keys_pos": ["Q"], "keys_neg": ["A"]},
+      {"kind": "motor", "id": "m_hip_r", "label": "오른 엉덩이 모터", "joint": "hip_r",
+       "max_torque": "=t.power * t.size * 120", "max_speed": 6.0, "keys_pos": ["W"], "keys_neg": ["S"]}
+    ],
+    "sensors": [
+      {"kind": "body_state", "id": "st", "label": "몸통 상태", "body": "torso",
+       "fields": ["y", "vx", "vy", "angle", "omega"],
+       "scale": {"y": 1.5, "vx": 3.0, "vy": 3.0, "angle": 1.0, "omega": 5.0}},
+      {"kind": "joint_angle", "id": "a_hip_l", "label": "왼 엉덩이 각도", "joint": "hip_l", "scale": 1.2},
+      {"kind": "joint_angle", "id": "a_hip_r", "label": "오른 엉덩이 각도", "joint": "hip_r", "scale": 1.2},
+      {"kind": "contact", "id": "c_leg_l", "label": "왼 다리 닿음", "body": "leg_l", "with": ["$ground"]},
+      {"kind": "contact", "id": "c_leg_r", "label": "오른 다리 닿음", "body": "leg_r", "with": ["$ground"]}
+    ]
+  },
+  "slots": {"$ground": {"tags": ["ground", "terrain"], "label": "땅"}},
+  "randoms": [{"id": "tilt", "label": "시작 기울기", "dist": "uniform", "low": -0.05, "high": 0.05}],
+  "spawn": {"y": "=t.size * 0.65", "angle": "=r.tilt"}
+}
