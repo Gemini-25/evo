@@ -34,6 +34,9 @@ VARIANTS: dict = {
     "h8": {"hidden": [8]},                                   # 은닉 8(CMA-ES, 122차원)
     "pop64": {"pop": 64},                                    # 개체 64
     "latest2": {"pool_admit": "rung+latest2"},               # 새 칸 + 최근 스냅숏 둘
+    # 3차 묶음의 조합(1·2차 결과를 본 뒤 고름 = 데이터를 보고 고름): base보다 C10 수를 올린 요인 위 둘 / 위 셋
+    "ks": {"K": 16, "ref_share": 0.25},
+    "ksb": {"K": 16, "ref_share": 0.25, "opts": {"ball_rx": 2.5, "ball_ry": 2.5}},
 }
 
 
