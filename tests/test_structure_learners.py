@@ -518,8 +518,10 @@ def test_t68_for_new_run_puts_the_flip_only_for_environments_with_on_genes() -> 
     assert c.restart_patience == TrainConfig.for_new_run().restart_patience  # 다른 권장값은 그대로
     assert TrainConfig.for_new_run(car, ga_structure_flip=0.0, method="ga").ga_structure_flip == 0.0  # 값이 우선
     for path in paths.builtin_envs():
-        if path.name != "wheels.evoenv":
-            assert TrainConfig.for_new_run(compile_env(path.read_text(encoding="utf-8"))) == TrainConfig.for_new_run()
+        spec = compile_env(path.read_text(encoding="utf-8"))
+        # (6.2.0, 설계 4.5·D31) editor.train이 없는 내장 환경은 기본값과 같다(종목 프리셋은 권장 설정을 가질 수 있다)
+        if path.name != "wheels.evoenv" and "train" not in (spec.file.editor or {}):
+            assert TrainConfig.for_new_run(spec) == TrainConfig.for_new_run()
     counted = _data()
     for b in counted["bodies"][2:]:
         b["exists"] = "=" + b["exists"].strip("= ") + " > 0.5"  # 수식이 "=p.<id>"가 아니면 있음 유전자가 아님

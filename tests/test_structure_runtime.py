@@ -555,13 +555,18 @@ def test_wheels_baselines_differ_from_the_example_only_in_the_wheel_switches() -
 
 
 def test_builtin_order_ends_with_wheels_and_first_run_copies_it(tmp_path: Path) -> None:
-    """T35(v2.1): 내장 예제 순서 …, 글라이더, 바퀴 고르는 언덕차. v2.1을 처음 켜면 새 예제 하나만 복사한다."""
-    assert paths.BUILTIN_ORDER[-2:] == ("glider", "wheels")
-    assert [p.name for p in paths.builtin_envs()] == [
-        "lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv", "wheels.evoenv"]
+    """T35(v2.1): 내장 예제 순서 …, 글라이더, 바퀴 고르는 언덕차. v2.1을 처음 켜면 새 예제 하나만 복사한다.
+
+    (6.2.0, 설계 4.5) 옛 여섯은 이름으로 못 박고, 그 뒤는 종목 프리셋(BUILTIN_ORDER[6:]: 저장소에 있는 것만 목록에 든다)."""
+    old = ("lander", "track_car", "hill_car", "jump", "glider", "wheels")
+    assert paths.BUILTIN_ORDER[:6] == old and paths.BUILTIN_ORDER[4:6] == ("glider", "wheels")
+    names = [p.name for p in paths.builtin_envs()]
+    assert names[:6] == [f"{n}.evoenv" for n in old]
+    presets = names[6:]
+    assert presets == [f"{n}.evoenv" for n in paths.BUILTIN_ORDER[6:] if f"{n}.evoenv" in presets]
     for name in ("lander", "track_car", "hill_car", "jump", "glider"):
         (tmp_path / f"{name}.evoenv").write_text(f"고친 {name}", encoding="utf-8")
-    assert [p.name for p in paths.install_examples(tmp_path)] == ["wheels.evoenv"]
+    assert [p.name for p in paths.install_examples(tmp_path)] == ["wheels.evoenv", *presets]
     assert (tmp_path / "wheels.evoenv").read_bytes() == WHEELS.read_bytes()
     assert (tmp_path / "jump.evoenv").read_text(encoding="utf-8") == "고친 jump"
 

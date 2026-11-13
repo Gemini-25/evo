@@ -421,7 +421,7 @@ def test_new_strings_fill_with_dummy_values_and_keep_their_placeholders() -> Non
     for name in sorted(_new_names()):
         for text in _texts(getattr(S, name)):
             try:
-                text.format(**dict.fromkeys(_fields(text), 1.0))
+                text.format(**dict.fromkeys(_fields(text), 1))  # 정수 1은 d·f·, 꼴 모두 받는다
             except (KeyError, ValueError, IndexError) as exc:
                 errors.append(f"{name}: {exc!r}")
     assert errors == []

@@ -73,9 +73,11 @@ def test_glider_initial_body_flies_about_113_m() -> None:
 
 
 def test_builtin_order_and_unknown_files_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """T35: 착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더, (v2.1) 바퀴 고르는 언덕차, 그 밖은 이름순."""
-    assert [p.name for p in paths.builtin_envs()] == [
+    """T35: 착륙선, 트랙 자동차, 언덕차, 점프 게임, 글라이더, (v2.1) 바퀴 고르는 언덕차, (6.2.0) 종목 프리셋, 그 밖은 이름순."""
+    names = [p.name for p in paths.builtin_envs()]
+    assert names[:6] == [
         "lander.evoenv", "track_car.evoenv", "hill_car.evoenv", "jump.evoenv", "glider.evoenv", "wheels.evoenv"]
+    assert names[6:] == [f"{n}.evoenv" for n in paths.BUILTIN_ORDER[6:] if f"{n}.evoenv" in names]  # 설계 4.5
     for name in ("zebra", "glider", "apple", "lander", "jump"):
         (tmp_path / f"{name}.evoenv").write_text("{}", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("", encoding="utf-8")
@@ -89,7 +91,8 @@ def test_first_run_copies_only_new_examples(tmp_path: Path) -> None:
     for name in ("lander", "track_car", "hill_car"):
         (tmp_path / f"{name}.evoenv").write_text(f"고친 {name}", encoding="utf-8")
     copied = paths.install_examples(tmp_path)
-    assert [p.name for p in copied] == ["jump.evoenv", "glider.evoenv", "wheels.evoenv"]
+    presets = [p.name for p in paths.builtin_envs()][6:]  # (6.2.0, 설계 4.5) 종목 프리셋도 새 예제로 복사(running.evoenv)
+    assert [p.name for p in copied] == ["jump.evoenv", "glider.evoenv", "wheels.evoenv", *presets]
     assert (tmp_path / "jump.evoenv").read_bytes() == JUMP.read_bytes()
     for name in ("lander", "track_car", "hill_car"):
         assert (tmp_path / f"{name}.evoenv").read_text(encoding="utf-8") == f"고친 {name}"
