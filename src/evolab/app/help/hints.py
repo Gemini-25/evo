@@ -2,7 +2,9 @@
 
 | 자리 | 보일 때 | 글 | 단추 |
 | --- | --- | --- | --- |
-| 실험실 캔버스 | 학습 프로세스 없음(`not lab.client.active`), 실행을 열지 않음(`lab.run_dir is None`) | HINT_LAB_IDLE_TITLE, HINT_LAB_IDLE_ANY | 「▶ 학습 시작」(= 패널의 `btn_start`를 누름), HINT_LAB_TOUR(안내 상태가 done이면 숨김) |
+| 실험실 캔버스 | 학습 프로세스 없음(`not lab.client.active`), 실행을 열지 않음(`lab.run_dir is None`) | HINT_LAB_IDLE_TITLE, HINT_LAB_IDLE_ANY | 「▶ 학습 시작」(= 패널의 `btn_start`를 누름, 으뜸), HINT_LAB_TOUR(안내 상태가 done이면 숨김) |
+| 〃 (6.2.0 U10) 저장된 실행 | 학습 프로세스 없음, 연 실행의 세대 ≥ 1, 다시 보기 중이 아님 | HINT_LAB_SAVED_TITLE, HINT_LAB_SAVED | 「챔피언 다시 보기」, 「이어서 학습」(= `btn_continue`, 으뜸) |
+| 〃 (6.2.0 U10) 조건이 차서 멈춤 | 학습 중 상태 finished, 관전 재생 끝, 다시 보기 중이 아님 | HINT_LAB_FINISHED_TITLE, HINT_LAB_FINISHED | 「10세대 더 학습」(최대 세대로 멈췄을 때만, `extend_and_continue`), 「정지 조건 바꾸기」 |
 | 대시보드 | 학습 중이거나 실행을 열었고 통계 줄이 0 / 1 | HINT_DASH_EMPTY / HINT_DASH_ONE | — (마우스는 아래로) |
 | 에디터 캔버스 | 문서에 그려지는 부품이 없음(`anchors.editor_is_empty`) | HINT_EDITOR_EMPTY | 「내장 예제에서 시작」 메뉴를 펼침, 「새 프리셋…」(에디터의 그 액션, 6.2.0) |
 
@@ -254,21 +256,101 @@ def start_tour(window: QMainWindow) -> Any:
     return tour.start_tour(window, tour.tour_settings(window))
 
 
+MORE_GENERATIONS: Final = 10
+"""「n세대 더 학습」의 n(다듬기 U10)."""
+
+
+def lab_card_state(lab: Any) -> str | None:
+    """실험실 캔버스 카드의 상태(다듬기 U10: 한 카드 안의 셋). None이면 숨김.
+
+    - "idle": 학습 프로세스 없음, 실행을 열지 않음(v3.0 그대로)
+    - "saved": 학습 프로세스 없음, 연 실행(세대 1 이상)이 있고 다시 보기 중이 아님(기록에서 엶·「학습 끝내기」 뒤)
+    - "finished": 정지 조건이 차서 멈췄고 관전 재생이 끝났으며 다시 보기 중이 아님
+    """
+    if not lab.client.active:
+        if lab.run_dir is None:
+            return "idle"
+        if int(getattr(lab, "generation", 0) or 0) > 0 and getattr(lab, "view_mode", "") != "replay":
+            return "saved"
+        return None
+    if (lab.state == "finished" and getattr(lab, "view_mode", "") != "replay" and getattr(lab, "playing", None) is None
+            and not getattr(lab, "queue", None)):
+        return "finished"
+    return None
+
+
+def _stop_reason(lab: Any) -> str:
+    return str(getattr(lab, "_stop_reason", "") or "")
+
+
+def _card_title(lab: Any) -> str:
+    state = lab_card_state(lab)
+    if state == "saved":
+        return S.HINT_LAB_SAVED_TITLE.format(gen=lab.generation)
+    if state == "finished":
+        reason = _stop_reason(lab)
+        return S.HINT_LAB_FINISHED_TITLE.format(reason=S.TRAIN_STOP_REASONS.get(reason, reason))
+    return S.HINT_LAB_IDLE_TITLE if lab.spec is not None else ""
+
+
+def _card_text(lab: Any) -> str:
+    state = lab_card_state(lab)
+    if state == "saved":
+        return S.HINT_LAB_SAVED.format(cont=S.LAB_CONTINUE, replay=S.HINT_LAB_REPLAY_CHAMP)
+    if state == "finished":
+        return S.HINT_LAB_FINISHED
+    return lab_idle_text(lab)
+
+
+def _show_stop_group(lab: Any) -> None:
+    """「정지 조건 바꾸기」: 패널을 그 묶음으로 스크롤하고 「최대 세대」 칸에 초점."""
+    from PySide6.QtWidgets import QScrollArea
+
+    field = lab.max_generations
+    group = field.parentWidget()
+    w = group
+    while w is not None and not isinstance(w, QScrollArea):
+        w = w.parentWidget()
+    if isinstance(w, QScrollArea) and group is not None:
+        w.ensureWidgetVisible(group)
+    field.setFocus(Qt.FocusReason.OtherFocusReason)
+
+
 def lab_hint(window: QMainWindow) -> HintFrame:
     lab = window.lab  # type: ignore[attr-defined]
+
+    def when(state: str, on: Callable[[], bool | None] = lambda: True) -> Callable[[], bool | None]:
+        return lambda: on() if lab_card_state(lab) == state else None
+
+    more = getattr(lab, "extend_and_continue", None)
     buttons: tuple[ButtonSpec, ...] = (
         # 패널의 진짜 단추를 누른다: 그 신호를 기다리는 곳(안내 등)이 같은 길로 안다
-        (S.LAB_START, lambda: lab.btn_start.click(), lambda: lab.btn_start.isEnabled()),
-        (S.HINT_LAB_TOUR, lambda: start_tour(window), lambda: None if _tour_done(lab) else True),
+        (S.LAB_START, lambda: lab.btn_start.click(), when("idle", lambda: lab.btn_start.isEnabled())),
+        (S.HINT_LAB_TOUR, lambda: start_tour(window), when("idle", lambda: None if _tour_done(lab) else True)),
+        # 6.2.0 U10: 저장된 실행
+        (S.HINT_LAB_REPLAY_CHAMP, lambda: lab.play_generation(lab.generation), when("saved")),
+        (S.LAB_CONTINUE, lambda: lab.btn_continue.click(), when("saved", lambda: lab.btn_continue.isEnabled())),
+        # 6.2.0 U10: 조건이 차서 멈춤(「n세대 더」는 멈춘 까닭이 최대 세대일 때만)
+        (S.HINT_LAB_MORE_GENS.format(n=MORE_GENERATIONS), lambda: more(MORE_GENERATIONS) if more else None,
+         when("finished", lambda: True if more is not None and _stop_reason(lab) == "max_generations" else None)),
+        (S.HINT_LAB_CHANGE_STOP, lambda: _show_stop_group(lab), when("finished")),
     )
-    frame = HintFrame(lab.canvas, lambda: lab_idle_text(lab),
-                      lambda: not lab.client.active and lab.run_dir is None, buttons, True,
-                      lambda: S.HINT_LAB_IDLE_TITLE if lab.spec is not None else "")
-    frame.buttons[0].setToolTip(S.HELP_TIPS.get("lab.start", ""))  # 패널의 그 단추와 같은 풍선(이건 뭐예요?도 같은 글)
-    # 6.2.0 U7: 카드의 「▶ 학습 시작」도 으뜸(패널의 그 단추와 같은 행동이라 한 쌍으로 센다). 카드는 늘 어두우므로 어두운 테마 값
-    style.set_role(frame.buttons[0], "primary", on_dark_card=True)
+    frame = HintFrame(lab.canvas, lambda: _card_text(lab), lambda: lab_card_state(lab) is not None, buttons, True,
+                      lambda: _card_title(lab))
+    start, _tour, replay, cont, more_btn, stop = frame.buttons
+    start.setToolTip(S.HELP_TIPS.get("lab.start", ""))  # 패널의 그 단추와 같은 풍선(이건 뭐예요?도 같은 글)
+    replay.setToolTip(S.HINT_LAB_REPLAY_CHAMP_TIP)
+    cont.setToolTip(S.HELP_TIPS.get("lab.continue", ""))
+    more_btn.setToolTip(S.HINT_LAB_MORE_GENS_TIP.format(n=MORE_GENERATIONS))
+    stop.setToolTip(S.HINT_LAB_CHANGE_STOP_TIP)
+    # 6.2.0 U7: 카드의 「▶ 학습 시작」도 으뜸(패널의 그 단추와 같은 행동이라 한 쌍으로 센다). 카드는 늘 어두우므로 어두운 테마 값.
+    # U10의 「이어서 학습」도 같은 규칙(패널의 「이어서 학습」과 한 쌍). 「n세대 더」는 패널의 으뜸과 다른 행동이라 보통 단추
+    for btn in (start, cont):
+        style.set_role(btn, "primary", on_dark_card=True)
     frame.whys[0] = lambda: style.why_off(lab.btn_start)  # 패널 단추가 꺼진 까닭을 그대로
+    frame.whys[3] = lambda: style.why_off(lab.btn_continue)
     signals = [lab.client.started, lab.client.closed, lab.client.state_changed, lab.run_started]
+    signals += [getattr(lab, name) for name in ("state_changed",) if hasattr(lab, name)]
     # 환경·개체 수가 바뀌면 글을 바로 고친다(300ms 확인을 기다리지 않게)
     signals += [getattr(lab, name) for name in ("env_changed",) if hasattr(lab, name)]
     signals += [lab.popsize.valueChanged, lab.sa_neighbors.valueChanged, lab.method.currentIndexChanged]

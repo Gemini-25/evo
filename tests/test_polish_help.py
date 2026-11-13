@@ -228,3 +228,139 @@ def test_canvas_card_start_button_is_primary_on_the_dark_card(window: Any, qtbot
         style.set_enabled(lab.btn_start, True)
         frame.refresh()
     assert start.isEnabled() and style.why_off(start) == "" and style.tip_text(start) == start.toolTip()
+
+
+# ---------------------------------------------------------------------------
+# U10: 한 카드 안의 세 상태(하면 좋음)
+# ---------------------------------------------------------------------------
+def _visible_texts(frame: Any) -> list[str]:
+    return [b.text() for b in frame.buttons if not b.isHidden()]
+
+
+def test_canvas_card_saved_run_state(window: Any, qtbot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from evolab.app.help import hints as H
+
+    lab = window.lab
+    window.tabs.setCurrentWidget(lab)
+    frame = hint_of(lab.canvas)
+    assert frame is not None
+    played: list[int] = []
+    monkeypatch.setattr(lab, "play_generation", lambda g: played.append(g) or True)
+    lab.run_dir, lab.generation = Path("run"), 7
+    try:
+        assert H.lab_card_state(lab) == "saved"
+        frame.refresh()
+        assert frame.isVisible() and frame.title_label.text() == S.HINT_LAB_SAVED_TITLE.format(gen=7)
+        assert frame.text() == S.HINT_LAB_SAVED.format(cont=S.LAB_CONTINUE, replay=S.HINT_LAB_REPLAY_CHAMP)
+        assert _visible_texts(frame) == [S.HINT_LAB_REPLAY_CHAMP, S.LAB_CONTINUE]
+        cont = frame.buttons[3]
+        assert cont.property(style.ROLE_PROPERTY) == "primary"  # 패널의 「이어서 학습」과 한 쌍
+        assert cont.toolTip() == S.HELP_TIPS["lab.continue"] and frame.buttons[2].toolTip()
+        assert cont.isEnabled() == lab.btn_continue.isEnabled()
+        frame.buttons[2].click()
+        assert played == [7]
+        lab.view_mode = "replay"  # 다시 보기가 시작되면 숨는다
+        frame.refresh()
+        assert not frame.isVisible()
+    finally:
+        lab.run_dir, lab.generation, lab.view_mode = None, 0, "live"
+        frame.refresh()
+    assert frame.isVisible() and _visible_texts(frame)[0] == S.LAB_START  # 학습 전 카드로 돌아옴
+
+
+def test_canvas_card_finished_state(window: Any, qtbot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from evolab.app.help import hints as H
+
+    lab = window.lab
+    window.tabs.setCurrentWidget(lab)
+    frame = hint_of(lab.canvas)
+    assert frame is not None
+    extended: list[int] = []
+    monkeypatch.setattr(lab, "extend_and_continue", lambda n=10: extended.append(n) or True, raising=False)
+    # 카드는 만들 때 lab.extend_and_continue를 잡아 둔다: 새 카드를 만들어 바꿔치기를 쓰게 한다
+    frame.hide()
+    frame = H.lab_hint(window)
+    lab.client._proc = object()  # 학습 프로세스가 있는 것처럼(학습을 띄우지 않음)
+    lab.state, lab._stop_reason, lab.run_dir, lab.generation = "finished", "max_generations", Path("run"), 30
+    try:
+        assert H.lab_card_state(lab) == "finished"
+        frame.refresh()
+        assert frame.isVisible()
+        assert frame.title_label.text() == S.HINT_LAB_FINISHED_TITLE.format(
+            reason=S.TRAIN_STOP_REASONS["max_generations"])
+        more = S.HINT_LAB_MORE_GENS.format(n=H.MORE_GENERATIONS)
+        assert _visible_texts(frame) == [more, S.HINT_LAB_CHANGE_STOP]
+        assert frame.buttons[4].property(style.ROLE_PROPERTY) != "primary"  # 패널의 으뜸(이어서 학습)과 다른 행동
+        frame.buttons[4].click()
+        assert extended == [H.MORE_GENERATIONS]
+        lab._stop_reason = "target"  # 목표 점수로 멈췄으면 「n세대 더」는 숨는다
+        frame.refresh()
+        assert _visible_texts(frame) == [S.HINT_LAB_CHANGE_STOP]
+        frame.buttons[5].click()  # 패널을 정지 조건 묶음으로(예외 없이)
+        lab.playing = {"generation": 30}  # 관전 재생 중이면 숨는다
+        frame.refresh()
+        assert not frame.isVisible()
+    finally:
+        lab.playing = None
+        lab.client._proc = None
+        lab.state, lab._stop_reason, lab.run_dir, lab.generation = "idle", "", None, 0
+        frame.refresh()
+        frame.hide()
+
+
+# ---------------------------------------------------------------------------
+# U9의 「이건 뭐예요?」: 꺼진 단추는 까닭까지(하면 좋음)
+# ---------------------------------------------------------------------------
+def test_whats_this_adds_the_reason_of_a_disabled_button(window: Any) -> None:
+    from evolab.app.help import context
+
+    btn = window.lab.btn_start
+    tip = btn.toolTip()
+    assert tip
+    style.set_enabled(btn, True)
+    assert context.whats_this_text(btn) == (btn, tip)
+    style.set_enabled(btn, False, "why-off")
+    try:
+        target, text = context.whats_this_text(btn)
+        assert target is btn and text == style.tip_text(btn) and text.startswith(tip) and text.endswith("why-off")
+        assert btn.toolTip() == tip  # 풍선 글 자체는 그대로(V1)
+    finally:
+        style.set_enabled(btn, True)
+
+
+# ---------------------------------------------------------------------------
+# U34 도움말 창의 글 모양(하면 좋음)
+# ---------------------------------------------------------------------------
+def test_help_text_layout(qtbot: Any, isolated: Path) -> None:
+    from PySide6.QtWidgets import QTextEdit
+
+    from evolab.app.help import window as HW
+
+    win = HW.HelpWindow()
+    qtbot.addWidget(win)
+    win.resize(1400, 700)
+    win.show()
+    QTest.qWaitForWindowExposed(win)
+    try:
+        assert win.show_page("preset")
+        doc = win.browser.document()
+        assert doc.documentMargin() == HW.TEXT_MARGIN
+        block, headings, body = doc.begin(), [], []
+        while block.isValid():
+            fmt = block.blockFormat()
+            (headings if fmt.headingLevel() > 0 else body).append(fmt)
+            block = block.next()
+        assert headings[0].topMargin() == 0 and all(h.bottomMargin() == 8 for h in headings)
+        assert all(h.topMargin() >= 16 for h in headings[1:])
+        assert all(b.lineHeight() == HW.LINE_HEIGHT_PCT for b in body)
+        assert win.browser.palette().color(win.browser.palette().ColorRole.Link).name() == style.ui_for().link
+        # 넓은 창: 글 폭은 720(+여백)까지, 좁은 창: 창 폭
+        assert win.browser.lineWrapMode() == QTextEdit.LineWrapMode.FixedPixelWidth
+        assert win.browser.lineWrapColumnOrWidth() == HW.TEXT_MAX_WIDTH + 2 * HW.TEXT_MARGIN
+        win.resize(700, 600)
+        QApplication.processEvents()
+        assert win.browser.lineWrapMode() == QTextEdit.LineWrapMode.WidgetWidth
+        # 제목으로 가는 링크·찾기는 그대로(글은 같다)
+        assert win.show_page("editor", S.EDP_TAB_RULES) and win.current_heading_block() == S.EDP_TAB_RULES
+    finally:
+        win.close()

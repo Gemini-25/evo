@@ -3226,3 +3226,20 @@ PRESET_FIX_TIP: Final = "고칠 곳이 있는 단계로 갑니다."
 # 직접 조종의 밀기(Move) 키 설명(PLAY_KEY_LINE의 {label}): 앞으로·뒤로·왼쪽·오른쪽은 PLAY_KEY_FORWARD 등 그대로
 PLAY_KEY_UP: Final = "{name} 위로"
 PLAY_KEY_DOWN: Final = "{name} 아래로"
+# 실험실 캔버스 아래 「이 세대 대표 재생」 단추의 풍선(6.2.0 다듬기 U9: 꺼진 까닭이 붙을 제 풍선)
+LAB_TIMELINE_PLAY_TIP: Final = "세대 막대에서 고른 세대의 대표 개체를 처음부터 다시 재생합니다."
+
+# ---------------------------------------------------------------------------
+# 6.2.0 묶음 Ha (도움말·주 창: app/help/*, app/main.py)가 더한 것
+# ---------------------------------------------------------------------------
+# 다듬기 U10: 실험실 캔버스 카드의 둘째·셋째 상태(저장된 실행, 조건이 차서 멈춤). 단추 이름은 동사로 끝나게(계획 1.5)
+HINT_LAB_SAVED_TITLE: Final = "저장된 실행 · {gen}세대"
+HINT_LAB_SAVED: Final = "「{cont}」 단추로 이 실행을 이어 갑니다. 「{replay}」 단추는 마지막 세대의 챔피언을 다시 보여 줍니다."
+HINT_LAB_REPLAY_CHAMP: Final = "챔피언 다시 보기"
+HINT_LAB_REPLAY_CHAMP_TIP: Final = "이 실행의 마지막 세대 대표를 전시 시드로 처음부터 다시 재생합니다. 학습은 하지 않습니다."
+HINT_LAB_FINISHED_TITLE: Final = "학습이 멈췄습니다 ({reason})"
+HINT_LAB_FINISHED: Final = "정지 조건에 닿았습니다. 조건을 늘리면 같은 실행을 이어서 학습합니다."
+HINT_LAB_MORE_GENS: Final = "{n}세대 더 학습"
+HINT_LAB_MORE_GENS_TIP: Final = "「" + LAB_MAX_GENERATIONS + "」 칸을 {n}만큼 늘리고 설정을 적용한 뒤 바로 이어서 학습합니다."
+HINT_LAB_CHANGE_STOP: Final = "정지 조건 바꾸기"
+HINT_LAB_CHANGE_STOP_TIP: Final = "오른쪽 패널의 「" + LAB_STOP_GROUP + "」 묶음으로 갑니다. 바꾼 뒤 「" + LAB_APPLY + "」 단추를 누르세요."

@@ -253,3 +253,34 @@ def test_presets_check_names_a_broken_template(tmp_path: Path, monkeypatch: pyte
     r = selftest._run_check(S.SELFTEST_CHECK_PRESETS, selftest._check_presets)
     assert not r.ok
     assert "wall.evotpl" in r.detail and r.detail.startswith(S.SELFTEST_ERR_PRESET.split("{", 1)[0])
+
+
+# ---------------------------------------------------------------------------
+# 주 창의 「새 프리셋」 길(app/main.py): 실험실 단추 → 에디터가 띄우는 창, 「에디터에서 다듬기」 → 에디터 탭, 학습 중이면 보내지 않음
+# ---------------------------------------------------------------------------
+def test_main_window_opens_the_wizard_from_the_lab_button(qtbot: Any, isolated: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    from PySide6.QtTest import QTest
+
+    from evolab.app.main import MainWindow
+    from evolab.app.preset.wizard import PresetWizard
+
+    monkeypatch.setattr(PresetWizard, "ask_discard", lambda self: True)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    QTest.qWaitForWindowExposed(window)
+    assert window.editor.lab_ready is not None and window.editor.lab_ready()  # 학습 프로세스 없음
+    button = getattr(window.lab, "btn_new_preset", None)
+    if button is None:
+        pytest.skip("실험실 「새 프리셋…」 단추(Hb)가 아직 없다")
+    window.tabs.setCurrentWidget(window.lab)
+    button.click()
+    wizard = window.editor.wizard
+    assert isinstance(wizard, PresetWizard) and wizard.isVisible() and wizard.isModal()
+    assert QWidget.window(wizard.parentWidget()) is window
+    text = (paths.builtin_env_dir() / "jump.evoenv").read_text(encoding="utf-8")
+    wizard.finished_with.emit(text, "edit", None)
+    assert window.tabs.currentWidget() is window.editor
+    assert window.editor.doc.data["name"] == json.loads(text)["name"]
+    wizard.close()

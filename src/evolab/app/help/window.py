@@ -20,7 +20,7 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QHideEvent, QTextCursor
+from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QPalette, QTextBlockFormat, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -54,6 +54,16 @@ FONT_DELTA_MAX: Final = 6
 """글자 크기 조절 범위(앱 글꼴에 더하는 pt, 설계 2.2)."""
 
 DEFAULT_SIZE: Final = (900, 640)
+TEXT_MARGIN: Final = 16
+"""글 둘레 여백(px, 다듬기 U34: 간격 표 16)."""
+TEXT_MAX_WIDTH: Final = 720
+"""창이 넓어도 글 줄은 이 폭(px)까지(한 줄이 한글 60자 안팎)."""
+HEADING_SPACE: Final = {1: (0, 8), 2: (24, 8), 3: (16, 8)}
+"""제목 수준 → (위, 아래) 틈(px). 쪽 제목(첫 줄)은 위 틈 없음."""
+LINE_HEIGHT_PCT: Final = 150
+"""본문 줄 높이(%)."""
+LIST_INDENT: Final = 20
+"""목록 들여쓰기 한 단(px, Qt 기본 40에서 줄임)."""
 STATUS_MS: Final = 10000
 """알림 줄 글이 남아 있는 시간."""
 
@@ -293,6 +303,7 @@ class HelpWindow(QWidget):
         self.result_label.setWordWrap(True)
         self.result_list = QListWidget()
         self.result_list.setWordWrap(True)
+        self.result_list.setSpacing(2)  # 결과 사이 4px(U34: 위아래 2px씩)
         self.result_list.itemClicked.connect(self._result_chosen)
         self.result_list.itemActivated.connect(self._result_chosen)
         results = QWidget()
@@ -314,6 +325,7 @@ class HelpWindow(QWidget):
         self.browser.setOpenLinks(False)
         self.browser.setOpenExternalLinks(False)
         self.browser.anchorClicked.connect(self.follow_link)
+        self.browser.viewport().installEventFilter(self)  # 창 폭이 바뀌면 글 폭을 TEXT_MAX_WIDTH까지로(U34)
         self._base_pt = self.browser.font().pointSizeF()
         if self._base_pt <= 0:
             self._base_pt = 10.0
@@ -405,6 +417,7 @@ class HelpWindow(QWidget):
         self.page, self.heading = page, heading
         if changed:
             self.browser.setMarkdown(content.load_page(page))
+            self.format_document()
             self.settings.setValue(KEY_PAGE, page)
         self._select_row(page)
         if heading:
@@ -415,6 +428,59 @@ class HelpWindow(QWidget):
             self.browser.verticalScrollBar().setValue(0)
         self._update_nav()
         return ok
+
+    # -- 글 모양 (6.2.0 다듬기 U34) -----------------------------------------
+    def format_document(self) -> None:
+        """setMarkdown 뒤 한 번: 글 여백 16, 제목 위아래 틈, 본문 줄 높이 150%, 목록 들여쓰기 줄임, 링크 색(ui.link).
+
+        Qt의 setDefaultStyleSheet는 setMarkdown에 듣지 않으므로 글 덩이 형식을 직접 고친다. 글과 제목 자리는 그대로다(찾기·제목 스크롤)."""
+        from evolab.app import style
+
+        doc = self.browser.document()
+        doc.setDocumentMargin(TEXT_MARGIN)
+        doc.setIndentWidth(LIST_INDENT)
+        pal = self.browser.palette()
+        link = QColor(style.ui_for(self.browser).link)
+        if pal.color(QPalette.ColorRole.Link) != link:
+            pal.setColor(QPalette.ColorRole.Link, link)
+            self.browser.setPalette(pal)
+        cursor = QTextCursor(doc)
+        cursor.beginEditBlock()
+        block = doc.begin()
+        first = True
+        while block.isValid():
+            fmt = QTextBlockFormat(block.blockFormat())
+            level = fmt.headingLevel()
+            if level > 0:
+                top, bottom = HEADING_SPACE.get(level, (16, 8))
+                fmt.setTopMargin(0 if first else top)
+                fmt.setBottomMargin(bottom)
+            else:
+                fmt.setLineHeight(LINE_HEIGHT_PCT, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            cursor.setPosition(block.position())
+            cursor.setBlockFormat(fmt)
+            first = False
+            block = block.next()
+        cursor.endEditBlock()
+        self._fit_text_width()
+
+    def _fit_text_width(self) -> None:
+        """글 줄 폭을 창 폭과 TEXT_MAX_WIDTH(+ 여백) 가운데 작은 쪽으로."""
+        from PySide6.QtWidgets import QTextEdit
+
+        limit = TEXT_MAX_WIDTH + 2 * TEXT_MARGIN
+        if self.browser.viewport().width() > limit:
+            if (self.browser.lineWrapMode() != QTextEdit.LineWrapMode.FixedPixelWidth
+                    or self.browser.lineWrapColumnOrWidth() != limit):
+                self.browser.setLineWrapMode(QTextEdit.LineWrapMode.FixedPixelWidth)
+                self.browser.setLineWrapColumnOrWidth(limit)
+        elif self.browser.lineWrapMode() != QTextEdit.LineWrapMode.WidgetWidth:
+            self.browser.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if obj is self.browser.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_text_width()
+        return super().eventFilter(obj, event)
 
     def _select_row(self, page: str) -> None:
         row = content.PAGES.index(page)

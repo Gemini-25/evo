@@ -79,6 +79,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -757,6 +758,7 @@ class LabView(QWidget):
         self.btn_flip.setToolTip(S.LAB_FLIP_TIP)
         self.btn_flip.clicked.connect(lambda on: self.start_flip() if on else self.stop_flip())
         self.btn_timeline = QPushButton(S.LAB_TIMELINE_PLAY)
+        self.btn_timeline.setToolTip(S.LAB_TIMELINE_PLAY_TIP)
         self.btn_timeline.clicked.connect(lambda: self.play_generation(self.timeline.value()))
         self.btn_versus = QPushButton(S.LAB_VERSUS)
         self.btn_versus.clicked.connect(self.play_versus)
@@ -816,6 +818,7 @@ class LabView(QWidget):
         el = QVBoxLayout(env)
         self.env_label = QLabel(S.LAB_ENV_NONE)
         self.env_label.setWordWrap(True)
+        self.env_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # 긴 경로(U5, 위와 같음)
         self.env_combo = QComboBox()
         self.env_combo.setObjectName("env_combo")
         self.env_combo.addItem(S.LAB_ENV_BUILTIN, None)
@@ -1016,6 +1019,9 @@ class LabView(QWidget):
         g.addWidget(self.btn_end, 2, 0, 1, 2)
         self.status = QLabel(S.LAB_STATUS_IDLE)
         self.status.setWordWrap(True)
+        # 6.2.0 U5: 패널이 좁아져(394px) 띄어쓰기 없는 긴 경로(실행 폴더·내보낸 파일)가 패널을 넓혀 가로 스크롤로 단추를 자르지
+        # 않게, 상태 글의 폭은 패널이 정한다(넘치는 낱말은 글 상자 안에서 잘림)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         # 6.2.0 U7: 상태 글 왼쪽에 상태 색 점 하나(칩 줄은 없다: 접힘 예산). 첫 줄 높이, 위 맞춤, 사이 4px
         self.state_dot = style.StateDot()
         status_row = QHBoxLayout()

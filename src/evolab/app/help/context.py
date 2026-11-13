@@ -174,13 +174,17 @@ WHATS_THIS_DEPTH: Final = 3
 
 
 def whats_this_text(widget: QWidget) -> tuple[QWidget, str]:
-    """누른 위젯의 설명 (짚을 위젯, 글): 자기 풍선, 폼 짝의 풍선, 위 위젯의 풍선 순. 없으면 빈 글."""
+    """누른 위젯의 설명 (짚을 위젯, 글): 자기 풍선, 폼 짝의 풍선, 위 위젯의 풍선 순. 없으면 빈 글.
+
+    6.2.0(다듬기 U9): 꺼진 위젯이면 풍선과 같이 「꺼진 까닭」을 붙인다(style.tip_text). 켜져 있으면 풍선 글 그대로."""
+    from evolab.app import style
+
     w: QWidget | None = widget
     for _ in range(WHATS_THIS_DEPTH + 1):
         if w is None or w.isWindow():
             break
         if w.toolTip():
-            return w, w.toolTip()
+            return w, style.tip_text(w)
         pair = _form_pair(w)
         if pair is not None and pair.toolTip():
             return w, pair.toolTip()

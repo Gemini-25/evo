@@ -66,6 +66,12 @@ class MainWindow(QMainWindow):
         self.editor.title_changed.connect(
             lambda t: self.tabs.setTabText(self.tabs.indexOf(self.editor), f"{S.TAB_EDITOR} · {t}"))
         self.lab.edit_env_requested.connect(self._lab_to_editor)
+        # 6.2.0: 「새 프리셋」 창(설계 D42). 창은 에디터가 띄우고(저장 물음·끝난 뒤 열기), 「실험실로 보내기」 전에 실험실이 받을 수
+        # 있는지 본다(학습 중이면 창이 남고 파일을 쓰지 않음). 실험실의 「새 프리셋…」 단추도 같은 창을 연다.
+        self.editor.lab_ready = self.lab_can_take_preset
+        new_preset = getattr(self.lab, "new_preset_requested", None)
+        if new_preset is not None:
+            new_preset.connect(self.open_preset_wizard)
         self.records.compare_requested.connect(self._compare_runs)
         self.tabs.setCurrentWidget(self.lab)
         self.setCentralWidget(self.tabs)
@@ -142,6 +148,20 @@ class MainWindow(QMainWindow):
             self._state_timer.start()
         elif not ticking and self._state_timer.isActive():
             self._state_timer.stop()
+
+    def lab_can_take_preset(self) -> bool:
+        """「실험실로 보내기」를 받을 수 있는가: 학습 프로세스가 없거나, 멈춘 학습이 환경을 바꿔 이을 수 있을 때(_editor_to_lab과 같은 규칙)."""
+        return not self.lab.client.active or self.lab.can_take_env()
+
+    def open_preset_wizard(self) -> QWidget:
+        """「새 프리셋」 창을 연다(실험실 단추·에디터 빈 캔버스 카드). 「에디터에서 다듬기」로 끝나면 에디터 탭으로 간다."""
+        wizard = self.editor.new_preset()
+        wizard.finished_with.connect(self._preset_finished)
+        return wizard  # type: ignore[no-any-return]
+
+    def _preset_finished(self, _text: str, then: str, _path: object) -> None:
+        if then == "edit":
+            self.tabs.setCurrentWidget(self.editor)
 
     def _choose_and_play(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, S.MENU_PLAY_OPEN, str(paths.builtin_env_dir()), S.ENV_FILE_FILTER)
