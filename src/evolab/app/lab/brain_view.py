@@ -118,10 +118,60 @@ def _masks(masks: Sequence[np.ndarray] | None, hidden: tuple[int, ...], what: st
     return out
 
 
+_BOOL = np.dtype(bool)
+
+
 def _same_masks(a: tuple[np.ndarray, ...] | None, b: tuple[np.ndarray, ...] | None) -> bool:
     if a is None or b is None:
         return a is b
-    return len(a) == len(b) and all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b, strict=True):
+        if x.dtype is _BOOL and y.dtype is _BOOL and x.shape == y.shape:
+            if x.tobytes() != y.tobytes():  # bool 배열은 0·1 바이트뿐이라 바이트 비교 = 값 비교(np.array_equal보다 몇 배 가볍다)
+                return False
+        elif not np.array_equal(x, y):
+            return False
+    return True
+
+
+class _NeuronCoords:
+    """뇌 틀의 은닉 뉴런마다 그 뉴런의 좌표(들어오는·나가는 가중치 전부와 편향)를 뉴런 순서로 이어 붙인 표. masks(유전자)는
+    BrainFrame.active_neurons(유전자)와 같은 답을 넘파이 호출 셋으로 낸다(화면용).
+
+    뇌 그림은 통계 줄이 올 때마다 보는 세대 대표·그때 챔피언의 켜짐을 판단한다. 측정 M12에서 그 순간의 넘파이 호출은 캐시가
+    식어 있어 호출 수가 곧 비용이었다(16칸 틀: active_neurons 한 번 약 0.04ms, 이 표로 약 0.01ms). 학습(learners/grow.py)은
+    이 표를 쓰지 않는다."""
+
+    def __init__(self, frame: BrainFrame) -> None:
+        self.frame = frame
+        sizes = frame.sizes
+        coords: list[np.ndarray] = []
+        starts: list[int] = []
+        bounds: list[tuple[int, int]] = []
+        pos = first = 0
+        for layer, size in enumerate(sizes):
+            bounds.append((first, first + size))
+            first += size
+            for j in range(size):
+                # 틀 전체(counts = sizes): 앞층의 모든 뉴런(또는 입력)에서 들어오는 가중치, 편향, 다음 층의 모든 뉴런(또는 출력)으로
+                # 나가는 가중치. 뉴런마다 편향이 있어 빈 구간은 없다
+                own = np.concatenate((frame.neuron_in(layer, j, sizes), [frame.bias(layer, j)],
+                                      frame.neuron_out(layer, j, sizes)))
+                starts.append(pos)
+                coords.append(own)
+                pos += len(own)
+        self.coords = np.concatenate(coords).astype(np.intp)
+        """뉴런 순서(층 0의 0번, 1번, …, 층 1의 0번, …)로 이어 붙인 좌표."""
+        self.starts = np.asarray(starts, dtype=np.intp)
+        """뉴런마다 coords에서 그 뉴런 구간이 시작하는 자리."""
+        self.bounds = tuple(bounds)
+        """은닉층마다 (첫 뉴런 번호, 끝 + 1)."""
+
+    def masks(self, genome: np.ndarray) -> tuple[np.ndarray, ...]:
+        """은닉층마다 (그 층 크기,) bool: 그 뉴런의 좌표 중 0이 아닌 것이 있나. genome은 (틀 길이,) 배열(float16도 됨)."""
+        on = np.logical_or.reduceat((genome != 0)[self.coords], self.starts)
+        return tuple(on[a:b] for a, b in self.bounds)
 
 
 def edge_strength(level: int) -> float:
@@ -744,8 +794,8 @@ class BrainTile(_WatchTile):
         """(유전자 배치, 틀 또는 None(은닉층·뇌 없음)): 이름표가 바뀔 때만 다시 만든다."""
         self._active_cache: dict[int, tuple[np.ndarray, ...]] = {}
         """세대 → 그 세대 대표의 켜진 뉴런(새로 켜진 뉴런 고리, 세대를 넘겨 봐도 파일을 다시 읽지 않게)."""
-        self._masks_memo: tuple[BrainFrame, tuple[str, tuple[int, ...], bytes], tuple[np.ndarray, ...]] | None = None
-        """(틀, (dtype, 모양, 유전자 바이트), 켜진 뉴런): 마지막으로 켜짐을 판단한 유전자 하나(_masks_of)."""
+        self._coords: _NeuronCoords | None = None
+        """지금 틀의 뉴런 좌표 표(_active가 처음 쓸 때 만들고 틀이 바뀌면 버린다)."""
         self.show_message(S.BRAIN_EMPTY, [])
 
     # -- 대시보드 갈고리 --------------------------------------------------------
@@ -753,7 +803,7 @@ class BrainTile(_WatchTile):
         self.brain.clear_network()
         self._frame = None
         self._active_cache.clear()
-        self._masks_memo = None
+        self._coords = None
 
     def history_reset(self) -> None:
         self._active_cache.clear()
@@ -863,22 +913,19 @@ class BrainTile(_WatchTile):
                 frame = None
             self._frame = (layout, frame)
             self._active_cache.clear()
-            self._masks_memo = None
+            self._coords = None
         return self._frame[1]
 
-    def _masks_of(self, frame: BrainFrame, genome: np.ndarray) -> tuple[np.ndarray, ...]:
-        """유전자의 켜진 뉴런(frame.active_neurons, 은닉층마다 bool). 바로 앞에 물은 유전자와 내용이 같으면(바이트 비교) 다시
-        계산하지 않는다: 멈춘 그림은 통계 줄이 올 때마다 그때 챔피언의 켜짐을 두 번(_resized_rep의 크기 비교, _growth_marks의
-        그림) 물었고 챔피언은 검증 때만 바뀐다(측정 M12: 펌프마다 켜짐 계산 세 번 → 보는 세대 대표 한 번). 돌려준 배열은
-        고치지 않는다."""
+    def _active(self, frame: BrainFrame, genome: np.ndarray) -> tuple[np.ndarray, ...]:
+        """유전자의 켜진 뉴런(은닉층마다 bool). frame.active_neurons(genome)과 같은 답을 뉴런 좌표 표(_NeuronCoords)로 구한다.
+        모양이 틀과 다르면 FrameError(frame.active_neurons의 것)."""
         g = np.asarray(genome)
-        key = (g.dtype.str, g.shape, g.tobytes())
-        memo = self._masks_memo
-        if memo is not None and memo[0] is frame and memo[1] == key:
-            return memo[2]
-        masks = tuple(frame.active_neurons(g))  # 모양이 틀과 다르면 FrameError(기억하지 않음)
-        self._masks_memo = (frame, key, masks)
-        return masks
+        if g.shape != (frame.layout.dim,):
+            return tuple(frame.active_neurons(g))
+        coords = self._coords
+        if coords is None or coords.frame is not frame:
+            coords = self._coords = _NeuronCoords(frame)
+        return coords.masks(g)
 
     def active_at(self, generation: int) -> tuple[np.ndarray, ...] | None:
         """그 세대 대표의 켜진 뉴런(은닉층마다 bool). 화면 기록의 float16 대표(관찰·세대 대표 점, 파일을 읽지 않음), 없으면
@@ -896,12 +943,12 @@ class BrainTile(_WatchTile):
         entry = self.history.entry(int(generation))
         genome: np.ndarray | None = None
         if entry is not None and entry.map_genomes is not None:
-            genome = np.asarray(entry.map_genomes[entry.map_rep], dtype=np.float64)
+            genome = entry.map_genomes[entry.map_rep]  # float16 그대로: 0인지만 본다
         else:
             genome = self.dash.rep_genome(int(generation))
         if genome is None or genome.shape != (meta.dim,):
             return None
-        out = tuple(frame.active_neurons(genome))
+        out = self._active(frame, genome)
         if len(self._active_cache) >= ACTIVE_CACHE:
             self._active_cache.pop(next(iter(self._active_cache)))
         self._active_cache[int(generation)] = out
@@ -924,7 +971,7 @@ class BrainTile(_WatchTile):
         if now is None:
             return None
         try:
-            then = self._masks_of(frame, champion)
+            then = self._active(frame, champion)
         except FrameError:
             return None
         if _same_masks(now, then):
@@ -943,7 +990,7 @@ class BrainTile(_WatchTile):
         frame = self.frame_for(layout)
         if frame is None:
             return None, None, ""
-        active = list(self._masks_of(frame, genome))
+        active = list(self._active(frame, genome))
         fresh: list[np.ndarray] | None = None
         if gen is not None:
             before = self.active_at(int(gen) - FRESH_GENERATIONS)

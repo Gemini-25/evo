@@ -12,10 +12,10 @@
   GROW_TILE_FIXED_NO_HIDDEN.
 - 오른쪽(연결) 눈금은 늘 왼쪽(뉴런) 눈금 × (다 자란 연결 수 ÷ 틀 뉴런 합)이다(_sync_links_axis): 점선을 뉴런 좌표로 그리므로,
   타일을 끌거나 확대해 왼쪽 눈금이 바뀌면 오른쪽 눈금도 같이 바뀌어야 점선 높이와 눈금이 맞는다.
-- 갱신은 대시보드 펌프를 따른다(보일 때만). 세대가 하나 올 때의 갱신은 열 셋을 읽어 곡선 둘에 setData하고 보는 세대 세로선을
-  옮기는 것뿐이다(측정 M12, 목표: 뇌 그림의 켜짐 판정과 합쳐 펌프마다 0.5ms 이하). 세대마다 하지 않는 것: 둘째 ViewBox의 자리
-  맞추기(_sync_views: 그래프 크기가 바뀔 때만, 처음에는 갱신마다 해서 갱신의 4분의 1이었다), 틀 크기 세기(이름표가 바뀔 때만),
-  이미 보이는 그래프로 바꾸기.
+- 갱신은 대시보드 펌프를 따른다(보일 때만). 세대가 하나 올 때의 갱신은 새 통계 줄 하나를 계열에 잇고 곡선 둘에 setData하고
+  보는 세대 세로선을 옮기는 것뿐이다(측정 M12, 목표: 뇌 그림의 켜짐 판정과 합쳐 펌프마다 0.5ms 이하). 세대마다 하지 않는 것:
+  둘째 ViewBox의 자리 맞추기(_sync_views: 그래프 크기가 바뀔 때와 첫 갱신에만. 처음 구현은 갱신마다 해서 갱신의 4분의 1이었다),
+  계열을 처음부터 다시 만들기(_series_now: 표가 그대로 늘어난 동안은 새 줄만 본다), 틀 크기 세기(이름표가 바뀔 때만).
 
 학습 결과와 무관한 화면 전용 코드다.
 """
@@ -23,11 +23,12 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import Qt
 
 from evolab.app import strings as S
 from evolab.app.lab import history as hs
@@ -41,6 +42,20 @@ from evolab.app.lab.dashboard import (
     _pen,
 )
 from evolab.app.lab.watch_tiles import _focus_line, _WatchTile
+
+
+@dataclass(eq=False)
+class _Grown:
+    """GrowTile._series_now가 이어 쓰는 상태: 통계 표의 앞 n줄(모두 뉴런 수가 있음)까지 본 계열."""
+
+    base: Any
+    """brain_neurons 열의 배열(표가 비워지거나 용량이 늘면 다른 배열이 된다)."""
+    n: int
+    """지금까지 본 줄 수."""
+    events: list[int]
+    """자란(grow = 1) 줄 번호(오름차순)."""
+    events_array: np.ndarray
+    """events의 intp 배열(자란 줄이 늘 때만 다시 만든다)."""
 
 
 def frame_totals(brain: Any) -> tuple[int, int]:
@@ -102,10 +117,14 @@ class GrowTile(_WatchTile):
         """다 자란 연결 수(오른쪽 눈금 끝)."""
         self._links_range: tuple[float, float] | None = None
         """오른쪽 눈금에 마지막으로 놓은 세로 범위(_sync_links_axis)."""
-        self._views_rect: QRectF | None = None
-        """둘째 ViewBox를 마지막으로 맞춘 뉴런 그래프의 자리(_sync_views). 자리가 그대로면 갱신 때 다시 맞추지 않는다."""
+        self._views_synced = False
+        """둘째 ViewBox를 뉴런 그래프의 자리에 한 번이라도 맞췄는가(_sync_views)."""
         self._totals: tuple[Any, tuple[int, int]] | None = None
         """(뇌 구조, frame_totals): 이름표의 뇌 구조가 바뀔 때만 다시 센다."""
+        self._grown: _Grown | None = None
+        """표가 그대로 늘어나는 동안 이어 쓰는 계열 상태(_series_now). 없으면 다음 갱신이 처음부터 만든다."""
+        self._row_numbers = np.arange(256, dtype=np.intp)
+        """0, 1, 2, …(모든 줄에 값이 있는 계열의 줄 번호로 앞쪽을 잘라 쓴다)."""
         # 끌기·확대·fix_y·보기 되돌리기 모두 이 신호를 낸다(위 값들이 생긴 뒤에 잇는다)
         self.plot.vb.sigYRangeChanged.connect(self._sync_links_axis)
 
@@ -117,18 +136,12 @@ class GrowTile(_WatchTile):
         pass
 
     def _sync_views(self) -> None:
-        """둘째 ViewBox(오른쪽 눈금)를 뉴런 그래프와 같은 자리에 놓는다. 뉴런 그래프의 크기가 바뀔 때(sigResized) 부른다."""
-        rect = self.plot.vb.sceneBoundingRect()
-        self._views_rect = rect
-        self.links_view.setGeometry(rect)
+        """둘째 ViewBox(오른쪽 눈금)를 뉴런 그래프와 같은 자리에 놓는다. 뉴런 그래프의 크기가 바뀔 때(sigResized)와 첫 갱신에
+        부른다. 가로 범위는 setXLink가 따라가게 하고 세로 범위는 _sync_links_axis가 맞추므로 세대가 올 때는 할 일이 없다
+        (처음 구현은 갱신마다 불렀고 세대가 올 때 갱신의 4분의 1, 약 0.09ms가 여기였다: 측정 M12)."""
+        self._views_synced = True
+        self.links_view.setGeometry(self.plot.vb.sceneBoundingRect())
         self.links_view.linkedViewChanged(self.plot.vb, self.links_view.XAxis)
-
-    def _sync_views_if_moved(self) -> None:
-        """갱신 때: 뉴런 그래프의 자리가 마지막으로 맞춘 자리와 다를 때만 _sync_views. 가로 범위는 setXLink가 따라가게 하고
-        크기는 sigResized가 알리므로 세대가 올 때는 할 일이 없다(자리 비교 한 번). 처음에는 갱신마다 맞췄는데 세대가 올 때
-        갱신의 4분의 1(약 0.09ms)이 여기였다(측정 M12)."""
-        if self.plot.vb.sceneBoundingRect() != self._views_rect:
-            self._sync_views()
 
     def links_per_neuron(self) -> float:
         """오른쪽(연결) 눈금 ÷ 왼쪽(뉴런) 눈금 = 다 자란 연결 수 ÷ 틀 뉴런 합. 점선은 연결 수를 이 값으로 나눠 뉴런 좌표에 그린다."""
@@ -158,7 +171,7 @@ class GrowTile(_WatchTile):
         if d.table.n == 0:
             self._empty(S.GROW_TILE_EMPTY)
             return
-        series = hs.grow_series({name: d.col(name) for name in hs.GROW_COLUMNS if d.table.has(name)})
+        series = self._series_now()
         if series is None:
             if meta is None:
                 self._empty(S.GROW_TILE_EMPTY)
@@ -178,19 +191,69 @@ class GrowTile(_WatchTile):
             finite = series.links[np.isfinite(series.links)]
             self.full_links = int(finite.max()) if finite.size else 0
         self.series = series
-        self.xs = self.x_values()[series.rows]
-        self.gens = d.col("generation")[series.rows]
+        xs, gens = self.x_values(), d.col("generation")
+        if len(series.rows) != len(gens):  # 값이 없는 줄이 섞인 표: 값이 있는 줄만(모든 줄에 있으면 줄 번호 = 0, 1, 2, …)
+            xs, gens = xs[series.rows], gens[series.rows]
+        self.xs, self.gens = xs, gens
         top = float(max(1, self.total))
         self.neurons_curve.setData(self.xs, series.neurons)
         # 오른쪽 눈금(0..다 자란 연결 수)과 왼쪽 눈금(0..틀 뉴런 합)이 같은 높이가 되게 뉴런 좌표로 바꿔 그린다
         self.links_curve.setData(self.xs, series.links / self.links_per_neuron())
         self.keep_y(self.plot, 0.0, top)
         self._sync_links_axis()  # 세로 범위가 그대로여도 틀(눈금 비)이 바뀌었을 수 있다
-        self._sync_views_if_moved()
+        if not self._views_synced:
+            self._sync_views()
         self._place_focus()
         if self.stack.currentWidget() is not self.view:
             self.stack.setCurrentWidget(self.view)
         self.set_notes([])
+
+    def _series_now(self) -> hs.GrowSeries | None:
+        """지금 통계 표의 자라는 뇌 계열. 값은 history.grow_series(표의 열 셋)와 같다(자라는 뇌 실행이 아니면 None).
+
+        세대가 올 때마다 부르므로 표가 그대로 늘어난 동안은 새 줄만 본다: 통계 표(StatsTable)는 줄을 뒤에만 더하고 이미 쓴
+        줄은 고치지 않으며(나중에 생긴 열의 앞 줄은 NaN), 비우거나 용량을 늘리면 열 배열이 새것이 된다. 그래서 「뉴런 수 열이 같은
+        배열 + 줄 수가 줄지 않음 + 지금까지 모든 줄에 뉴런 수가 있음」이면 앞 줄의 계열은 그대로다. 이때 계열의 뉴런·연결은 표의
+        열을 그대로 가리키고(복사 없음, 그 줄들은 바뀌지 않는다) 줄 번호는 0, 1, 2, …다. 그 밖의 경우(처음, 다른 실행, 값이 없는
+        줄)는 history.grow_series로 처음부터 만든다. 처음 구현은 세대마다 처음부터 만들었다(측정 M12: 세대가 올 때 약 0.04ms)."""
+        table = self.dash.table
+        if not table.has("brain_neurons"):
+            self._grown = None
+            return None
+        n = table.n
+        neurons = table.col("brain_neurons")
+        links = table.col("brain_links") if table.has("brain_links") else None
+        grow = table.col("grow") if table.has("grow") else None
+        base = neurons.base
+        state = self._grown
+        if state is not None and base is state.base and n >= state.n:
+            added = False
+            for i in range(state.n, n):  # 보통 새 줄 하나
+                if not math.isfinite(neurons[i]):
+                    break
+                if grow is not None and grow[i] == 1.0:
+                    state.events.append(i)
+                    added = True
+            else:
+                state.n = n
+                if added:
+                    state.events_array = np.asarray(state.events, dtype=np.intp)
+                if n > len(self._row_numbers):
+                    self._row_numbers = np.arange(2 * n, dtype=np.intp)
+                return hs.GrowSeries(rows=self._row_numbers[:n], neurons=neurons,
+                                     links=links if links is not None else np.full(n, math.nan),
+                                     events=state.events_array)
+        columns = {"brain_neurons": neurons}
+        if links is not None:
+            columns["brain_links"] = links
+        if grow is not None:
+            columns["grow"] = grow
+        series = hs.grow_series(columns)
+        if series is not None and len(series.rows) == n and base is not None:  # 모든 줄에 값이 있다: 다음부터 새 줄만
+            self._grown = _Grown(base=base, n=n, events=series.events.tolist(), events_array=series.events)
+        else:
+            self._grown = None
+        return series
 
     def _empty(self, text: str) -> None:
         self.series = None

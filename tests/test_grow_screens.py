@@ -1069,10 +1069,11 @@ def test_a_generation_arrival_does_only_the_needed_work_in_the_grow_and_brain_ti
                                                                                     ) -> None:
     """측정 M12(v6 설계 9.3 v6.1-4: 뇌 그림 켜짐 판정 + 「뇌 크기」 갱신 ≤ 0.5ms/펌프)의 회귀 테스트. 위 T53은 같은 자료로 갱신을
     되풀이해 재는데, 진짜 학습에서는 갱신마다 통계 줄과 세대가 하나씩 새로 와 있다. 그때 처음 구현은 0.40~0.60ms였다(측정 A):
-    「뇌 크기」가 갱신마다 둘째 ViewBox의 자리를 다시 맞췄고(갱신의 4분의 1) 틀 크기를 다시 셌으며, 뇌 그림(멈춘 그림)은 켜짐을
-    세 번 계산했다(보는 세대 대표, 크기 비교용 챔피언, 그림용 챔피언. 자라는 동안에는 제목의 연결 수에 한 번 더). 시간 대신 한
-    일을 센다(공유 기계에서도 흔들리지 않게): 세대 하나에 둘째 ViewBox 맞추기 0번, 틀 크기 세기 0번, 곡선마다 setData 한 번, 켜짐
-    계산 한 번(보는 세대 대표)."""
+    「뇌 크기」가 갱신마다 둘째 ViewBox의 자리를 다시 맞췄고(갱신의 4분의 1) 계열을 처음부터 다시 만들었고 틀 크기를 다시 셌으며,
+    뇌 그림(멈춘 그림)은 켜짐을 틀의 정의대로(BrainFrame.active_neurons, 넘파이 호출 열댓 번) 세 번 계산했다(보는 세대 대표, 크기
+    비교용 챔피언, 그림용 챔피언. 자라는 동안에는 제목의 연결 수에 한 번 더). 시간 대신 한 일을 센다(공유 기계에서도 흔들리지
+    않게): 세대 하나에 둘째 ViewBox 맞추기 0번, 계열 처음부터 만들기 0번, 틀 크기 세기 0번, 곡선마다 setData 한 번, 켜짐 계산은
+    뉴런 좌표 표로 세 번(표 만들기 0번, 틀의 정의대로 0번)."""
     _spec, lay, meta, frame = lander()
     rows = grow_rows(frame, 80)
     dash = fun_dashboard(qtbot, tmp_path, rows[:40], meta)
@@ -1107,7 +1108,7 @@ def test_a_generation_arrival_does_only_the_needed_work_in_the_grow_and_brain_ti
 
     for gen in range(41, 46):  # 「새로 켜진 뉴런」 고리가 견주는 다섯 세대 전 대표(36..40)의 켜짐이 기억에 들어갈 때까지
         arrive(gen)
-    calls = {"sync": 0, "totals": 0, "active": 0, "neurons": 0, "links": 0}
+    calls = {"sync": 0, "series": 0, "totals": 0, "active": 0, "coords": 0, "masks": 0, "neurons": 0, "links": 0}
 
     def counted(key: str, fn: Any) -> Any:
         def wrapper(*args: Any, **kw: Any) -> Any:
@@ -1116,8 +1117,11 @@ def test_a_generation_arrival_does_only_the_needed_work_in_the_grow_and_brain_ti
         return wrapper
 
     monkeypatch.setattr(tile, "_sync_views", counted("sync", tile._sync_views))
+    monkeypatch.setattr(hs, "grow_series", counted("series", hs.grow_series))
     monkeypatch.setattr(grow_tile_mod, "frame_totals", counted("totals", grow_tile_mod.frame_totals))
     monkeypatch.setattr(BrainFrame, "active_neurons", counted("active", BrainFrame.active_neurons))
+    monkeypatch.setattr(B._NeuronCoords, "__init__", counted("coords", B._NeuronCoords.__init__))
+    monkeypatch.setattr(B._NeuronCoords, "masks", counted("masks", B._NeuronCoords.masks))
     monkeypatch.setattr(tile.neurons_curve, "setData", counted("neurons", tile.neurons_curve.setData))
     monkeypatch.setattr(tile.links_curve, "setData", counted("links", tile.links_curve.setData))
     times: list[tuple[float, float]] = []
@@ -1125,7 +1129,8 @@ def test_a_generation_arrival_does_only_the_needed_work_in_the_grow_and_brain_ti
         times.append(arrive(gen))
         assert tile.focus_line.value() == float(gen) and len(tile.xs) == gen  # 보는 세대 세로선과 계단은 새 세대까지
     assert brain.source_kind == "champion" and brain.source_generation == 38
-    assert calls == {"sync": 0, "totals": 0, "active": 20, "neurons": 20, "links": 20}, calls
+    assert calls == {"sync": 0, "series": 0, "totals": 0, "active": 0, "coords": 0, "masks": 60, "neurons": 20,
+                     "links": 20}, calls
     brain_ms, tile_ms = (float(v) * 1000 for v in np.median(np.asarray(times), axis=0))
     print(f"\n[T53 arrivals] on a generation arrival: brain tile refresh (whole, with the active check) {brain_ms:.3f} ms, "
           f"grow tile refresh {tile_ms:.3f} ms (median of 20, painting left out)")
@@ -1167,6 +1172,78 @@ def test_grow_tile_focus_x_matches_the_dashboard_axis_lookup(qtbot: QtBot, tmp_p
     assert isinstance(empty, GrowTile) and math.isnan(empty.focus_x(1))
 
 
+def test_grow_tile_series_follows_the_table_row_by_row_like_a_fresh_build(qtbot: QtBot, tmp_path: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """「뇌 크기」 타일은 통계 줄이 올 때 새 줄만 계열에 잇는다(GrowTile._series_now). 그 계열은 언제나 표 전체로 처음부터 만든
+    history.grow_series와 같아야 한다: 표의 용량이 늘 때(256줄), 같은 줄 수의 다른 실행으로 바뀔 때, 값이 없는 줄이 낄 때,
+    열이 나중에 생길 때."""
+    _spec, _lay, meta, frame = lander()
+    built = {"n": 0}
+    real = hs.grow_series
+
+    def counting(columns: Any) -> Any:
+        built["n"] += 1
+        return real(columns)
+
+    def check(tile: GrowTile, dash: D.Dashboard) -> None:
+        dash.flush()
+        want = real({name: dash.col(name) for name in hs.GROW_COLUMNS if dash.table.has(name)})
+        got = tile.series
+        assert (got is None) == (want is None)
+        if want is None or got is None:
+            return
+        for field in ("rows", "neurons", "links", "events"):
+            a, b = getattr(got, field), getattr(want, field)
+            assert a.dtype == b.dtype and np.array_equal(a, b, equal_nan=True), field
+        assert np.array_equal(tile.gens, dash.col("generation")[want.rows])
+        assert np.array_equal(tile.xs, dash.x_values(True)[want.rows])
+        x, y = tile.neurons_curve.getData()
+        assert np.array_equal(x, tile.xs) and np.array_equal(y, want.neurons)
+
+    rows = grow_rows(frame, 300)
+    dash = fun_dashboard(qtbot, tmp_path, rows[:3], meta)
+    tile = dash.tile("brainsize")
+    assert isinstance(tile, GrowTile)
+    monkeypatch.setattr(hs, "grow_series", counting)
+    for row in rows[3:]:  # 4..300째 줄: 256줄을 넘길 때 표의 열 배열이 새것이 된다
+        dash.add_row(row)
+        check(tile, dash)
+    assert built["n"] == 1 and len(tile.series.rows) == 300  # 용량이 늘 때 한 번만 처음부터
+    assert tile.series.events.tolist() == [9, 19, 29]
+    dash.set_axis("evaluations")  # 새 줄 없이 다시 그리기(가로축)
+    check(tile, dash)
+    dash.set_axis("generation")
+    check(tile, dash)
+    assert built["n"] == 1
+    dash.set_rows(grow_rows(frame, 300, every=7))  # 줄 수가 같은 다른 실행(7·14·21세대에 자람): 앞 실행의 계열이 남지 않는다
+    check(tile, dash)
+    assert tile.series.events.tolist() == [6, 13, 20] and built["n"] == 2
+    more = grow_rows(frame, 306, every=7)
+    dash.add_row(more[300])
+    check(tile, dash)
+    assert built["n"] == 2
+    dash.add_row({"generation": 302, "evaluations": 302 * 64, "elapsed": 151.0, "champion_score": 1.0})  # 값이 없는 줄
+    check(tile, dash)
+    assert tile.series.rows.tolist() == [*range(301)] and len(tile.xs) == 301
+    for row in more[302:]:  # 그 뒤 줄은 값이 있다: 값이 있는 줄만 고른 계열로 이어 간다
+        dash.add_row(row)
+        check(tile, dash)
+    assert tile.series.rows.tolist() == [*range(301), 302, 303, 304, 305]
+    # 열이 나중에 생기는 표: 처음에는 뉴런 수만, 그다음 줄부터 연결 수와 grow
+    dash.set_rows([{"generation": 1, "brain_neurons": 2}])
+    check(tile, dash)
+    assert np.isnan(tile.series.links).all() and tile.series.events.tolist() == []
+    dash.add_row({"generation": 2, "brain_neurons": 2, "brain_links": 24, "grow": 1})
+    check(tile, dash)
+    dash.add_row({"generation": 3, "brain_neurons": 4, "brain_links": 48, "grow": 0})
+    check(tile, dash)
+    assert tile.series.events.tolist() == [1] and tile.series.neurons.tolist() == [2.0, 2.0, 4.0]
+    # 크기 고정 실행으로 바뀌면 계열이 없다
+    dash.set_rows([{"generation": 1, "champion_score": 1.0}])
+    check(tile, dash)
+    assert tile.series is None and tile._grown is None
+
+
 def test_grow_series_copies_whole_columns_and_picks_rows_when_some_are_missing() -> None:
     """history.grow_series: 모든 줄에 뉴런 수가 있으면(자라는 뇌 실행) 열을 그대로 복사하고, 빈 줄이 섞이면 값이 있는 줄만 고른다.
     어느 쪽이든 표의 배열을 그대로 돌려주지 않는다(타일의 곡선이 붙잡고 있어도 표가 늘어날 때 바뀌지 않게)."""
@@ -1186,70 +1263,64 @@ def test_grow_series_copies_whole_columns_and_picks_rows_when_some_are_missing()
     assert s is not None and np.isnan(s.links).all() and s.links.shape == (2,) and s.events.tolist() == []
 
 
-def test_brain_tile_remembers_the_last_genome_masks_by_content(qtbot: QtBot, tmp_path: Path) -> None:
-    """BrainTile._masks_of: 같은 내용의 유전자를 연달아 물으면 켜짐을 다시 계산하지 않고, 내용이 바뀌면(같은 배열을 고쳐도) 다시
-    계산한다. 제목의 연결 수는 frame.counts_of로 센 것과 같다(앞쪽부터 채워지지 않은 유전자도)."""
-    _spec, lay, meta, frame = lander()
-    dash = fun_dashboard(qtbot, tmp_path, grow_rows(frame, 12), meta)
+@pytest.mark.parametrize("hidden", [[16], [6, 5], [4, 6, 3], [1], [1, 1]])
+def test_brain_tile_neuron_coordinate_table_gives_the_frame_active_neurons(qtbot: QtBot, tmp_path: Path,
+                                                                           hidden: list[int]) -> None:
+    """뇌 그림의 켜짐 판정(BrainTile._active, 뉴런 좌표 표)은 틀의 정의(BrainFrame.active_neurons)와 같은 답이다. 켜짐은 좌표마다
+    「0이 아닌가」의 OR이므로 좌표 하나만 0이 아닌 유전자를 모든 좌표에 대해 견주면 표 전체를 본 것이다. 그 밖에 -0.0·NaN·
+    float16(화면 기록의 대표)·무작위 유전자, 제목의 연결 수(frame.counts_of로 센 값과 같음), 틀린 모양(FrameError)."""
+    spec = compile_env(with_brain("lander", hidden=hidden))
+    lay = layout_for(spec)
+    meta, frame = WatchMeta.from_spec(spec, lay), BrainFrame(lay)
+    row = {"generation": 1, "champion_score": 0.0, "brain_neurons": sum(hidden), "brain_links": frame.full_links(), "grow": 0}
+    dash = fun_dashboard(qtbot, tmp_path, [row], meta)  # 자라는 뇌 실행(통계에 brain_neurons 열)
     brain = dash.tile("brain")
-    assert isinstance(brain, B.BrainTile)
-    g = grown_genome(lay, frame, [4])
-    first = brain._masks_of(frame, g)
-    assert [m.tolist() for m in first] == [m.tolist() for m in frame.active_neurons(g)]
-    assert brain._masks_of(frame, g.copy()) is first  # 다른 배열이라도 내용이 같으면 기억한 것
-    g[frame.bias(0, 9)] = 0.25  # 같은 배열을 고침: 열째 뉴런의 편향만 켜짐
-    second = brain._masks_of(frame, g)
-    assert second is not first and np.flatnonzero(second[0]).tolist() == [0, 1, 2, 3, 9]
+    assert isinstance(brain, B.BrainTile) and dash.brain_grows
+
+    def same(genome: np.ndarray) -> None:
+        got, want = brain._active(frame, genome), frame.active_neurons(genome)
+        assert len(got) == len(want) == len(hidden)
+        for g, w in zip(got, want, strict=True):
+            assert g.dtype == bool and g.shape == w.shape and g.tolist() == w.tolist()
+
+    same(np.zeros(lay.dim))
+    for c in range(lay.dim):
+        g = np.zeros(lay.dim)
+        g[c] = 0.5
+        same(g)
+    rng = np.random.default_rng(61)
+    for _ in range(50):
+        g = rng.normal(0.0, 0.5, lay.dim) * (rng.random(lay.dim) < rng.uniform(0.0, 0.3))
+        same(g)
+        same(g.astype(np.float16))
+    odd = np.zeros(lay.dim)
+    odd[frame.bias(0, 0)] = -0.0  # -0.0은 0
+    same(odd)
+    odd[frame.bias(len(hidden) - 1, hidden[-1] - 1)] = np.nan  # NaN은 0이 아님
+    same(odd)
+    assert brain._coords is not None and brain._coords.frame is frame  # 표는 한 번 만든 것
     with pytest.raises(FrameError):
-        brain._masks_of(frame, g[:-1])
-    assert brain._masks_of(frame, g) is second  # 틀린 모양은 기억하지 않는다
+        brain._active(frame, np.zeros(lay.dim - 1))
+    # 제목 끝의 연결 수: 앞쪽부터 채워지지 않은 유전자도 frame.counts_of로 센 값
+    g = grown_genome(lay, frame, [1] * len(hidden))
+    last = hidden[0] - 1
+    g[frame.bias(0, last)] = 0.25  # 첫 은닉층의 마지막 뉴런: 편향만 켜짐
     active, _fresh, label = brain._growth_marks(lay, g, None)
     assert active is not None and [a.tolist() for a in active] == [m.tolist() for m in frame.active_neurons(g)]
-    assert frame.counts_of(g) == (10,)
-    assert label == S.BRAIN_SIZE_LABEL.format(n=5, total=16, links=frame.links(frame.counts_of(g)))
+    n_on = int(sum(int(a.sum()) for a in active))
+    want = "" if n_on == sum(hidden) else S.BRAIN_SIZE_LABEL.format(n=n_on, total=sum(hidden),
+                                                                     links=frame.links(frame.counts_of(g)))
+    assert label == want
     brain.meta_changed()
-    assert brain._masks_memo is None
+    assert brain._coords is None
 
 
-# ---------------------------------------------------------------------------
-# 학습 프로세스와 함께(L 묶음의 trainer·session): 진짜 짧은 자라는 실행
-# ---------------------------------------------------------------------------
-def test_real_growing_run_reaches_the_lab_status_tile_and_brain(qtbot: QtBot, tmp_path: Path,
-                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    view = make_lab(qtbot, tmp_path, monkeypatch, "real.ini")
-    try:
-        assert view.load_env(LANDER)
-        view.rb_fast.setChecked(True)
-        view.popsize.setValue(6)
-        view.trials.setValue(2)
-        view.workers.setValue(1)
-        view.max_generations.setValue(7)
-        view.brain_combo.setCurrentIndex(view.brain_combo.findData(BRAIN_GROW))
-        view.grow_every.setValue(2)
-        assert view.start_new()
-        qtbot.waitUntil(lambda: view.state == "finished", timeout=180000)
-        grows = [int(float(r["grow"])) for r in view.rows]
-        neurons = [int(float(r["brain_neurons"])) for r in view.rows]
-        assert grows == [0, 1, 0, 1, 0, 1, 0] and neurons == [2, 2, 4, 4, 8, 8, 16]
-        assert view.status.text().count("뇌가 자랐습니다") == 1
-        assert S.LAB_STATUS_GROWN.format(gen=6, old=8, new=16, old_links=frame_links(8), new_links=frame_links(16)) \
-            in view.status.text()
-        dash = view.dashboard
-        dash.set_page("fun")
-        dash.flush()
-        tile = dash.tile("brainsize")
-        assert tile.series is not None and [int(tile.gens[i]) for i in tile.series.events] == [2, 4, 6]
-        assert [g for g, k, _ in dash.auto_marks if k == "grow"] == [2, 4, 6]
-        assert dash.brain_grows and dash.tile("brain").brain.active is not None
-        run_dir = view.run_dir
-        view.end_session()
-        assert view.open_run(run_dir)  # 다시 열면 「뇌」 줄이 그 실행 설정
-        assert view.brain_combo.currentData() == BRAIN_GROW and view.grow_every.value() == 2
-    finally:
-        view.client.abandon(timeout=60)
-        view.shutdown()
-
-
-def frame_links(n: int) -> int:
-    """착륙선(입력 9, 출력 3) 은닉 n개 뇌의 연결 수."""
-    return 9 * n + n * 3
+def test_same_masks_compares_bool_masks_by_value() -> None:
+    """brain_view._same_masks: bool 배열은 바이트로 견주고(값이 같으면 같음), 그 밖의 배열·모양이 다른 배열은 np.array_equal."""
+    a = (np.array([True, False, True]), np.array([False]))
+    assert B._same_masks(a, tuple(m.copy() for m in a)) and B._same_masks(None, None)
+    assert not B._same_masks(a, None) and not B._same_masks(None, a) and not B._same_masks(a, a[:1])
+    assert not B._same_masks(a, (np.array([True, True, True]), np.array([False])))
+    assert not B._same_masks(a, (np.array([True, False]), np.array([False])))  # 모양이 다름
+    assert B._same_masks(a, (np.array([1, 0, 1]), np.array([0])))  # bool이 아닌 배열은 값으로
+    assert not B._same_masks(a, (np.array([1, 0, 0]), np.array([0])))
