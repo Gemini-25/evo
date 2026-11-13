@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication
 
 from evolab import paths
 from evolab.app import strings as S
@@ -29,7 +29,7 @@ LANDER_TEXT = (paths.builtin_env_dir() / "lander.evoenv").read_text(encoding="ut
 
 def entries(n: int = 2) -> list[RaceEntry]:
     spec = M.compile_cached(LANDER_TEXT)
-    size = layout_for(spec).size
+    size = layout_for(spec).dim
     h = env_hash(compile_env(LANDER_TEXT).file)[:16]
     rng = np.random.default_rng(7)
     colors = ("#3987e5", "#d95926", "#199e70")
@@ -153,7 +153,3 @@ def test_focus_stays_on_a_field_the_user_chose(race: RaceDialog) -> None:
     view.next_button.setFocus()
     view.focus_start()
     assert QApplication.focusWidget() is view.start_button
-
-
-def _unused(w: QWidget) -> None:  # pragma: no cover - 타입 검사용
-    del w
