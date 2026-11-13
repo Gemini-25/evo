@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractButton, QApplication, QCheckBox, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QWidget
 
 from evolab import paths
 from evolab.app import strings as S

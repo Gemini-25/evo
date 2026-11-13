@@ -33,3 +33,26 @@ def _drop_app_wide_help_filters():
         context.uninstall_shortcuts(app)
     if tooltips is not None:
         tooltips.uninstall(app)
+
+
+@pytest.fixture(autouse=True)
+def _release_stuck_modifier_keys():
+    """(6.2.0 통합) Ctrl+Enter처럼 수정 키를 누른 키 입력이 창을 닫으면 놓는 이벤트가 그 창에 닿지 못해 Qt의 수정 키 상태
+    (QGuiApplication.keyboardModifiers)가 눌린 채 남는다. 그러면 다음 테스트의 selectRow가 Ctrl+클릭(골라 둔 줄에 더함)으로
+    바뀐다(안내 창 테스트 뒤의 기록 목록 테스트). 테스트가 끝날 때 남은 수정 키를 놓는다. Qt를 불러온 적이 없으면 아무것도 하지 않는다."""
+    yield
+    if "PySide6.QtWidgets" not in sys.modules:
+        return
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    app = QApplication.instance()
+    if not isinstance(app, QApplication) or app.keyboardModifiers() == Qt.KeyboardModifier.NoModifier:
+        return
+    probe = QWidget()
+    probe.show()
+    for key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta):
+        QTest.keyRelease(probe, key)
+    probe.close()
+    probe.deleteLater()
