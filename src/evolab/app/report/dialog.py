@@ -13,12 +13,15 @@
 
 from __future__ import annotations
 
+import functools
 import threading
+import weakref
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
+import shiboken6
+from PySide6.QtCore import QEventLoop, QObject, Qt, QTimer, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -45,8 +48,8 @@ from evolab.app.report.bundle import BundleOptions, ReportItem
 STATUS_MS = 10000
 """상태 줄 알림을 보이는 시간."""
 
-_open_boxes: set[QMessageBox] = set()
-"""부모 없이 띄운 비모달 상자가 사라지지 않게 쥐어 둔다(닫히면 뺀다)."""
+_open_boxes: dict[int, QMessageBox] = {}
+"""부모 없이 띄운 비모달 상자가 사라지지 않게 쥐어 둔다(상자가 지워지면 뺀다)."""
 
 
 class ReportDialog(QDialog):
@@ -217,20 +220,50 @@ def show_crash_box(parent: QWidget | None, line: str, opts: BundleOptions) -> No
     box.setText(S.DIAG_CRASH_TEXT)
     box.setDetailedText(line)
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
-    report = box.addButton(S.ERR_REPORT_BUTTON, QMessageBox.ButtonRole.ActionRole)
+    box.report_button = box.addButton(S.ERR_REPORT_BUTTON, QMessageBox.ButtonRole.ActionRole)  # type: ignore[attr-defined]
     tidy_box(box)  # 오류 상자와 같은 폭과 으뜸 「확인」(다듬기 U35)
     box.setModal(False)
     box.setWindowModality(Qt.WindowModality.NonModal)
     box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-    _open_boxes.add(box)
-
-    def done(_result: int) -> None:
-        _open_boxes.discard(box)
-        if box.clickedButton() is report:
-            open_report_dialog(parent, opts)
-
-    box.finished.connect(done)
+    _CrashBoxWatcher(box, opts)
+    key = id(box)
+    _open_boxes[key] = box
+    # 목록에서는 상자가 실제로 지워질 때 뺀다(닫힐 때 빼면 부모 없는 상자의 마지막 참조가 닫는 도중에 사라진다)
+    box.destroyed.connect(functools.partial(_forget_box, key))
     box.show()
+
+
+class _CrashBoxWatcher(QObject):
+    """상자의 자식: 상자가 닫히면 「오류 보고 묶음 만들기…」를 눌렀는지 보고, 그렇다면 다음 차례에 묶음 대화 상자를 연다.
+
+    상자 신호에 상자·부모를 붙잡은 클로저를 걸지 않는다(errors._BoxWatcher와 같은 까닭: 상자가 지워질 때 그 클로저가 쥔
+    파이썬 참조가 상자 소멸 도중 풀려 프로세스가 죽었다. 오프스크린 시험에서 부모가 보통 위젯일 때 확인).
+    """
+
+    def __init__(self, box: QMessageBox, opts: BundleOptions) -> None:
+        super().__init__(box)
+        self._opts = opts
+        box.finished.connect(self._done)
+
+    @Slot(int)
+    def _done(self, _result: int) -> None:
+        box = self.parent()
+        if not isinstance(box, QMessageBox) or box.clickedButton() is not getattr(box, "report_button", None):
+            return
+        owner = box.parentWidget()
+        origin = weakref.ref(owner) if owner is not None else None
+        QTimer.singleShot(0, functools.partial(_open_report_later, origin, self._opts))
+
+
+def _open_report_later(origin: weakref.ref[QWidget] | None, opts: BundleOptions) -> None:
+    owner = origin() if origin is not None else None
+    if owner is not None and not shiboken6.isValid(owner):
+        owner = None
+    open_report_dialog(owner, opts)
+
+
+def _forget_box(key: int, *_destroyed: Any) -> None:
+    _open_boxes.pop(key, None)
 
 
 def main_window() -> QMainWindow | None:

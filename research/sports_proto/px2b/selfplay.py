@@ -256,6 +256,8 @@ def train(args: argparse.Namespace) -> None:
     elapsed0 = 0.0
     resumes = 0
     ev = Evaluator(args.game, opts, hidden, args.workers)
+    # PX2b: 기준 상대 평가는 늘 표준 세계(옵션 없음 = DE 4.9-(3))에서 한다. 학습 세계에 옵션이 있으면 따로 둔 평가기.
+    ev_b = ev if not opts else Evaluator(args.game, {}, hidden, args.workers)
     if ckpt_path.exists():
         st = pickle.loads(ckpt_path.read_bytes())
         if st["meta"] != json.loads(json.dumps(meta)):
@@ -401,8 +403,9 @@ def train(args: argparse.Namespace) -> None:
                         seats, mine = seats_for(cls, r, cands[r], name, k % 2)
                         ms.append((seed, seats))
                         mines.append(mine)
-                    rr = ev.run(ms)
+                    rr = ev_b.run(ms)
                     eval_matches += len(ms)
+                    row[f"goals_{name}{r}"] = int(sum(1 for m, (_s, pts, info) in zip(mines, rr) if pts[m] == 1.0 and info["end"] == "goal"))
                     row[f"vs_{name}{r}"] = float(np.mean([pts[m] for m, (_s, pts, _i) in zip(mines, rr)]))
                     row[f"sc_{name}{r}"] = float(np.mean([s[m] for m, (s, _p, _i) in zip(mines, rr)]))
                     row[f"wins_{name}{r}"] = int(sum(1 for m, (_s, pts, _i) in zip(mines, rr) if pts[m] == 1.0))
@@ -441,6 +444,8 @@ def train(args: argparse.Namespace) -> None:
     np.savez_compressed(out / "champion.npz", **{f"r{r}_g{champ[r][0]}": np.append(champ[r][1], champ[r][2]) for r in roles})
     (out / "snap_elo.json").write_text(json.dumps({str(r): {str(g): e for g, e in snap_elo[r].items()} for r in roles}))
     ev.close()
+    if ev_b is not ev:
+        ev_b.close()
     _atomic_write(out / "DONE", json.dumps(summary).encode())
 
 
