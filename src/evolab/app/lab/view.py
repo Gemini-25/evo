@@ -362,6 +362,7 @@ class InspectPanel(QWidget):
         """없는 물체·관절에 단 센서의 신경망 입력 채널 이름(v2.1): 그 줄은 값 대신 이름 옆에 「(없음)」."""
         self.title = QLabel()
         self.title.setWordWrap(True)
+        self.title.setFont(style.font(self.title, "title"))  # 6.2.0 U11: 「개체 n · 점수」 / 「끝난 까닭」 두 줄
         self.time_label = QLabel()
         self.body = QLabel()
         self.body.setTextFormat(Qt.TextFormat.PlainText)
@@ -374,7 +375,9 @@ class InspectPanel(QWidget):
         close.clicked.connect(self.closed.emit)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # 6.2.0 U11: 값이 가로 스크롤 뒤에 숨지 않게
         scroll.setWidget(self.body)
+        self.setMinimumWidth(INSPECT_MIN_WIDTH)
         lay = QVBoxLayout(self)
         lay.addWidget(self.title)
         lay.addWidget(self.time_label)
@@ -409,7 +412,7 @@ class InspectPanel(QWidget):
             row = a[k]
             names = rep.channels if last and len(rep.channels) == len(row) else [str(j) for j in range(len(row))]
             for name, v in zip(names, row, strict=True):
-                lines.append(f"  {name:<12} {float(v):+5.2f} {_bar(float(v))}")
+                lines.append(f"{name:<12} {float(v):+5.2f} {_bar(float(v), INSPECT_BAR)}")
         self.body.setText("\n".join(lines))
 
     def _sensor_lines(self, rep: Replay, k: int) -> list[str]:
@@ -417,13 +420,17 @@ class InspectPanel(QWidget):
         옆에 「(없음)」: 좁은 패널(1280×800 창에서 약 13글자)에서도 가로로 밀지 않고 보인다."""
         lines = [S.LAB_INSPECT_SENSORS]
         raw = rep.raw[k] if rep.raw else {}
+        wide = self.width() >= INSPECT_RAW_WIDTH  # 6.2.0 U11: 정규화 전 값은 넓을 때만(좁으면 이름·입력값·막대 약 27자)
         for i, name in enumerate(rep.inputs):
             if name in self.absent:
                 lines.append(f"{name} {S.INSPECT_ABSENT}")
                 continue
             v = float(rep.observations[k, i])
             r = raw.get(name)
-            lines.append(f"{name:<14} {'' if r is None else f'{r:9.3f}'} → {v:+6.2f} {_bar(v / 5.0)}")
+            if wide:
+                lines.append(f"{name:<12} {'' if r is None else f'{r:9.3f}'} → {v:+5.2f} {_bar(v / 5.0, INSPECT_BAR)}")
+            else:
+                lines.append(f"{name:<12} {v:+5.2f} {_bar(v / 5.0, INSPECT_BAR)}")
         lines.append("")
         return lines
 
@@ -479,6 +486,14 @@ def structure_notice(config: Mapping[str, Any], spec: EnvSpec | None) -> str | N
     except ValueError:  # 유전자 배치를 만들 수 없는 환경(학습이 따로 알린다)
         return None
     return structure_note(TrainConfig.from_dict(dict(config)), layout, spec)
+
+
+INSPECT_MIN_WIDTH = 280
+"""들여다보기 패널의 최소 폭(6.2.0 U11: 1280 창에서 151px이라 값이 가로 스크롤 뒤에 숨었다)."""
+INSPECT_RAW_WIDTH = 360
+"""패널이 이 폭 이상일 때만 센서 줄에 정규화 전 값도 보인다."""
+INSPECT_BAR = 8
+"""들여다보기 막대의 반쪽 칸 수."""
 
 
 def _bar(v: float, width: int = 10) -> str:
@@ -806,6 +821,12 @@ class LabView(QWidget):
         split.addWidget(self.dashboard)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
+        # 6.2.0 U12: 두 나눔 막대의 자리를 설정에 남기고 다음에 되살린다(_restore_splits, 접힘 규칙을 깨면 버림)
+        self._split_h, self._split_v = top, split
+        self._panel_scroll = panel_scroll
+        self._split_check = False
+        for splitter in (top, split):
+            splitter.splitterMoved.connect(lambda _pos, _i: self._save_splits())
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(split)
@@ -1122,6 +1143,56 @@ class LabView(QWidget):
     def showEvent(self, event: Any) -> None:  # noqa: N802
         super().showEvent(event)
         self.refresh_user_envs()
+        if self._split_check:
+            QTimer.singleShot(0, self, self._check_splits)
+
+    # -- 6.2.0 U12: 나눔 막대 자리 기억 ----------------------------------------------
+    SPLIT_KEYS: Final = ("lab/split_h", "lab/split_v")
+
+    def _save_splits(self) -> None:
+        if self._restoring:
+            return
+        self._split_check = False  # 사용자가 옮긴 자리다
+        for key, splitter in zip(self.SPLIT_KEYS, (self._split_h, self._split_v), strict=True):
+            self.settings.setValue(key, splitter.saveState())
+
+    def _restore_splits(self) -> None:
+        """설정에 남은 나눔 막대 자리를 되살린다. 다 보이는지는 처음 보일 때 _check_splits가 확인한다."""
+        restored = False
+        for key, splitter in zip(self.SPLIT_KEYS, (self._split_h, self._split_v), strict=True):
+            state = self.settings.value(key)
+            if isinstance(state, (bytes, bytearray)) or hasattr(state, "data"):
+                try:
+                    restored = splitter.restoreState(state) or restored
+                except (TypeError, ValueError):
+                    pass
+        if restored and (min(self._split_h.sizes()) <= 0 or min(self._split_v.sizes()) <= 0):
+            self._reset_splits()  # 접힌(크기 0) 칸은 바로 버린다
+            return
+        self._split_check = restored
+
+    def _check_splits(self) -> None:
+        """되살린 자리에서 「진행」·「보기」의 세 위젯(학습 시작·멈춤·재생 배속)이 스크롤 없이 다 보이지 않으면 기본 배치로
+        돌아간다(접힘 규칙 T16, 다듬기 U12)."""
+        if not self._split_check or not self.isVisible():
+            return
+        self._split_check = False
+        for w in (self.btn_start, self.btn_pause, self.speed_combo, self.canvas):
+            region = w.visibleRegion()
+            if region.isEmpty() or region.boundingRect() != w.rect():
+                self._reset_splits()
+                return
+
+    def _reset_splits(self) -> None:
+        """기본 배치: 패널은 내용 폭(_PanelScroll.sizeHint), 위·아래는 늘림 비율 3:2."""
+        self._split_check = False
+        h = max(2, sum(self._split_h.sizes()) or self._split_h.width())
+        panel = min(h - 1, self._panel_scroll.sizeHint().width())
+        self._split_h.setSizes([h - panel, panel])
+        v = max(5, sum(self._split_v.sizes()) or self._split_v.height())
+        self._split_v.setSizes([v * 3 // 5, v - v * 3 // 5])
+        for key in self.SPLIT_KEYS:
+            self.settings.remove(key)
 
     def _restore_settings(self) -> None:
         # 네 값을 먼저 다 읽고 칸에 넣는다: 칸을 바꾸면 _save_settings가 불려 아직 안 읽은 값을 기본값으로 덮기 때문.
@@ -1161,6 +1232,7 @@ class LabView(QWidget):
             self._restoring = False
             self._brain_quiet = False
         self._update_view_rows()
+        self._restore_splits()
         self._check_pace_notice()
 
     def _update_view_rows(self) -> None:

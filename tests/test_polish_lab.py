@@ -345,3 +345,65 @@ def test_progress_widgets_stay_visible_with_long_status(qtbot: Any, tmp_path: Pa
             want = need if scale == 1.0 else SCALED_NEED[need]
             if want is not None:
                 assert slack[(name, (1280, 720))] >= want, (name, slack[(name, (1280, 720))], want, scale)
+
+
+# ---------------------------------------------------------------------------
+# U12: 나눔 막대 자리 기억(되살린 자리가 접힘 규칙을 깨면 버림)
+def _open(qtbot: Any, settings: QSettings) -> LabView:
+    view = LabView(settings=settings)
+    qtbot.addWidget(view)
+    view.resize(1280, 800)
+    view.show()
+    qtbot.waitExposed(view)
+    qtbot.wait(50)
+    return view
+
+
+def test_splitters_are_remembered(qtbot: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(paths, "user_env_dir", lambda: tmp_path / "environments")
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    first = _open(qtbot, settings)
+    try:
+        h, v = sum(first._split_h.sizes()), sum(first._split_v.sizes())
+        first._split_h.setSizes([h - 520, 520])
+        first._split_v.setSizes([v - 250, 250])
+        first._save_splits()  # 막대를 끌면 splitterMoved가 부른다
+        want = (first._split_h.sizes(), first._split_v.sizes())
+    finally:
+        first.shutdown()
+    second = _open(qtbot, settings)
+    try:
+        assert (second._split_h.sizes(), second._split_v.sizes()) == want
+        assert settings.contains("lab/split_h") and settings.contains("lab/split_v")
+    finally:
+        second.shutdown()
+
+
+@pytest.mark.parametrize("bad", ["collapsed_panel", "tiny_top"])
+def test_bad_remembered_splitters_fall_back_to_the_default(qtbot: Any, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    monkeypatch.setattr(paths, "user_env_dir", lambda: tmp_path / "environments")
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    first = _open(qtbot, settings)
+    try:
+        h, v = sum(first._split_h.sizes()), sum(first._split_v.sizes())
+        default = (first._split_h.sizes(), first._split_v.sizes())
+        if bad == "collapsed_panel":
+            first._split_h.setSizes([h, 0])
+        else:
+            first._split_v.setSizes([60, v - 60])  # 「재생 배속」이 접힘선 아래로
+        first._save_splits()
+    finally:
+        first.shutdown()
+    second = _open(qtbot, settings)
+    try:
+        qtbot.wait(50)
+        for w in (second.btn_start, second.btn_pause, second.speed_combo):  # 어느 쪽이든 세 위젯은 다 보인다
+            assert w.visibleRegion().boundingRect() == w.rect(), bad
+        if bad == "collapsed_panel":  # 접힌 패널은 버리고 기본 배치
+            assert not settings.contains("lab/split_h") and not settings.contains("lab/split_v")
+            assert second._split_h.sizes()[1] >= default[0][1] - 2
+        else:  # 위 칸의 최소 높이가 세 위젯을 지킨다: 되살린 자리를 그대로 쓴다
+            assert settings.contains("lab/split_v") and second._split_v.sizes()[0] < default[1][0]
+    finally:
+        second.shutdown()
