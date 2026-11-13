@@ -37,8 +37,9 @@ jobs:
   tests:
     runs-on: windows-latest
     # v2.0 빠른 테스트가 윈도우에서 1,880개 1,140초(19분)였다. v3.0은 2,300개 남짓이라 리눅스 비율로 어림하면 23분 안팎:
-    # 테스트 단계 40분, job 60분.
-    timeout-minutes: 60
+    # 테스트 단계 40분, job 60분. v6.1 출시 실행(43458310517)의 테스트 단계가 30분 23초였고 6.2.0은 테스트 파일이 112 → 148개
+    # (얼린 v6.1과 하위 프로세스로 견주는 시험 포함)라 같은 비율이면 40분에 닿는다(어림): 테스트 단계 60분, job 80분.
+    timeout-minutes: 80
     env:
       UV_PYTHON_DOWNLOADS: never
       # uv.lock과 pyproject가 어긋나면 sync와 run 모두 실패하게 한다(잠금을 조용히 고치지 않게).
@@ -64,7 +65,7 @@ jobs:
         run: uv sync
 
       - name: Tests
-        timeout-minutes: 40
+        timeout-minutes: 60
         run: uv run pytest -q
 
       # tests/test_installer_template.py의 윈도우 CI 설정 검사(W4·W5·W10·W11: release의 needs·if·permissions, 서명 조건,
@@ -227,6 +228,43 @@ jobs:
           if (-not ($out | Select-String -SimpleMatch -Quiet "원래 실행과 같습니다")) {
             Write-Error "reproduce did not print the same-as-original line"; exit 1
           }
+
+      # W2·W3(6.2.0 프리셋 만들기, 설계 6.1·C11): 배포본에 틀(assets\templates\*.evotpl)·조리법(assets\recipes\*.json)·내장 달리기
+      # (environments\running.evoenv)가 있고, 콘솔 exe가 조리법으로 만든 달리기(evolab preset running)가 배포본의 running.evoenv와 바이트까지
+      # 같으며(T14: 내장 파일 = build(조리법)), 그 파일로 bench가 돈다. 자체 점검 「프리셋」(내장 조리법 전부와 달리기 한 세대)은 앞의
+      # 콘솔 exe 자체 점검이 돌렸으므로 그 기록(cli 점검.log)에 통과 줄이 있는지 본다. 경로는 한글·빈칸이 든 변수로만 넘긴다.
+      - name: Sports preset files, preset command and bench with the console exe (Korean path)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "진화 실험실 테스트"
+          $cli = Join-Path $dest "evolab\evolab-cli.exe"
+          $internal = Join-Path $dest "evolab\_internal"
+          $templates = @(Get-ChildItem -LiteralPath (Join-Path $internal "assets\templates") -Filter *.evotpl).Count
+          $recipes = @(Get-ChildItem -LiteralPath (Join-Path $internal "assets\recipes") -Filter *.json).Count
+          "templates: $templates, recipes: $recipes"
+          if ($templates -lt 8) { Write-Error "expected at least 8 templates in the bundle, got $templates"; exit 1 }
+          if ($recipes -lt 4) { Write-Error "expected at least 4 recipes in the bundle, got $recipes"; exit 1 }
+          $envfile = Join-Path $internal "environments\running.evoenv"
+          if (-not (Test-Path -LiteralPath $envfile)) { Write-Error "no running.evoenv in the bundle"; exit 1 }
+          $made = Join-Path $dest "프리셋 결과\달리기.evoenv"
+          New-Item -ItemType Directory -Force (Split-Path $made) | Out-Null
+          & $cli preset running -o $made
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $a = (Get-FileHash -Algorithm SHA256 -LiteralPath $made).Hash
+          $b = (Get-FileHash -Algorithm SHA256 -LiteralPath $envfile).Hash
+          "preset: $a, shipped: $b"
+          if ($a -ne $b) { Write-Error "evolab preset running differs from the shipped running.evoenv"; exit 1 }
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          & $cli bench $envfile --workers 1,2 --generations 1 --popsize 8
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $log = Join-Path $dest "cli 점검.log"
+          if (Test-Path -LiteralPath $log) {
+            if (-not (Select-String -LiteralPath $log -Encoding utf8 -SimpleMatch -Quiet "[통과] 새 프리셋")) {
+              Write-Error "the presets self-test line is missing from the console exe log"; exit 1
+            }
+          } else { Write-Warning "no console self-test log (an earlier step failed)" }
 
       - name: Self-test windowed exe (evolab.exe, no stdout)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

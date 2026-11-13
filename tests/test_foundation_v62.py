@@ -502,11 +502,12 @@ def test_help_has_the_preset_page_and_the_new_glossary_terms() -> None:
 # 공용 시험 자료
 # ---------------------------------------------------------------------------
 def test_measured_running_file_is_the_prototype_byte_for_byte() -> None:
-    """측정(시드 넷 중 셋이 걸은 실행)에 쓴 원형 파일 그대로다. G1의 견본: 조리법으로 만든 달리기가 이것과 물리 동일해야 한다(D29)."""
+    """측정에 쓴 원형 파일 그대로다(리드 결정 LD1의 2: px/PX0b/envs/biped_bal100_fall5.evoenv, 넘어짐 감점 −5). G1의 견본:
+    조리법으로 만든 달리기가 이것과 물리 동일해야 한다(D29)."""
     import hashlib
 
     raw = MEASURED.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == "bceb73f7582c9f7a7987c385a150e161dd8180a06e620b765f450053c04091ef"
+    assert hashlib.sha256(raw).hexdigest() == "f28fdfe212aabf06b0b2dfa32fd76e8e81b99121db8f20add3c7c8345b532069"
     data = json.loads(raw)
     assert data["version"] == 1 and "editor" not in data  # scratch 패치로 만든 파일: 적힌 형식은 1, 키·권장 설정 없음
     spec = load_env(MEASURED)

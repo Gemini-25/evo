@@ -2286,7 +2286,15 @@ HELP_PAGES: Final = {
 
 ## 달리기
 
-두 발 막대 사람이 넘어지지 않고 오른쪽으로 멀리 가는 프리셋입니다. 점수는 달린 거리이고 넘어지면 끝납니다.
+두 발 막대 사람이 넘어지지 않고 오른쪽으로 멀리 가는 프리셋입니다. 점수는 15초 동안 달린 거리(1m에 1점)이고, 넘어지면 그 판이
+끝나며 5점을 잃습니다. 몸통이 기울면 균형 보조가 세워 줍니다.
+
+처음 학습 시험 9,600회씩은 시드만 다른 출전자 셋이 따로 연습하고, 그 가운데 가장 나은 하나로 학습을 잇습니다(예선).
+처음 몇천 회 동안은 몸을 던지고 넘어지는 일이 많습니다.
+
+기본 설정 그대로(학습 시험 48,000회) 시드 8개로 잰 결과, 8개 모두 넘어지지 않고 걷기를 배웠습니다. 다 배운 챔피언은
+판정 시드 100개에서 15초에 5.5~19.8m(가운데 값)를 갔고 넘어진 판은 0~9%였습니다. 시드에 따라 빨리 걷는 실행과 천천히
+걷는 실행으로 나뉩니다.
 """),
 "trouble": ("문제가 생겼을 때", """# 문제가 생겼을 때
 
@@ -2884,11 +2892,7 @@ DASH_MARK_GROW_FROM: Final = "{gen}세대 끝: 뇌가 자람(자라기 전 뉴�
 #   LAB_STATE_NAMES, LAB_HUD_LIVE·LAB_HUD_LIVE_SKIP·LAB_HUD_REPLAY·LAB_HUD_FAST·LAB_LABEL_CHAMPION, LAB_OTHER_PLATFORM,
 #   HINT_DASH_EMPTY, RACE_WHO_LABEL, CMP_REPEAT_NOTE, 단추 이름을 글자로 적던 글(VIDEO_NOTHING·RVL_CONTINUE_BUSY_TIP·LAB_ENV_EDIT_TIP·
 #   LAB_TIMELINE_TIP·LAB_FINISHED_INFO·MAIN_ENV_SENT)은 그 이름 상수를 이어 붙임.
-# HELP_TIPS에는 아직 더하지 않았다: 키가 연결표(app/help/anchors.py)에 있어야 하고 연결표의 위젯은 W·ED1·ED2·Hb가 만든다. 묶음 H가
-# 연결표와 함께 제자리에 더할 키와 값 = "editor.new_preset": ED_NEW_PRESET_TIP, "editor.rules": RULES_ADD_TIP, "editor.issues":
-# EDP_ISSUES_HINT, "editor.owner_agent": EDC_OWNER_AGENT_TIP, "editor.owner_world": EDC_OWNER_WORLD_TIP, "editor.world_kind":
-# EDP_WORLD_KIND_TIP, "preset.steps": PRESET_STEPS_TIP, "preset.preview": PRESET_PREVIEW_TIP, "preset.name": PRESET_NAME_TIP,
-# "preset.edit": PRESET_BTN_EDIT_TIP, "preset.play": PRESET_BTN_PLAY_TIP, "preset.lab": PRESET_BTN_LAB_TIP, "lab.new_preset": ED_NEW_PRESET_TIP.
+# HELP_TIPS의 새 키 13개는 연결표(app/help/anchors.py)와 함께 아래 「6.2.0 묶음 Ha」 블록이 제자리에 더한다(장부의 HELP_TIPS.update() 줄).
 # 묶음은 이 블록 뒤에 제 이름의 블록을 덧붙인다(값을 바꿀 때는 제자리에서).
 # ---------------------------------------------------------------------------
 # ---- 형식 4 검사 (spec/compiled.py: 묶음 R이 Issue.code와 함께 쓴다) ----
@@ -2917,7 +2921,7 @@ PRESET_NAME_TIP: Final = "프리셋의 이름입니다. 실험실의 환경 목�
 PRESET_NAME_DEFAULT: Final = "내 {sport}"
 PRESET_NAME_FALLBACK: Final = "내 프리셋"
 PRESET_NAME_NUMBERED: Final = "{name} {n}"
-PRESET_PREVIEW: Final = "미리보기 (끌어서 옮기고, 휠로 확대)"
+PRESET_PREVIEW: Final = "미리보기 (휠로 확대)"  # 6.2.0에는 끌기가 없다(D5)
 PRESET_PREVIEW_TIP: Final = "지금 고른 대로 만든 프리셋입니다. 고를 때마다 바로 바뀝니다."
 PRESET_PAGE_START: Final = "무엇을 만들까요?"
 PRESET_PAGE_START_SUB: Final = "종목 틀에서 시작하면 뒤 단계가 미리 채워져 있습니다. 뒤에서 무엇이든 바꿀 수 있습니다."
@@ -3072,7 +3076,7 @@ RULE_TITLES: Final = {
     "upright": "기울수록 감점", "save_energy": "힘을 아끼면 가산점", "out_ends": "밖으로 나가면 끝",
 }
 RULE_SENTENCES: Final = {
-    "distance": "{part}이(가) {direction}으로 간 거리만큼 점수 (1m에 {per_m}점)",
+    "distance": "{part}이(가) {direction}(으)로 간 거리만큼 점수 (1m에 {per_m}점)",
     "fall": "{parts}이(가) {what}에 닿거나 {root}이(가) {height}m보다 낮아지면 넘어짐 (실패로 끝, {penalty}점 감점)",
     "touch_ends": "{part}이(가) {what}에 닿으면 {outcome}",
     "touch_penalty": "{part}이(가) {what}에 닿아 있는 동안 1초에 {per_s}점 감점",
@@ -3282,6 +3286,8 @@ REC_WHY_UNREADABLE: Final = "읽을 수 없는 실행이라 쓸 수 없습니다
 # 6.2.0 묶음 PD (대화 상자: app/errors.py, app/report/dialog.py)가 더한 것
 # 오류 보고 묶음 창의 「저장…」(으뜸)이 꺼졌을 때 풍선에 붙는 까닭(다듬기 1.8)
 REP_SAVE_WHY_OFF: Final = "넣을 것을 하나 이상 고르면 만들 수 있습니다."
+
+# (이어서 묶음 PC가 더한 것: 다듬기 U25·U27·U28)
 # 경주 칸 머리의 순위 칩(다듬기 U25)
 RACE_RANK_CHIP: Final = "{rank}위"
 RACE_RANK_CHIP_TIE: Final = "공동 {rank}위"
@@ -3291,3 +3297,16 @@ REC_DELETE_DETAIL: Final = "통계, 체크포인트, 챔피언, 내보낸 파일
 REC_DELETE_CANCEL: Final = "취소"
 # 비교 화면(다듬기 U28): 고른 실행의 환경이 둘 이상일 때 그래프 아래 보조 글
 CMP_MIXED_ENVS: Final = "서로 다른 환경의 실행이 섞여 있습니다. 점수 크기는 환경마다 달라 바로 견줄 수 없습니다."
+
+
+# ---------------------------------------------------------------------------
+# 6.2.0 통합(설계 D47, 3.5 장부의 「6.2.0 통합」 줄): 종목 글을 잰 값으로. 달리기의 잰 값은 LD1의 C3(새 시드 13~20, 기본 설정·학습 시험
+# 48,000회, 판정 시드 100개): 8개 모두 통과, 가운데 값 5.5~19.8m, 넘어짐 0~9%. 「10m」를 약속하지 않는다(LD1의 5).
+# 공 넣기 연습(drill)의 카드 글은 PRESET_START_DRILL·PRESET_START_DRILL_SUB(바탕)이 맡는다(M5: 추진기 넷, 세 시드 모두 40세대 평균 80 이상).
+# ---------------------------------------------------------------------------
+SPORT_BLURBS: Final = {"running": "두 발 막대 사람이 넘어지지 않고 멀리 걷기를 배웁니다 (15초에 5~20m)"}
+"""안내 창 첫 카드의 한 줄(presets/recipe.STARTER_TEXT의 "SPORT_BLURBS.<종목>"). 6.3.0에 권투·축구(관문을 넘은 것만)."""
+HINT_LAB_IDLE_SPORT: Final = {
+    "running": "「{start}」을 누르면 막대 사람 {pop}명이 동시에 걷는 연습을 시작합니다. 처음에는 모두 넘어집니다.",
+}
+"""실험실 학습 전 캔버스 가운데 글(종목 환경일 때 HINT_LAB_IDLE_ANY 대신). 키는 내장 파일 이름(줄기)."""

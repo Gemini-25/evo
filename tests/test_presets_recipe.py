@@ -470,7 +470,7 @@ def test_measured_running_shape_is_reachable_by_a_recipe(tmp_path: Path) -> None
         "roles": [{"id": "runner", "label": "", "body": {"template": "measured_biped", "values": {}}}], "props": [],
         "rules": [{"rule": "distance", "part": "torso", "direction": "right", "per_m": 1.0},
                   {"rule": "fall", "parts": ["torso", "thigh_l", "thigh_r"], "what": "$ground", "root": "torso",
-                   "height": 0.8, "penalty": 1.0},
+                   "height": 0.8, "penalty": 5.0},  # LD1: 감점 −5
                   {"rule": "save_energy", "weight": 0.02}, {"rule": "out_ends", "outcome": "failure"},
                   {"rule": "time_limit", "seconds": 15.0}],
         "players": {"mode": "solo", "seats": [{"role": "runner", "count": 1, "spawn": "start"}]},

@@ -173,7 +173,7 @@ def test_world_kind_reaches_the_picker_and_missing_slot_is_named(qtbot: Any) -> 
     pal.buttons["tpl_body"].click()
     assert FakePicker.calls == [("body", "top")]
     click_at(c, 0.0, 0.0)
-    assert any(a.get("kind") == "move" for a in doc.items("actuators"))
+    assert any(a.get("kind") == "thruster" for a in doc.items("actuators"))  # B4(PM): 원형 선수는 추진기 넷
     # 땅이 없는 장면에 두 발 막대 사람: 넣기는 되고, 무엇이 더 있어야 하는지 상태 줄에
     c2, _ = make(qtbot)
     FakePicker.answer = (lib.get("biped"), {}, False)

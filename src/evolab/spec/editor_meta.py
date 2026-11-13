@@ -12,6 +12,8 @@ editor 구역은 해시(env_hash)와 런타임에서 빠지고 형식 번호와�
   표지(presets/rules.py가 쓰고 읽는다).
 - (6.2.0) editor.recipe = {"recipe": 1, …, "built": <만든 직후의 환경 해시>, "templates": {틀 id: sha256}}: 이 환경을 만든
   조리법(presets/recipe.py가 쓴다).
+- (6.2.0) editor.ignored = ["<검사 코드>@<어디>", …]: 「문제 목록」에서 「괜찮습니다」를 누른 살펴볼 것(app/editor/fixes.py가 쓰고
+  document.editor_checks가 읽어 뺀다). 해시·런타임 밖.
 
 이 모듈의 읽기 함수는 모양이 틀린 값을 「없는 것」으로 돌려준다(예외를 던지지 않는다: 사용자가 손으로 고친 파일도 열려야 한다).
 """
@@ -33,6 +35,8 @@ RULES_KEY = "rules"
 """editor 사전에서 규칙 표지 목록의 키(6.2.0, 설계 D39)."""
 RECIPE_KEY = "recipe"
 """editor 사전에서 조리법 표지의 키(6.2.0, 설계 D43)."""
+IGNORED_KEY = "ignored"
+"""editor 사전에서 「괜찮습니다」로 숨긴 살펴볼 것의 키(6.2.0, 묶음 ED2: app/editor/document.IGNORED_KEY와 같은 값)."""
 
 ViewBox = tuple[float, float, float, float]
 

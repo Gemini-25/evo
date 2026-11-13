@@ -1,0 +1,36 @@
+{
+ "label": "px5_grow_s1",
+ "dir": "px5",
+ "kind": "primary",
+ "game": "hide",
+ "opts": {},
+ "hidden": [
+  16
+ ],
+ "gens": [
+  0,
+  11,
+  16,
+  27,
+  32,
+  42,
+  47,
+  58,
+  63,
+  73,
+  79,
+  89,
+  94,
+  105,
+  110,
+  120,
+  125,
+  136,
+  141,
+  152
+ ],
+ "budget": 60000,
+ "n_candidates": 30,
+ "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_grow_s1/run",
+ "snaps_sha256": "c6cc9d74ede668c34c26fe3c8bda0812f948ee67bcf83991cb291cd838b948ba"
+}

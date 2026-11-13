@@ -164,9 +164,12 @@ def test_move_and_balance_marks_and_badges(qtbot: Any) -> None:
 def test_heading_and_mirrored_balance_marks_paint(qtbot: Any) -> None:
     doc = top_doc()
     T.insert_template(doc, default_library().get("disc"))
+    # B4(PM): 내장 원형 선수는 추진기 넷이라 밀기를 직접 붙인다
+    doc.add("actuators", {"kind": "move", "id": "go", "body": "disc", "mode": "xy", "max_force": 400.0, "max_speed": 3.5})
     go = doc.item(("actuators", "go"))
     assert go is not None
-    doc.set_value(("actuators", 0, "mode"), "heading")
+    index = [a.get("id") for a in doc.items("actuators")].index("go")
+    doc.set_value(("actuators", index, "mode"), "heading")
     doc.add("actuators", {"kind": "balance", "id": "keep", "body": "disc", "stiffness": 10.0, "max_torque": 5.0,
                           "target": 0.5})
     c = make(qtbot, doc)

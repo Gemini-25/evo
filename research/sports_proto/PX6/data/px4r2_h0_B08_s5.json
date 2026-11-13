@@ -1,0 +1,39 @@
+{
+ "label": "px4r2_h0_B08_s5",
+ "dir": "px4",
+ "kind": "primary",
+ "game": "pitch_easy",
+ "opts": {
+  "ball_w": 0.1,
+  "hit_floor": 0.1,
+  "ball_loss": true,
+  "bat_len": 0.8
+ },
+ "hidden": [],
+ "gens": [
+  0,
+  16,
+  27,
+  42,
+  53,
+  68,
+  79,
+  94,
+  110,
+  120,
+  136,
+  146,
+  162,
+  178,
+  188,
+  204,
+  214,
+  230,
+  240,
+  256
+ ],
+ "budget": 100000,
+ "n_candidates": 50,
+ "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08_s5/run",
+ "snaps_sha256": "8122415ffaf3e0660fe7ec560d88ad91ec75dea612db613b11e449786499af4d"
+}

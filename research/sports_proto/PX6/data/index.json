@@ -1,0 +1,710 @@
+[
+ {
+  "label": "px4_grow_s1",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_grow_s1/run",
+  "snaps_sha256": "001f771e7330e66b4ba44bbb03ca041b208f2c435d160a4b061484ef4e3007e9"
+ },
+ {
+  "label": "px4_grow_s2",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_grow_s2/run",
+  "snaps_sha256": "02aacbe49fa6ee1a9e6d6631968513ac443d1c47d0dc6cb9a057470e724a0f32"
+ },
+ {
+  "label": "px4_grow_s3",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_grow_s3/run",
+  "snaps_sha256": "0cf2f830ed6ecbb1584217d8c4d5565d6e82bb8e11971d382b1dc3c14a74ce27"
+ },
+ {
+  "label": "px4_h0_s1",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h0_s1/run",
+  "snaps_sha256": "c883376cd36fd1168185e175681f1700cbe04a7245e4ed5dd44001fc4af84312"
+ },
+ {
+  "label": "px4_h0_s2",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h0_s2/run",
+  "snaps_sha256": "f58c53c47ba76fa3fc2077d7aa74c19773c1971412b94d581a276d36f227d9e7"
+ },
+ {
+  "label": "px4_h0_s3",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h0_s3/run",
+  "snaps_sha256": "237eabbb92175c8d3db3cdd28179ec1eac30ae6ed0c4dbb5d6b4d6c520499675"
+ },
+ {
+  "label": "px4_h16_s1",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h16_s1/run",
+  "snaps_sha256": "fcbb9195bb7412067c68c53cf0f3577b302e10d9b5473537a0a40c620eb11acc"
+ },
+ {
+  "label": "px4_h16_s2",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h16_s2/run",
+  "snaps_sha256": "1af39827be3d782cea853f82f2aa8de2719523aeb6f0e82c072987af308213ed"
+ },
+ {
+  "label": "px4_h16_s3",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4_h16_s3/run",
+  "snaps_sha256": "af29d27cd3c65dc8c92f6704764a680b0b0bb21464342f91cbbd1f89ed90e911"
+ },
+ {
+  "label": "px4r2_grow_B08Z14_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08Z14_s4/run",
+  "snaps_sha256": "63a268f3ba667b3a5aa330c58fcb733e0bf59eac16f9c0923a1005e2f1512a1c"
+ },
+ {
+  "label": "px4r2_grow_B08Z14_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08Z14_s5/run",
+  "snaps_sha256": "a79c616a2744750fb6d1c3446722c2020040c14890125b3c441e955cfe3fc224"
+ },
+ {
+  "label": "px4r2_grow_B08Z14_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08Z14_s6/run",
+  "snaps_sha256": "de6fb919c40538a5a67481f95ad7b028250fea678a1c7d418c94093c7ff80be6"
+ },
+ {
+  "label": "px4r2_grow_B08_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08_s4/run",
+  "snaps_sha256": "a533be8e593af452ac803add2c59bb63a5f4505d20fe2b2f18140f8746c2868f"
+ },
+ {
+  "label": "px4r2_grow_B08_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08_s5/run",
+  "snaps_sha256": "d17837136b1e7e1e47ed6de46ba759ff09070c2b1cd7f05727c91041d3fc81d5"
+ },
+ {
+  "label": "px4r2_grow_B08_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_B08_s6/run",
+  "snaps_sha256": "cac3306e93804c910ae81856dc2348bf84e68155f15b522bd941d9b619ff6763"
+ },
+ {
+  "label": "px4r2_grow_Z14_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_Z14_s4/run",
+  "snaps_sha256": "88842302549a472c98fb8a57cdb1d0bf98e3e5cb147a7e81f7da9f6d80b2bfc2"
+ },
+ {
+  "label": "px4r2_grow_Z14_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_Z14_s5/run",
+  "snaps_sha256": "b036bf47d413416bf1b802427f79d04df316f9ddaa1cd15e616d807f829a689d"
+ },
+ {
+  "label": "px4r2_grow_Z14_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_grow_Z14_s6/run",
+  "snaps_sha256": "5acc289b686be027bb78ded43d1f0db922459ac207981888b0063a9f2bb27930"
+ },
+ {
+  "label": "px4r2_h0_B08Z14_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08Z14_s4/run",
+  "snaps_sha256": "04e7bcf96c49e0491242efb97310b4cd28180fa8210bf066e30c13f2579eb531"
+ },
+ {
+  "label": "px4r2_h0_B08Z14_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08Z14_s5/run",
+  "snaps_sha256": "3edb8aa7287d5cca8f4543b2d12caf3229ca3750255348f4531350a053c85163"
+ },
+ {
+  "label": "px4r2_h0_B08Z14_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08Z14_s6/run",
+  "snaps_sha256": "5511eae7850fb071d84eff33bfffce418ec07ad57459c00ed006c694a040bd2c"
+ },
+ {
+  "label": "px4r2_h0_B08_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08_s4/run",
+  "snaps_sha256": "e1f8ff34730e43a1c1da6f54d164df4f6a520ac8f838b6a76f4a3289f5839f68"
+ },
+ {
+  "label": "px4r2_h0_B08_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08_s5/run",
+  "snaps_sha256": "8122415ffaf3e0660fe7ec560d88ad91ec75dea612db613b11e449786499af4d"
+ },
+ {
+  "label": "px4r2_h0_B08_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "bat_len": 0.8
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_B08_s6/run",
+  "snaps_sha256": "cff0cbb245ef0bb5121e98f038a5ac979ca3ad6e51c6260466f6ee4225271523"
+ },
+ {
+  "label": "px4r2_h0_Z14_s4",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_Z14_s4/run",
+  "snaps_sha256": "5da3dfb020718e7af3f427b063bc98a53ddffddde8f94d728e14ad6c01214048"
+ },
+ {
+  "label": "px4r2_h0_Z14_s5",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_Z14_s5/run",
+  "snaps_sha256": "2497c798209b9ad846cde6e8d8c7380a3d2a6c59d0532d17a6e9ef45c43c3307"
+ },
+ {
+  "label": "px4r2_h0_Z14_s6",
+  "dir": "px4",
+  "kind": "primary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true,
+   "zone": [
+    0.4,
+    2.0
+   ]
+  },
+  "hidden": [],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/farm/px4r2_h0_Z14_s6/run",
+  "snaps_sha256": "43357a3b8e78ee496dccc727abfba27e6efb5f0d9098dc2de0f2666caa94d495"
+ },
+ {
+  "label": "px5_grow_s1",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_grow_s1/run",
+  "snaps_sha256": "c6cc9d74ede668c34c26fe3c8bda0812f948ee67bcf83991cb291cd838b948ba"
+ },
+ {
+  "label": "px5_grow_s2",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_grow_s2/run",
+  "snaps_sha256": "8c23c22dd70ec2ef8eb6be4251872f240bf9054aee300e306c3ca05ccc9f775b"
+ },
+ {
+  "label": "px5_grow_s3",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_grow_s3/run",
+  "snaps_sha256": "6eacfbba0ca014b03652fe3da4d6ea8ff1cfcbd4c886d207423c48f39eec9723"
+ },
+ {
+  "label": "px5_h0_s1",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h0_s1/run",
+  "snaps_sha256": "71e8f615a8eab8b2f8bba5b07e2bd6cfc88f5a386871e7d282621d51d17cae6e"
+ },
+ {
+  "label": "px5_h0_s2",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h0_s2/run",
+  "snaps_sha256": "88f95ebcacef6ab95e41a5ddde1eccdf2542f390c6307f8110b3c4158b8c6959"
+ },
+ {
+  "label": "px5_h0_s3",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h0_s3/run",
+  "snaps_sha256": "1ae63f5d375b6be42f594e6ac336ddcb40f422185614531b78460af1a9915ccf"
+ },
+ {
+  "label": "px5_h16_s1",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h16_s1/run",
+  "snaps_sha256": "565c4db8f2ff015fd019bc511a2d10421ac8883ce03591e8d0bf8619c704fec4"
+ },
+ {
+  "label": "px5_h16_s2",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h16_s2/run",
+  "snaps_sha256": "a7b0e3183b30b7ca20c21603e2806a39a65b4235ca34337a5d2843a6feab8e10"
+ },
+ {
+  "label": "px5_h16_s3",
+  "dir": "px5",
+  "kind": "primary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [
+   16
+  ],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/farm/px5_h16_s3/run",
+  "snaps_sha256": "97911f7cb0bd2a730df00a2acecce5c232fc25e98832850d3c24dd63eeb38163"
+ },
+ {
+  "label": "px4v_h16_s2",
+  "dir": "px4",
+  "kind": "secondary",
+  "game": "pitch_easy",
+  "opts": {
+   "ball_w": 0.1,
+   "hit_floor": 0.1,
+   "ball_loss": true
+  },
+  "hidden": [
+   16
+  ],
+  "budget": 100000,
+  "n_candidates": 50,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX4/verify/farm/px4v_h16_s2/run",
+  "snaps_sha256": "073d2abcd6c51f6b5495ef31107a76e80f1e678693affa9741723b720f7ce5ee"
+ },
+ {
+  "label": "px5v_h0_s1",
+  "dir": "px5",
+  "kind": "secondary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/verify/farm/px5v_h0_s1/run",
+  "snaps_sha256": "dda788d994ad483c1435971ee3f81fc831a1d61a4dec7ac8b83d07e27a6b7a04"
+ },
+ {
+  "label": "px5v_h0_s4",
+  "dir": "px5",
+  "kind": "secondary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/verify/farm/px5v_h0_s4/run",
+  "snaps_sha256": "47e15644330854af2f5b4af8c5b8deb2cbd02eee66b8635623404ad88af48fba"
+ },
+ {
+  "label": "px5v_h0_s5",
+  "dir": "px5",
+  "kind": "secondary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/verify/farm/px5v_h0_s5/run",
+  "snaps_sha256": "bd533575b87be476a692cd6ebff1d962d2bb98754e1a132bf467d7825726c192"
+ },
+ {
+  "label": "px5v_h0_s6",
+  "dir": "px5",
+  "kind": "secondary",
+  "game": "hide",
+  "opts": {},
+  "hidden": [],
+  "budget": 60000,
+  "n_candidates": 30,
+  "source": "/tmp/claude-0/-home-user-evo/6ff254e5-e86e-5068-a687-5ac6a7065af0/scratchpad/sports/px/PX5/verify/farm/px5v_h0_s6/run",
+  "snaps_sha256": "9f14f5f8a0e4cebe464185d5513fe420510ad68d007355b282f563050cbc7a3b"
+ }
+]
