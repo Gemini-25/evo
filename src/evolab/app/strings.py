@@ -3243,6 +3243,21 @@ HINT_LAB_MORE_GENS: Final = "{n}세대 더 학습"
 HINT_LAB_MORE_GENS_TIP: Final = "「" + LAB_MAX_GENERATIONS + "」 칸을 {n}만큼 늘리고 설정을 적용한 뒤 바로 이어서 학습합니다."
 HINT_LAB_CHANGE_STOP: Final = "정지 조건 바꾸기"
 HINT_LAB_CHANGE_STOP_TIP: Final = "오른쪽 패널의 「" + LAB_STOP_GROUP + "」 묶음으로 갑니다. 바꾼 뒤 「" + LAB_APPLY + "」 단추를 누르세요."
+# 연결표(app/help/anchors.py)의 6.2.0 키와 함께 HELP_TIPS에 제자리에서 더한다(장부 「HELP_TIPS.update()」, 위 바탕 블록의 주석 그대로).
+# 위젯이 이미 단 풍선은 그대로(apply_tooltips는 빈 풍선만 채움). 「이건 뭐예요?」·`evolab://show/` 짚기 글이 이 글을 쓴다
+HELP_TIPS["editor.new_preset"] = ED_NEW_PRESET_TIP
+HELP_TIPS["editor.rules"] = RULES_ADD_TIP
+HELP_TIPS["editor.issues"] = EDP_ISSUES_HINT
+HELP_TIPS["editor.owner_agent"] = EDC_OWNER_AGENT_TIP
+HELP_TIPS["editor.owner_world"] = EDC_OWNER_WORLD_TIP
+HELP_TIPS["editor.world_kind"] = EDP_WORLD_KIND_TIP
+HELP_TIPS["preset.steps"] = PRESET_STEPS_TIP
+HELP_TIPS["preset.preview"] = PRESET_PREVIEW_TIP
+HELP_TIPS["preset.name"] = PRESET_NAME_TIP
+HELP_TIPS["preset.edit"] = PRESET_BTN_EDIT_TIP
+HELP_TIPS["preset.play"] = PRESET_BTN_PLAY_TIP
+HELP_TIPS["preset.lab"] = PRESET_BTN_LAB_TIP
+HELP_TIPS["lab.new_preset"] = ED_NEW_PRESET_TIP
 # 직접 조종 캔버스 가운데의 결과 띠(6.2.0 다듬기 U13 ②): 한 판이 끝나면 두 줄. 점수는 style.fmt_score
 PLAY_RESULT_BAND: Final = "{label} · {score}점"
 PLAY_RESULT_KEYS: Final = "R 다시 시작 · N 새 시드"

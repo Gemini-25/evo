@@ -119,3 +119,78 @@ def test_window_tips_knows_the_preset_wizard_and_wraps_long_tips(qtbot: Any, iso
         QToolTip.hideText()
     finally:
         app.removeEventFilter(flt)
+
+
+# ---------------------------------------------------------------------------
+# 연결표가 합쳐진 뒤(마지막 조각): 에디터의 새 부분(틀 단추, 소유 두 칸, 세계 물체 움직임, 세계 종류, 고치기·괜찮습니다 단추,
+# 오른쪽 go_bar)과 실험실 「새 프리셋…」 단추. 글이 있는 단추도 **제 풍선**이 있어야 한다(새 칸마다 풍선: 하드 규칙 2)
+# ---------------------------------------------------------------------------
+AUDIT_DIR = Path(__file__).resolve().parent / "data" / "audit"
+
+
+def _own_tip(widget: QWidget) -> bool:
+    return bool(widget.toolTip())
+
+
+def test_new_editor_parts_have_their_own_tips(qtbot: Any, isolated: Path) -> None:
+    from PySide6.QtWidgets import QAbstractButton
+
+    from evolab.app.editor.view import EditorView
+
+    view = EditorView()
+    qtbot.addWidget(view)
+    view.resize(1280, 720)
+    view.show()
+    qtbot.waitExposed(view)
+    pal = view.palette
+    pal.set_owner_mode("world")  # 「움직임」 고르기가 보이게
+    qtbot.wait(10)
+    named = {"tpl_body": pal.buttons["tpl_body"], "tpl_prop": pal.buttons["tpl_prop"], "owner_agent": pal.owner_agent,
+             "owner_world": pal.owner_world, "world_motion": pal.world_motion}
+    assert pal.world_motion.isVisibleTo(view)
+    kind_buttons = view.tabs.world_tab.kind_row.findChildren(QAbstractButton)
+    assert kind_buttons
+    named.update({f"world_kind[{k}]": b for k, b in enumerate(kind_buttons)})
+    go = view.go_bar.findChildren(QAbstractButton)
+    named.update({f"go_bar[{k}]": b for k, b in enumerate(go) if b.isVisibleTo(view) and b.text()})
+    missing = [name for name, w in named.items() if not _own_tip(w)]
+    assert missing == []
+    r = audit(pal, "palette")
+    assert r.controls > 0 and r.bare == [], r.bare
+    view.tabs.setCurrentWidget(view.tabs.world_tab)
+    assert audit(view.tabs.world_tab, "world tab").bare == []
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in AUDIT_DIR.glob("*.evoenv")))
+def test_fix_and_ignore_buttons_have_tips(qtbot: Any, isolated: Path, name: str) -> None:
+    from evolab.app.editor.view import EditorView
+
+    view = EditorView()
+    qtbot.addWidget(view)
+    view.resize(1280, 720)
+    view.show()
+    qtbot.waitExposed(view)
+    assert view.load_text((AUDIT_DIR / name).read_text(encoding="utf-8"))
+    code = name.removesuffix(".evoenv")
+    issues = view.tabs.issues_tab
+    qtbot.waitUntil(lambda: issues.row_of(code) >= 0, timeout=5000)
+    view.tabs.setCurrentWidget(issues)
+    qtbot.wait(10)
+    seen = 0
+    for row in range(len(issues.issues)):
+        for button in (issues.fix_button(row), issues.ignore_button(row)):
+            if button is not None:
+                seen += 1
+                assert _own_tip(button), (name, row, button.text())
+    assert issues.fix_button(issues.row_of(code)) is not None and seen > 0
+    r = audit(issues, f"issues {name}")
+    assert r.controls > 0 and r.bare == [], (name, r.bare)
+
+
+def test_lab_new_preset_button_has_its_tip(qtbot: Any, isolated: Path) -> None:
+    from evolab.app import strings as S
+    from evolab.app.lab.view import LabView
+
+    lab = LabView()
+    qtbot.addWidget(lab)
+    assert lab.btn_new_preset.toolTip() == S.HELP_TIPS["lab.new_preset"]

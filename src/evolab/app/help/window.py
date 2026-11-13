@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -134,6 +135,17 @@ def point_at(widget: QWidget, text: str, more: tuple[str, str | None] | None = N
     return point(QWidget.window(widget), widget, text, more)  # type: ignore[arg-type]
 
 
+def _reveal_tabs(widget: QWidget) -> None:
+    """widget을 감싼 탭 위젯들을 widget이 든 쪽으로 돌린다(6.2.0: 에디터 아래 「규칙」·「문제 목록」 탭 안의 연결표 위젯)."""
+    w: QWidget | None = widget
+    while w is not None:
+        stack = w.parentWidget()
+        tabs = stack.parentWidget() if isinstance(stack, QStackedWidget) else None
+        if isinstance(tabs, QTabWidget) and tabs.indexOf(w) >= 0 and tabs.currentWidget() is not w:
+            tabs.setCurrentWidget(w)
+        w = stack
+
+
 def _ensure_visible(widget: QWidget) -> None:
     """widget을 감싼 스크롤 영역들이 widget을 보여 주게 스크롤한다."""
     w = widget.parentWidget()
@@ -175,6 +187,8 @@ def show_anchor(key: str, parent: QWidget | None = None) -> QWidget | None:
             if dash is not None and page is not None and getattr(dash, "page", page) != page:
                 dash.set_page(page)
     widget = anchors.resolve(root, key)
+    if widget is not None:
+        _reveal_tabs(widget)
     if widget is None or not widget.isVisibleTo(QWidget.window(widget)) or not QWidget.window(widget).isVisible():
         return None
     _ensure_visible(widget)

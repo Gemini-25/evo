@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow, QToolButton, QWidget
 
 from evolab.app import strings as S
 
@@ -134,6 +134,31 @@ def _table() -> dict[str, Anchor]:
     table["play.load"] = Anchor("play", text="PLAY_LOAD_RECORD")
     # 주 창 탭 줄 오른쪽 모서리 「? 도움말」 단추(I 묶음 help/setup.py가 tabs.setCornerWidget으로 단다)
     table["main.help_corner"] = Anchor("main", path="tabs.cornerWidget()")
+    # 6.2.0 「프리셋 만들기」(최종 설계 3.1의 위젯 이름, DU 4.8). 에디터 도구 줄의 「새 프리셋…」은 QAction의 단추라 글로 찾는다
+    # (빈 캔버스 안내 카드의 같은 글 단추는 _in_hint가 뺀다)
+    table["editor.new_preset"] = Anchor("editor", text="ED_NEW_PRESET")
+    editor = {
+        "rules": "tabs.rules_tab.add_button",
+        "issues": "tabs.issues_tab",
+        "world_kind": "tabs.world_tab.kind_row",
+        "owner_agent": "palette.owner_agent",
+        "owner_world": "palette.owner_world",
+        "world_motion": "palette.world_motion",
+        "go_bar": "go_bar",
+    }
+    table.update({f"editor.{key}": Anchor("editor", path=f"editor.{attr}") for key, attr in editor.items()})
+    table["lab.new_preset"] = Anchor("lab", path="lab.btn_new_preset")
+    # 「새 프리셋」 창(PresetWizard)의 속성. 틀 보관함 창도 같은 화면 "preset"이지만 이 속성이 없어 None으로 풀린다
+    preset = {
+        "steps": "rail",
+        "preview": "preview",
+        "name": "name_edit",
+        "edit": "btn_edit",
+        "play": "btn_play",
+        "lab": "btn_lab",
+        "reset_step": "btn_reset_step",
+    }
+    table.update({f"preset.{key}": Anchor("preset", path=attr) for key, attr in preset.items()})
     return table
 
 
@@ -231,10 +256,16 @@ def _in_hint(button: QWidget) -> bool:
     return False
 
 
+def _button_text(button: QAbstractButton) -> str:
+    """단추 글. 도구 줄의 액션 단추는 액션 글(Qt가 단추에서는 끝의 「…」를 뗀다: 에디터 「새 프리셋…」)."""
+    action = button.defaultAction() if isinstance(button, QToolButton) else None
+    return action.text() if action is not None else button.text()
+
+
 def _find_button(container: object, text: str | None) -> QWidget | None:
     if not isinstance(container, QWidget) or not text:
         return None
-    found = [b for b in container.findChildren(QAbstractButton) if b.text() == text and not _in_hint(b)]
+    found = [b for b in container.findChildren(QAbstractButton) if _button_text(b) == text and not _in_hint(b)]
     visible = [b for b in found if b.isVisible()]
     return (visible or found or [None])[0]
 

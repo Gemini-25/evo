@@ -2,7 +2,8 @@
 
 - T37 도움말 13쪽(「새 프리셋 만들기」는 「에디터」 바로 뒤), 새 화면(「새 프리셋」 창·틀 보관함)과 새 탭(「규칙」)의 F1 쪽·절,
   바뀐 절(에디터의 「규칙」「문제 목록」「세계 종류」), 낱말 풀이 다섯, 찾기에 새 쪽이 걸림.
-  연결표에 새 화면 키를 더하는 일(`HELP_TIPS` ⊆ 연결표, 새 화면의 풍선 감사)은 W·ED1·ED2가 합쳐진 뒤의 단계가 한다.
+  마지막 조각(W·ED1·ED2가 합쳐진 뒤): 새 연결표 키(`editor.*`·`preset.*`·`lab.new_preset`)가 그 위젯으로 풀리고 `HELP_TIPS` ⊆ 연결표,
+  「이건 뭐예요?」(Shift+F1)와 `evolab://show/` 짚기가 새 위젯에서 된다(새 화면의 풍선 감사는 test_tooltips_sports.py).
 - T38 `app/preset/`·`presets/*.py`·새 에디터 파일(`fixes.py`·`rules_tab.py`)에 한글 글자 상수 0(문서 문자열 빼고). 내장 틀·조리법의
   한글은 환경 내용이 되는 칸에만(틀: 부품의 `label`, 조리법: 환경 `name`·`description`. D55).
 - T40 자체 점검 「프리셋」: 점검 목록에 있고(창 없는 점검, 「도움말 쪽」 다음), 내장 조리법 전부와 달리기 한 세대로 통과하고,
@@ -271,9 +272,7 @@ def test_main_window_opens_the_wizard_from_the_lab_button(qtbot: Any, isolated: 
     window.show()
     QTest.qWaitForWindowExposed(window)
     assert window.editor.lab_ready is not None and window.editor.lab_ready()  # 학습 프로세스 없음
-    button = getattr(window.lab, "btn_new_preset", None)
-    if button is None:
-        pytest.skip("실험실 「새 프리셋…」 단추(Hb)가 아직 없다")
+    button = window.lab.btn_new_preset
     window.tabs.setCurrentWidget(window.lab)
     button.click()
     wizard = window.editor.wizard
@@ -283,4 +282,120 @@ def test_main_window_opens_the_wizard_from_the_lab_button(qtbot: Any, isolated: 
     wizard.finished_with.emit(text, "edit", None)
     assert window.tabs.currentWidget() is window.editor
     assert window.editor.doc.data["name"] == json.loads(text)["name"]
+    wizard.close()
+
+
+# ---------------------------------------------------------------------------
+# T37 마지막 조각: 연결표와 HELP_TIPS, Shift+F1, evolab://show/
+# ---------------------------------------------------------------------------
+NEW_TIPS = {
+    "editor.new_preset": "ED_NEW_PRESET_TIP", "editor.rules": "RULES_ADD_TIP", "editor.issues": "EDP_ISSUES_HINT",
+    "editor.owner_agent": "EDC_OWNER_AGENT_TIP", "editor.owner_world": "EDC_OWNER_WORLD_TIP",
+    "editor.world_kind": "EDP_WORLD_KIND_TIP", "preset.steps": "PRESET_STEPS_TIP", "preset.preview": "PRESET_PREVIEW_TIP",
+    "preset.name": "PRESET_NAME_TIP", "preset.edit": "PRESET_BTN_EDIT_TIP", "preset.play": "PRESET_BTN_PLAY_TIP",
+    "preset.lab": "PRESET_BTN_LAB_TIP", "lab.new_preset": "ED_NEW_PRESET_TIP",
+}
+"""장부의 「HELP_TIPS.update()」(6.2.0) 열세 키와 값."""
+
+
+def test_new_help_tips_are_in_the_link_table() -> None:
+    for key, name in NEW_TIPS.items():
+        assert S.HELP_TIPS[key] == getattr(S, name), key
+        assert key in anchors.ANCHORS, key
+    assert set(S.HELP_TIPS) <= set(anchors.ANCHORS)
+    assert {anchors.ANCHORS[k].screen for k in NEW_TIPS if k.startswith("preset.")} == {"preset"}
+
+
+def _main(qtbot: Any) -> Any:
+    from PySide6.QtTest import QTest
+
+    from evolab.app.main import MainWindow
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(1280, 720)
+    window.show()
+    QTest.qWaitForWindowExposed(window)
+    return window
+
+
+def test_editor_and_lab_keys_resolve_to_the_named_widgets(qtbot: Any, isolated: Path) -> None:
+    window = _main(qtbot)
+    ed = window.editor
+    expected = {
+        "editor.new_preset": ed.toolbar.widgetForAction(ed.act_new_preset),
+        "editor.rules": ed.tabs.rules_tab.add_button, "editor.issues": ed.tabs.issues_tab,
+        "editor.world_kind": ed.tabs.world_tab.kind_row, "editor.owner_agent": ed.palette.owner_agent,
+        "editor.owner_world": ed.palette.owner_world, "editor.world_motion": ed.palette.world_motion,
+        "editor.go_bar": ed.go_bar, "lab.new_preset": window.lab.btn_new_preset,
+    }
+    for key, widget in expected.items():
+        assert widget is not None and anchors.resolve(window, key) is widget, key
+        assert anchors.screen_of(widget) == anchors.ANCHORS[key].screen, key
+    # 빈 캔버스 안내 카드에도 같은 글의 단추가 있지만 연결표는 도구 줄 단추를 고른다
+    assert anchors.resolve(window, "editor.new_preset").parentWidget() is ed.toolbar
+    # Shift+F1(「이건 뭐예요?」)의 글과 F1의 쪽·절
+    for key in ("editor.owner_agent", "editor.owner_world", "editor.rules", "lab.new_preset"):
+        widget = expected[key]
+        target, text = context.whats_this_text(widget)
+        assert target is widget and text == S.HELP_TIPS[key], key
+    assert context.context_page(ed.palette.owner_world) == ("editor", None)
+    assert context.context_page(ed.palette.buttons["tpl_body"]) == ("editor", None)
+    assert context.context_page(ed.tabs.world_tab.kind_row) == ("editor", S.EDP_TAB_WORLD)
+    assert context.context_page(ed.tabs.issues_tab) == ("editor", S.EDP_TAB_ISSUES)
+    assert context.context_page(window.lab.btn_new_preset) == ("lab", None)
+
+
+def test_show_links_reach_widgets_inside_editor_tabs(qtbot: Any, isolated: Path) -> None:
+    from evolab.app.help import window as HW
+
+    window = _main(qtbot)
+    tabs = window.editor.tabs
+    window.tabs.setCurrentWidget(window.lab)
+    assert tabs.currentWidget() is not tabs.rules_tab  # 처음 보이는 탭은 「세계」
+    shown = HW.show_anchor("editor.rules", window)
+    assert shown is tabs.rules_tab.add_button
+    assert window.tabs.currentWidget() is window.editor and tabs.currentWidget() is tabs.rules_tab
+    assert HW.show_anchor("editor.issues", window) is tabs.issues_tab and tabs.currentWidget() is tabs.issues_tab
+    assert HW.show_anchor("editor.world_kind", window) is tabs.world_tab.kind_row
+    assert HW.show_anchor("lab.new_preset", window) is window.lab.btn_new_preset
+    assert window.tabs.currentWidget() is window.lab
+
+
+def test_preset_keys_resolve_in_the_wizard_only(qtbot: Any, isolated: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from evolab.app import style
+    from evolab.app.help import tooltips
+    from evolab.app.preset.cards import TemplatePicker
+
+    window = _main(qtbot)
+    wizard = _wizard(qtbot, monkeypatch, window)
+    wizard.open()
+    qtbot.waitExposed(wizard)
+    attrs = {"preset.steps": "rail", "preset.preview": "preview", "preset.name": "name_edit", "preset.edit": "btn_edit",
+             "preset.play": "btn_play", "preset.lab": "btn_lab", "preset.reset_step": "btn_reset_step"}
+    assert set(attrs) == set(anchors.keys_for("preset"))
+    for key, attr in attrs.items():
+        widget = getattr(wizard, attr)
+        assert widget.objectName() == attr  # 3.1: objectName = 속성 이름
+        assert anchors.resolve(wizard, key) is widget, key
+        assert anchors.resolve(window, key) is widget, key  # 주 창에서 찾아도 열린 창의 것
+        assert anchors.resolve(wizard.status, key) is widget, key  # 창 안 아무 위젯에서도
+    # 풍선이 빈 위젯만 HELP_TIPS로 채운다
+    tooltips.apply_tooltips(wizard, "preset")  # (앱 필터가 없는 테스트: 첫 보임에 하던 일)
+    assert all(anchors.resolve(wizard, key).toolTip() for key in NEW_TIPS if key.startswith("preset."))
+    wizard.btn_play.setToolTip("")
+    assert tooltips.apply_tooltips(wizard, "preset") == 1
+    assert wizard.btn_play.toolTip() == S.HELP_TIPS["preset.play"]
+    # Shift+F1: 꺼진 「실험실로 보내기」면 까닭도(U9)
+    target, text = context.whats_this_text(wizard.btn_lab)
+    assert target is wizard.btn_lab and text == style.tip_text(wizard.btn_lab)
+    assert text.startswith(S.HELP_TIPS["preset.lab"])
+    assert context.whats_this(wizard.rail) is not None
+    # 틀 보관함 창도 화면 "preset"이지만 이 속성이 없다
+    picker = TemplatePicker("body", "side", {}, wizard)
+    qtbot.addWidget(picker)
+    picker.show()
+    qtbot.waitExposed(picker)
+    assert anchors.resolve(picker, "preset.lab") is None
+    picker.close()
     wizard.close()
