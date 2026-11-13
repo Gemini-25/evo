@@ -338,3 +338,50 @@ def test_t4_frozen_scripts_see_their_own_tree(tmp_path: Path) -> None:
     assert (str(old["version"]), int(old["current"]), bool(old["move"])) == ("6.1.0", 3, False)
     assert int(new["current"]) == 4 and bool(new["move"]) and str(new["version"]) != "6.1.0"
 
+
+
+# ---------------------------------------------------------------------------
+# S1 (느림): 실제 학습의 통계·챔피언
+# ---------------------------------------------------------------------------
+
+TRAIN = """
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+
+from evolab import cli
+from evolab.engine import trainer as trainer_mod
+from evolab.runs.store import RunStore
+
+out, work, stem, *limit = sys.argv[1:]
+base = Path(work) / stem
+argv = ["train", f"environments/{stem}.evoenv", "--out", str(base), "--seed", "1", "--workers", "0", *limit]
+assert cli.main(argv) == 0
+[run] = [p for p in base.iterdir() if p.is_dir()]
+store = RunStore.open(run)
+time_cols = set(trainer_mod.TIME_COLUMNS)
+rows = [{k: v for k, v in r.items() if k not in time_cols} for r in store.read_stats()]
+gens = store.champion_generations("champion")
+champ = store.load_champion(gens[-1], "champion")["genome"] if gens else np.zeros(0)
+np.savez(out, rows=np.array(json.dumps(rows)), columns=np.array(json.dumps(store.stats_columns())),
+         config=np.array(json.dumps(store.read_run_info()["config"], sort_keys=True)), champion=champ)
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("stem, limit", [("lander", ("--max-generations", "100")),
+                                         ("jump", ("--max-evaluations", "3000")),
+                                         ("wheels", ("--max-evaluations", "2000"))])
+def test_s1_real_training_matches_the_frozen_release(stem: str, limit: tuple[str, str], tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EVOLAB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("EVOLAB_STATE_DIR", str(tmp_path / "state"))
+    script = write_script(tmp_path, "train.py", TRAIN)
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    old = frozen_run(RELEASE, script, tmp_path / "old", stem, *limit, timeout=3600)
+    new = live_run(script, tmp_path / "new", stem, *limit, timeout=3600)
+    same_arrays(old, new)
+    assert len(json.loads(str(new["rows"]))) > 1
