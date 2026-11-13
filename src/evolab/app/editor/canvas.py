@@ -46,7 +46,7 @@ from PySide6.QtGui import (
     QShowEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QSizePolicy, QSlider, QToolButton, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QSizePolicy, QSlider, QToolButton, QWidget
 
 from evolab.app import strings as S
 from evolab.app.editor import tools as T
@@ -145,8 +145,18 @@ BADGE_TEXT = {
     "motor": S.EDC_BADGE_MOTOR,
     "jump": S.EDC_LABEL_JUMP,
     "aero": S.EDC_TOOL_AERO,
+    "move": S.EDC_TOOL_MOVE,
+    "balance": S.EDP_VALUE_NAMES["balance"],
 }
-ACTUATOR_BADGES = frozenset({"fuel_tank", "vehicle", "motor", "jump", "aero"})
+ACTUATOR_BADGES = frozenset({"fuel_tank", "vehicle", "motor", "jump", "aero", "move", "balance"})
+SHAPE_TOOLS = frozenset({"box", "circle", "poly"})
+"""새 물체를 그리는 도구(커서 옆에 소유 글자, 6.2.0)."""
+COLOR_MOVE = QColor(255, 184, 107, 220)
+"""밀기(이동) 표지의 화살표(6.2.0)."""
+COLOR_BALANCE = QColor(163, 190, 140, 220)
+"""균형 보조 표지(6.2.0): 세울 각도의 선과 양쪽 둥근 화살표."""
+MARK_PX = 14.0
+"""밀기·균형 보조 표지의 화면 크기(px, 확대와 무관)."""
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +381,24 @@ class JumpItem:
 
 
 @dataclass
+class MoveItem:
+    """밀기(이동) 구동기 표지(6.2.0): 물체 가운데의 화살표(xy 넷, x 좌우 둘, heading 앞 하나와 도는 호)."""
+
+    ref: Ref
+    body: str
+    mode: str
+
+
+@dataclass
+class BalanceItem:
+    """균형 보조 표지(6.2.0): 물체 가운데에서 세울 각도(target, 세계 각도) 쪽으로 선 + 양쪽 둥근 화살표."""
+
+    ref: Ref
+    body: str
+    target: float
+
+
+@dataclass
 class Scene:
     bounds: tuple[float, float, float, float] = (-50.0, -20.0, 50.0, 60.0)
     bodies: list[BodyItem] = field(default_factory=list)
@@ -382,6 +410,8 @@ class Scene:
     rays: list[RayItem] = field(default_factory=list)
     targets: list[TargetItem] = field(default_factory=list)
     jumps: list[JumpItem] = field(default_factory=list)
+    moves: list[MoveItem] = field(default_factory=list)
+    balances: list[BalanceItem] = field(default_factory=list)
     aero_bodies: set[str] = field(default_factory=set)
     """공기역학이 달린 물체 id."""
     max_time: float = DEFAULT_MAX_TIME
@@ -1004,6 +1034,17 @@ class _SceneBuilder:
                 if body is not None:
                     self.scene.aero_bodies.add(body.id)
                 self.scene.badges.append(BadgeItem(ref, "aero", body.id if body else None))
+            elif kind == "move":  # 6.2.0 밀기(이동): 엔진이 표지용 기하를 내지 않으므로 문서에서 그린다
+                body = self.scene.body(str(a.get("body")))
+                mode = a.get("mode", "xy")
+                if body is not None:
+                    self.scene.moves.append(MoveItem(ref, body.id, mode if mode in ("xy", "x", "heading") else "xy"))
+                self.scene.badges.append(BadgeItem(ref, "move", body.id if body else None))
+            elif kind == "balance":  # 6.2.0 균형 보조(출력 채널 없음)
+                body = self.scene.body(str(a.get("body")))
+                if body is not None:
+                    self.scene.balances.append(BalanceItem(ref, body.id, ev.num(a.get("target"), 0.0)))
+                self.scene.badges.append(BadgeItem(ref, "balance", body.id if body else None))
 
     def _sensors(self) -> None:
         ep_rays: dict[str, list[float]] = {}
@@ -1213,6 +1254,15 @@ class EditorCanvas(QWidget):
         self.snap_step = DEFAULT_SNAP_STEP
         self.new_owner = "agent"
         """모양 도구로 만드는 새 물체의 소유(agent 또는 world)."""
+        self.new_motion = "static"
+        """세계 물체를 그릴 때의 움직임(6.2.0 「새로 그리는 것」: static 고정(땅·벽) 또는 dynamic 움직임(공·상자))."""
+        self.picker_factory: Any = None
+        """틀 보관함 창을 만드는 함수(kind, world, data, parent) -> 대화 상자(exec(), choice()). None이면 app.preset.cards.TemplatePicker.
+        테스트가 바꿔 끼운다."""
+        self.last_picker: Any = None
+        """마지막으로 띄운 틀 보관함 창(테스트용)."""
+        self._drop: tuple[Any, dict[str, float] | None, bool] | None = None
+        self._swallow_release = False
         self.status_text = ""
         self.cursor_world: Point | None = None
         self._scene: Scene | None = None
@@ -1707,6 +1757,130 @@ class EditorCanvas(QWidget):
     def set_new_owner(self, owner: str) -> None:
         if owner in ("agent", "world"):
             self.new_owner = owner
+            self.update()
+
+    def set_new_motion(self, motion: str) -> None:
+        """세계 물체를 그릴 때의 움직임(static·dynamic, 6.2.0). 에이전트 물체는 늘 움직임이다."""
+        if motion in T.WORLD_MOTIONS:
+            self.new_motion = motion
+
+    def set_owner_mode(self, owner: str, motion: str) -> None:
+        """「새로 그리는 것」 두 단추와 고정/움직임 고르기를 한 번에(설계 DU 7.3 E1)."""
+        self.set_new_owner(owner)
+        self.set_new_motion(motion)
+
+    def owner_color(self) -> QColor:
+        """새로 그리는 물체의 소유 색(커서 옆 글자와 고무줄 그림)."""
+        return T.OWNER_COLORS.get(self.new_owner, T.OWNER_COLORS["agent"])
+
+    def owner_cursor_text(self) -> str:
+        """모양 도구가 켜져 있을 때 커서 옆 글자(「에이전트」/「세계」). 모양 도구가 아니면 빈 글."""
+        if self._tool_id not in SHAPE_TOOLS or self._drop is not None:
+            return ""
+        return S.EDC_CURSOR_OWNER.get(self.new_owner, "")
+
+    # ------------------------------------------------------------------
+    # 틀 넣기 (6.2.0, 설계 DU 4.2: 팔레트 「틀」 단추 -> 보관함 -> 놓을 자리 누르기)
+    # ------------------------------------------------------------------
+    def world_view(self) -> str:
+        return T.world_view(self.doc.data)
+
+    def pick_template(self, kind: str) -> bool:
+        """보관함 창을 띄워 kind(body·prop)의 틀을 고르게 하고, 고르면 놓을 자리를 기다린다. 고르지 않으면 False."""
+        factory = self.picker_factory
+        if factory is None:
+            from evolab.app.preset.cards import TemplatePicker  # 안내 창 묶음(W)의 보관함 창
+
+            factory = TemplatePicker
+        picker = factory(kind, self.world_view(), self.doc.data, self)
+        self.last_picker = picker
+        if picker.exec() != QDialog.DialogCode.Accepted:
+            return False
+        choice = picker.choice()
+        if not choice:
+            return False
+        tpl, values, mirror = choice[0], choice[1], bool(choice[2])  # 4번째(진화할 슬라이더)는 6.2.0에 없다(「나중에」)
+        self.begin_template_drop(tpl, values, mirror)
+        return True
+
+    def begin_template_drop(self, tpl: Any, values: dict[str, float] | None = None, mirror: bool = False) -> None:
+        """다음에 캔버스를 누른 자리(격자에 맞춤)에 이 틀을 넣는다. Esc나 오른쪽 단추로 그만둔다."""
+        self._tool.cancel()
+        self._drop = (tpl, dict(values) if values else None, bool(mirror))
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.message(S.TPL_INSERT_HINT.format(name=tpl.name), transient=False)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    @property
+    def template_drop(self) -> Any:
+        """놓을 자리를 기다리는 틀(없으면 None)."""
+        return self._drop[0] if self._drop is not None else None
+
+    def cancel_template_drop(self) -> None:
+        if self._drop is None:
+            return
+        self._drop = None
+        self.setCursor(self._tool.cursor)
+        self.message(self._tool.hint(), transient=False)
+
+    def drop_template_at(self, w: Point, e: CanvasEvent | None = None) -> list[Ref]:
+        """기다리는 틀을 세계 점 w(격자에 맞춤)에 넣는다(되돌리기 한 단계). 넣은 부품 목록."""
+        if self._drop is None:
+            return []
+        tpl, values, mirror = self._drop
+        self._drop = None
+        self.setCursor(self._tool.cursor)
+        at = self.snap(w, e)
+        from evolab.presets import template as tp
+
+        _slots, missing = tp.resolve_slots(tpl, self.doc.data)
+        try:
+            refs = T.insert_template(self.doc, tpl, values, at=at, mirror=mirror)
+        except (tp.TemplateError, ValueError) as exc:
+            self.message(str(exc))
+            return []
+        n = T.template_counts(refs)
+        text = S.TPL_INSERTED.format(name=tpl.name, bodies=n["bodies"], joints=n["joints"], actuators=n["actuators"],
+                                     sensors=n["sensors"])
+        for name in missing:  # 장면에 없던 빈자리 대상(땅 등): 무엇을 더 넣어야 하는지 알린다
+            slot = tpl.slots[name]
+            text += " " + S.TPL_NEEDS.format(what=slot.label or name.lstrip("$"))
+        self.message(text)
+        return refs
+
+    def _paint_drop(self, p: QPainter) -> None:
+        """놓을 자리를 기다리는 틀의 윤곽을 커서 자리에 흐리게."""
+        if self._drop is None or self.cursor_world is None:
+            return
+        from evolab.presets import template as tp
+
+        tpl, values, _mirror = self._drop
+        try:
+            shapes = tp.outline(tpl, values)
+        except (tp.TemplateError, ValueError, KeyError, TypeError):
+            return
+        at = self.snap(self.cursor_world)
+        p.setPen(_pen(COLOR_SELECT, 1.2, Qt.PenStyle.DashLine))
+        p.setBrush(QBrush(COLOR_GHOST))
+        for kind, _role, pts, r in shapes:
+            q = [self._q((x + at[0], y + at[1])) for x, y in pts]
+            if kind == "circle" and q:
+                p.drawEllipse(q[0], r * self.scale, r * self.scale)
+            elif kind == "poly" and len(q) >= 3:
+                p.drawPolygon(QPolygonF(q))
+            elif len(q) >= 2:
+                p.drawPolyline(QPolygonF(q))
+
+    def _paint_owner_cursor(self, p: QPainter) -> None:
+        text = self.owner_cursor_text()
+        if not text or self.cursor_world is None:
+            return
+        c = self._q(self.cursor_world)
+        f = QFont(self.font())
+        f.setPixelSize(11)
+        p.setFont(f)
+        p.setPen(self.owner_color())
+        p.drawText(c + QPointF(14, 24), text)
 
     # ------------------------------------------------------------------
     # 도구
@@ -1735,6 +1909,7 @@ class EditorCanvas(QWidget):
             else:
                 self.set_tool("select")
             return
+        self.cancel_template_drop()
         if tool_id == self._tool_id:
             return
         self._tool.cancel()
@@ -2021,6 +2196,8 @@ class EditorCanvas(QWidget):
         self._paint_badges(p)  # 표지·손잡이는 움직이는 물체 위에(작고 싸다)
         self._paint_handles(p)
         self._tool.overlay(p)
+        self._paint_drop(p)
+        self._paint_owner_cursor(p)
         self._paint_hud(p, scene)
         p.end()
 
@@ -2044,6 +2221,8 @@ class EditorCanvas(QWidget):
         self._paint_joints(p, scene)
         self._paint_thrusters(p, scene)
         self._paint_jumps(p, scene)
+        self._paint_moves(p, scene)
+        self._paint_balances(p, scene)
         self._paint_spawn(p, scene)
 
     def _static_key(self, scene: Scene) -> Any:
@@ -2398,6 +2577,67 @@ class EditorCanvas(QWidget):
                 p.drawLine(tip, tip + QPointF(7 * math.cos(a2), 7 * math.sin(a2)))
         p.setOpacity(1.0)
 
+    def _arrow(self, p: QPainter, base: QPointF, ang: float, length: float) -> None:
+        """화면 각도 ang(라디안, 화면 y 아래) 쪽으로 base에서 length px 화살표."""
+        tip = base + QPointF(length * math.cos(ang), length * math.sin(ang))
+        p.drawLine(base, tip)
+        for side in (-1, 1):
+            a2 = ang + math.pi + side * 0.5
+            p.drawLine(tip, tip + QPointF(5 * math.cos(a2), 5 * math.sin(a2)))
+
+    def _mark_color(self, ref: Ref, base: QColor) -> QColor:
+        color, selected = self._highlight(ref)
+        if color is not None:
+            return color
+        return COLOR_SELECT if selected or self.linked(ref) else base
+
+    def _paint_moves(self, p: QPainter, scene: Scene) -> None:
+        """밀기(이동) 표지(6.2.0): xy는 위·아래·왼쪽·오른쪽, x는 왼쪽·오른쪽(세계 축), heading은 물체 앞(+x)과 도는 호."""
+        for m in scene.moves:
+            body = scene.body(m.body)
+            if body is None or not self.visible_ref(m.ref):
+                continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(m.ref) else 1.0)
+            c = self._q((body.pose[0], body.pose[1]))
+            p.setPen(_pen(self._mark_color(m.ref, COLOR_MOVE), 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if m.mode == "heading":
+                self._arrow(p, c, -body.pose[2], MARK_PX * 1.3)
+                p.drawArc(QRectF(c.x() - MARK_PX * 0.7, c.y() - MARK_PX * 0.7, MARK_PX * 1.4, MARK_PX * 1.4),
+                          int((math.degrees(body.pose[2]) + 60) * 16), 240 * 16)
+            else:
+                angles = (0.0, math.pi) if m.mode == "x" else (0.0, math.pi / 2, math.pi, -math.pi / 2)
+                for a in angles:
+                    self._arrow(p, c + QPointF(3 * math.cos(a), 3 * math.sin(a)), a, MARK_PX)
+        p.setOpacity(1.0)
+
+    def _paint_balances(self, p: QPainter, scene: Scene) -> None:
+        """균형 보조 표지(6.2.0): 물체가 세워지는 각도(target) 쪽 점선과 그 양쪽의 둥근 화살표(되돌리는 힘)."""
+        for b in scene.balances:
+            body = scene.body(b.body)
+            if body is None or not self.visible_ref(b.ref):
+                continue
+            p.setOpacity(ABSENT_OPACITY if self._absent_ref(b.ref) else 1.0)
+            c = self._q((body.pose[0], body.pose[1]))
+            up = -(math.pi / 2 + b.target)  # 화면 각도: 세계 각도 target만큼 기운 위쪽
+            color = self._mark_color(b.ref, COLOR_BALANCE)
+            p.setPen(_pen(color, 1.5, Qt.PenStyle.DashLine))
+            p.drawLine(c, c + QPointF(MARK_PX * 1.8 * math.cos(up), MARK_PX * 1.8 * math.sin(up)))
+            p.setPen(_pen(color, 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            r = MARK_PX * 1.2
+            rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            deg = math.degrees(math.pi / 2 + b.target)  # Qt 호 각도: 반시계, 3시 방향 0
+            for side in (-1, 1):
+                p.drawArc(rect, int((deg + side * 18) * 16), int(side * 40 * 16))
+                end = math.radians(deg + side * 58)
+                tip = c + QPointF(r * math.cos(end), -r * math.sin(end))
+                back = -end + (math.pi / 2 if side > 0 else -math.pi / 2)  # 호를 따라 위쪽(target) 쪽으로 되돌아가는 방향
+                for k in (-1, 1):
+                    a2 = back + k * 0.5
+                    p.drawLine(tip, tip + QPointF(5 * math.cos(a2), 5 * math.sin(a2)))
+        p.setOpacity(1.0)
+
     def _paint_joints(self, p: QPainter, scene: Scene) -> None:
         for j in scene.joints:
             if not self.visible_ref(j.ref):
@@ -2608,6 +2848,15 @@ class EditorCanvas(QWidget):
             self._pan = (ev.position(), self.center)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
+        if self._drop is not None and ev.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            if ev.button() == Qt.MouseButton.LeftButton:
+                self._swallow_release = True  # 놓기 뒤의 놓음(release)은 도구에 넘기지 않는다
+                self.drop_template_at(self.screen_to_world(ev.position()), self._event(ev))
+            else:
+                self.cancel_template_drop()
+                self._right_cancelled = True
+            self.update()
+            return
         if ev.button() == Qt.MouseButton.RightButton:
             self._right_cancelled = self._tool.busy()
             if self._right_cancelled:
@@ -2640,6 +2889,9 @@ class EditorCanvas(QWidget):
             return
         if ev.button() != Qt.MouseButton.LeftButton:
             return
+        if self._swallow_release:
+            self._swallow_release = False
+            return
         e = self._event(ev)
         self._button_down = False
         self._press_alt = False
@@ -2663,6 +2915,10 @@ class EditorCanvas(QWidget):
             if not ev.isAutoRepeat():
                 self._space = True
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+        if ev.key() == Qt.Key.Key_Escape and self._drop is not None:
+            self.cancel_template_drop()
+            self.update()
             return
         if self._tool.key(ev):
             self.update()

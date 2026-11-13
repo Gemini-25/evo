@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import math
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +32,7 @@ from evolab.world.physics2d import geometry as geo
 
 if TYPE_CHECKING:
     from evolab.app.editor.canvas import CanvasEvent, EditorCanvas, Pick
+    from evolab.presets.template import Template
 
 Point = tuple[float, float]
 Pose = tuple[float, float, float]
@@ -45,7 +46,7 @@ TOOL_GROUPS: list[tuple[str, list[str]]] = [
     ("shapes", ["box", "circle", "poly"]),
     ("terrain", ["terrain_line", "terrain_auto", "hills_auto", "track_draw", "track_auto"]),
     ("joints", ["joint_pivot", "joint_rot_spring", "joint_weld", "joint_spring"]),
-    ("actuators", ["thruster", "fuel_tank", "vehicle", "motor"]),
+    ("actuators", ["thruster", "fuel_tank", "vehicle", "motor", "move"]),
     ("motion", ["path", "obstacles", "jump", "wing", "aero"]),
     ("sensors", ["sensor_rays", "sensor_body_state", "sensor_contact", "sensor_target", "sensor_joint_angle",
                  "sensor_fuel", "sensor_time"]),
@@ -90,6 +91,7 @@ TOOL_LABELS: dict[str, str] = {
     "jump": S.EDC_TOOL_JUMP,
     "wing": S.EDC_TOOL_WING,
     "aero": S.EDC_TOOL_AERO,
+    "move": S.EDC_TOOL_MOVE,
 }
 
 TOOL_HINTS: dict[str, str] = {
@@ -123,7 +125,14 @@ TOOL_HINTS: dict[str, str] = {
     "jump": S.EDC_HINT_JUMP,
     "wing": S.EDC_HINT_WING,
     "aero": S.EDC_HINT_AERO,
+    "move": S.EDC_HINT_MOVE,
 }
+
+TEMPLATE_BUTTONS: dict[str, str] = {"tpl_body": "body", "tpl_prop": "prop"}
+"""팔레트 「틀」 묶음의 보통 단추(6.2.0, 설계 D48): 단추 id -> 틀 종류. 도구가 아니므로 TOOL_IDS 밖이다
+(누르면 보관함 창이 뜨고, 고른 틀은 캔버스를 누른 자리에 들어간다)."""
+TEMPLATE_LABELS: dict[str, str] = {"tpl_body": S.EDC_TOOL_TPL_BODY, "tpl_prop": S.EDC_TOOL_TPL_PROP}
+TEMPLATE_HINTS: dict[str, str] = {"tpl_body": S.EDC_HINT_TPL_BODY, "tpl_prop": S.EDC_HINT_TPL_PROP}
 
 # ---------------------------------------------------------------------------
 # 기본값
@@ -177,6 +186,17 @@ OBSTACLE_SEED: dict[str, Any] = {"dist": "int", "low": 0.0, "high": 1e9}
 JUMP: dict[str, Any] = {"speed": 6.0, "cooldown": 0.25}
 JUMP_KEYS = ["Up", "W", "Space"]
 JUMP_GROUND_TAGS = ("ground", TERRAIN_TAG)
+WORLD_MOTIONS = ("static", "dynamic")
+"""세계 물체를 그릴 때 고르는 움직임(6.2.0 「새로 그리는 것」): 고정(땅·벽) / 움직임(공·상자)."""
+MOVE_KEYS: dict[str, list[str]] = {"keys_up": ["Up", "W"], "keys_down": ["Down", "S"], "keys_left": ["Left", "A"],
+                                   "keys_right": ["Right", "D"]}
+"""밀기(이동) 도구가 주는 방향키(다른 구동기가 이미 쓰는 키는 뺀다)."""
+MOVE_SPEED = 3.5
+"""밀기 도구의 최고 속도 기본값(m/s, 원형 선수 틀의 힘 1과 같음)."""
+MOVE_ACCEL = 16.0
+"""밀기 도구의 미는 힘 기본값 = 물체 질량 × 이 값(N/kg). 원형 선수(질량 약 25kg, 힘 400N)와 같은 빠르기로 최고 속도에 닿는다."""
+MOVE_FORCE_FALLBACK = 400.0
+"""질량을 숫자로 셀 수 없는 물체(수식 모양)의 미는 힘."""
 """점프 추진기의 땅 기본값: 이 태그를 가진 세계 쪽 모양이 있으면 그것(앞의 것이 먼저), 없으면 tag.ground."""
 WING_THICK = 0.04
 WING_CHORD = 1.0
@@ -337,7 +357,8 @@ def world_tags(doc: EnvDocument) -> list[str]:
 def _used_keys(doc: EnvDocument) -> set[str]:
     out: set[str] = set()
     for a in doc.items("actuators"):
-        for name in ("keys", "keys_forward", "keys_back", "keys_left", "keys_right", "keys_pos", "keys_neg"):
+        for name in ("keys", "keys_forward", "keys_back", "keys_left", "keys_right", "keys_pos", "keys_neg", "keys_up",
+                     "keys_down"):
             out |= {k for k in a.get(name) or [] if isinstance(k, str)}
     return out
 
@@ -426,20 +447,31 @@ def add_body(doc: EnvDocument, owner: str, pos: Point, shapes: list[dict[str, An
     return doc.add("bodies", item, undo_label or S.EDC_UNDO_ADD_BODY)
 
 
-def add_box(doc: EnvDocument, owner: str, center: Point, w: float, h: float, angle: float = 0.0) -> Ref:
-    return add_body(doc, owner, center, [box_shape(w, h)], angle=angle, id_base="block", label=S.EDC_LABEL_BOX)
+def _motion_type(owner: str, motion: str | None) -> str | None:
+    """「새로 그리는 것」의 고정/움직임(6.2.0): 세계 물체만 고를 수 있다(에이전트 물체는 늘 움직임). None이면 add_body의 기본."""
+    if owner != "world" or motion not in WORLD_MOTIONS:
+        return None
+    return motion
 
 
-def add_circle(doc: EnvDocument, owner: str, center: Point, r: float) -> Ref:
-    return add_body(doc, owner, center, [circle_shape(r)], id_base="ball", label=S.EDC_LABEL_CIRCLE)
+def add_box(doc: EnvDocument, owner: str, center: Point, w: float, h: float, angle: float = 0.0,
+            motion: str | None = None) -> Ref:
+    return add_body(doc, owner, center, [box_shape(w, h)], angle=angle, id_base="block", label=S.EDC_LABEL_BOX,
+                    body_type=_motion_type(owner, motion))
 
 
-def add_poly(doc: EnvDocument, owner: str, points: list[Point]) -> Ref:
+def add_circle(doc: EnvDocument, owner: str, center: Point, r: float, motion: str | None = None) -> Ref:
+    return add_body(doc, owner, center, [circle_shape(r)], id_base="ball", label=S.EDC_LABEL_CIRCLE,
+                    body_type=_motion_type(owner, motion))
+
+
+def add_poly(doc: EnvDocument, owner: str, points: list[Point], motion: str | None = None) -> Ref:
     """꼭짓점(owner 좌표계)으로 다각형 물체. 물체 위치는 꼭짓점 상자의 가운데."""
     pts = check_polygon(points)
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]
     pos = (clean((min(xs) + max(xs)) / 2.0), clean((min(ys) + max(ys)) / 2.0))
-    return add_body(doc, owner, pos, [poly_shape(pts, pos)], id_base="polygon", label=S.EDC_LABEL_POLY)
+    return add_body(doc, owner, pos, [poly_shape(pts, pos)], id_base="polygon", label=S.EDC_LABEL_POLY,
+                    body_type=_motion_type(owner, motion))
 
 
 def add_shape(doc: EnvDocument, body: Ref, shape: dict[str, Any]) -> int:
@@ -668,6 +700,96 @@ def add_vehicle(doc: EnvDocument, body: str) -> Ref:
     for name, keys in VEHICLE_KEYS.items():
         item[name] = [] if used & set(keys) else list(keys)
     return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
+
+
+def world_view(data: Any) -> str:
+    """세계 종류(6.2.0 World.view): "side" 또는 "top"(없거나 잘못된 값이면 옆에서 본 세계)."""
+    world = data.get("world") if isinstance(data, dict) else None
+    view = world.get("view") if isinstance(world, dict) else None
+    return view if view in ("side", "top") else "side"
+
+
+def body_mass(b: dict[str, Any]) -> float | None:
+    """물체 질량(kg): 모양 넓이 × 밀도(모양에 밀도가 있으면 그것). 수식이 섞여 셀 수 없으면 None."""
+    mat = b.get("material") if isinstance(b.get("material"), dict) else {}
+    dens = mat.get("density", 1.0)
+    if not is_number(dens):
+        return None
+    total = 0.0
+    for sh in b.get("shapes") or []:
+        if not isinstance(sh, dict):
+            return None
+        d = sh.get("density", dens)
+        kind = sh.get("kind")
+        if kind == "box" and is_number(sh.get("w")) and is_number(sh.get("h")):
+            area = float(sh["w"]) * float(sh["h"])
+        elif kind == "circle" and is_number(sh.get("r")):
+            area = math.pi * float(sh["r"]) ** 2
+        elif kind == "poly" and isinstance(sh.get("points"), list):
+            pts = sh["points"]
+            if not all(isinstance(q, list) and len(q) == 2 and is_number(q[0]) and is_number(q[1]) for q in pts):
+                return None
+            area = abs(geo.signed_area([(float(q[0]), float(q[1])) for q in pts]))
+        else:
+            return None
+        if not is_number(d):
+            return None
+        total += area * float(d)
+    return total if total > 0 else None
+
+
+def add_move(doc: EnvDocument, body: str, mode: str | None = None) -> Ref:
+    """밀기(이동) 구동기(6.2.0 Move, 설계 D45): 에이전트의 움직이는 물체를 민다. 방식은 위에서 본 세계면 앞뒤좌우(xy),
+    옆에서 본 세계면 좌우만(x: 중력이 있는 세계에서 위로 미는 것은 날기가 된다). 비어 있는 방향키를 받는다(MOVE_KEYS에서
+    다른 구동기가 쓰는 키를 뺀 것). 미는 힘은 질량 × MOVE_ACCEL(셀 수 없으면 MOVE_FORCE_FALLBACK)."""
+    _need_agent_body(doc, body)
+    if mode is None:
+        mode = "xy" if world_view(doc.data) == "top" else "x"
+    if mode not in ("xy", "x", "heading"):
+        raise ValueError(mode)
+    mass = body_mass(body_data(doc, body) or {})
+    force = clean(mass * MOVE_ACCEL) if mass is not None else MOVE_FORCE_FALLBACK
+    item: dict[str, Any] = {"kind": "move", "id": "push", "label": S.EDC_TOOL_MOVE, "body": body, "mode": mode,
+                            "max_force": float(force), "max_speed": MOVE_SPEED}
+    used = _used_keys(doc)
+    fields = ("keys_left", "keys_right") if mode == "x" else tuple(MOVE_KEYS)
+    for name in fields:
+        item[name] = [k for k in MOVE_KEYS[name] if k not in used]
+    return doc.add("actuators", item, S.EDC_UNDO_ADD_ACTUATOR)
+
+
+# ---------------------------------------------------------------------------
+# 조작 함수: 틀 넣기 (6.2.0, 설계 3.1·DU 4.2)
+# ---------------------------------------------------------------------------
+
+
+def insert_template(doc: EnvDocument, tpl: Template, values: Mapping[str, float] | None = None, *,
+                    at: Point = (0.0, 0.0), mirror: bool = False) -> list[Ref]:
+    """틀 하나를 펼쳐(presets.template.expand) 문서에 넣는다(presets.template.insert). 되돌리기 한 단계.
+
+    at은 세계 좌표의 놓을 자리(틀의 (0, 0)). 빈자리(땅 같은 태그 대상)는 장면에서 앞의 태그부터 찾고(resolve_slots),
+    못 찾으면 틀이 적은 첫 태그를 그대로 가리킨다(검사가 알리고 「문제 목록」이 고친다). 넣은 뒤 뿌리 물체(없으면 첫 부품)를 고른다.
+    넣은 부품의 (구역, id) 목록을 돌려준다."""
+    from evolab.presets import template as tp
+
+    slots, _missing = tp.resolve_slots(tpl, doc.data)
+    parts = tp.expand(tpl, values, at=(float(at[0]), float(at[1])), mirror=mirror, slots=slots)
+    refs: list[Ref] = doc.edit(S.TPL_UNDO_INSERT.format(name=tpl.name), lambda d: tp.insert(d, parts)) or []
+    if refs:
+        root = parts.get("root")
+        bodies = [r for r in refs if r[0] == "bodies"]
+        pick = next((r for r in bodies if root and re.fullmatch(re.escape(root) + r"(_\d+)?", r[1])), None)
+        doc.select([pick or (bodies[0] if bodies else refs[0])])
+    return refs
+
+
+def template_counts(refs: Iterable[Ref]) -> dict[str, int]:
+    """넣은 부품 수(TPL_INSERTED의 칸): 물체, 관절, 모터·추진기 등 구동기, 센서."""
+    out = {"bodies": 0, "joints": 0, "actuators": 0, "sensors": 0}
+    for sec, _id in refs:
+        if sec in out:
+            out[sec] += 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1512,12 +1634,14 @@ def shared_params(doc: EnvDocument, refs: Iterable[Ref]) -> list[str]:
 # 도구 클래스
 # ---------------------------------------------------------------------------
 
+OWNER_COLORS: dict[str, QColor] = {"agent": QColor("#ffb86b"), "world": QColor("#a7b1c2")}
+"""「새로 그리는 것」의 소유 색(6.2.0): 팔레트 단추의 띠, 캔버스 커서 옆 글자와 고무줄 그림. 에이전트 주황, 세계 회색."""
 COLOR_DRAFT = QColor("#ffd166")
 COLOR_DRAFT_FILL = QColor(255, 209, 102, 40)
 
 
-def _draft_pen(width: float = 1.5, dash: bool = False) -> QPen:
-    pen = QPen(COLOR_DRAFT, width)
+def _draft_pen(width: float = 1.5, dash: bool = False, color: QColor | None = None) -> QPen:
+    pen = QPen(color if color is not None else COLOR_DRAFT, width)
     if dash:
         pen.setStyle(Qt.PenStyle.DashLine)
     return pen
@@ -1609,12 +1733,12 @@ class _RectDraft:
         (x0, y0), (x1, y1) = self.a, self.b
         return ((clean((x0 + x1) / 2), clean((y0 + y1) / 2)), clean(abs(x1 - x0)), clean(abs(y1 - y0)))
 
-    def paint(self, canvas: EditorCanvas, p: QPainter) -> None:
+    def paint(self, canvas: EditorCanvas, p: QPainter, color: QColor | None = None) -> None:
         if self.a is None or self.b is None or not self.dragged:
             return
         (x0, y0), (x1, y1) = self.a, self.b
-        p.setPen(_draft_pen())
-        p.setBrush(QBrush(COLOR_DRAFT_FILL))
+        p.setPen(_draft_pen(color=color))
+        p.setBrush(QBrush(_fill_of(color)))
         p.drawPolygon(_poly_screen(canvas, self.frame, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
 
     def clear(self) -> None:
@@ -1622,8 +1746,20 @@ class _RectDraft:
         self.dragged = False
 
 
+def _fill_of(color: QColor | None) -> QColor:
+    if color is None:
+        return COLOR_DRAFT_FILL
+    fill = QColor(color)
+    fill.setAlpha(45)
+    return fill
+
+
 class _ShapeTool(Tool):
-    """모양 도구 공통: 새 물체의 소유는 캔버스 설정(new_owner). Ctrl을 누른 채 그리면 선택한 물체에 모양을 더한다."""
+    """모양 도구 공통: 새 물체의 소유는 캔버스 설정(new_owner). Ctrl을 누른 채 그리면 선택한 물체에 모양을 더한다.
+    6.2.0: 고무줄 그림은 새 물체의 소유 색(캔버스 owner_color: 에이전트 주황, 세계 회색)이다."""
+
+    def draft_color(self, into: Ref | None) -> QColor | None:
+        return None if into is not None else self.canvas.owner_color()
 
     def _target(self, e: CanvasEvent) -> tuple[Pose, Ref | None]:
         if e.ctrl:
@@ -1663,7 +1799,7 @@ class BoxTool(_ShapeTool):
         if self.into is not None:
             self.run(lambda: add_shape(self.doc, self.into, box_shape(w, h, center)))  # type: ignore[arg-type]
         else:
-            self.run(lambda: add_box(self.doc, self.canvas.new_owner, center, w, h))
+            self.run(lambda: add_box(self.doc, self.canvas.new_owner, center, w, h, motion=self.canvas.new_motion))
         self.canvas.update()
 
     def draft_center(self, e: CanvasEvent) -> Point:
@@ -1678,7 +1814,7 @@ class BoxTool(_ShapeTool):
         self.canvas.update()
 
     def overlay(self, p: QPainter) -> None:
-        self.draft.paint(self.canvas, p)
+        self.draft.paint(self.canvas, p, self.draft_color(self.into))
 
 
 class CircleTool(_ShapeTool):
@@ -1722,7 +1858,7 @@ class CircleTool(_ShapeTool):
             into = self.into
             self.run(lambda: add_shape(self.doc, into, circle_shape(r, center)))
         else:
-            self.run(lambda: add_circle(self.doc, self.canvas.new_owner, center, r))
+            self.run(lambda: add_circle(self.doc, self.canvas.new_owner, center, r, motion=self.canvas.new_motion))
         self.canvas.update()
 
     def busy(self) -> bool:
@@ -1737,8 +1873,9 @@ class CircleTool(_ShapeTool):
             return
         c = self.canvas.world_to_screen(*to_world(self.frame, self.center))
         rr = self.r * self.canvas.scale
-        p.setPen(_draft_pen())
-        p.setBrush(QBrush(COLOR_DRAFT_FILL))
+        color = self.draft_color(self.into)
+        p.setPen(_draft_pen(color=color))
+        p.setBrush(QBrush(_fill_of(color)))
         p.drawEllipse(c, rr, rr)
 
 
@@ -1836,7 +1973,7 @@ class PolyTool(_PointsTool):
         return S.EDC_ERR_POLY_FEW
 
     def commit(self, points: list[Point]) -> Any:
-        return add_poly(self.doc, self.canvas.new_owner, points)
+        return add_poly(self.doc, self.canvas.new_owner, points, motion=self.canvas.new_motion)
 
 
 class TerrainLineTool(_PointsTool):
@@ -2048,6 +2185,16 @@ class VehicleTool(_BodyClickTool):
 
     def commit(self, body: str, local: Point, e: CanvasEvent) -> Any:
         return add_vehicle(self.doc, body)
+
+
+class MoveTool(_BodyClickTool):
+    """밀기(이동) 도구(6.2.0): 에이전트의 움직이는 물체를 누르면 밀기 구동기가 붙고 빈 방향키를 받는다."""
+
+    tool_id = "move"
+    agent_only = True
+
+    def commit(self, body: str, local: Point, e: CanvasEvent) -> Any:
+        return add_move(self.doc, body)
 
 
 class RaysTool(_BodyClickTool):
@@ -3091,7 +3238,7 @@ def make_tool(tool_id: str, canvas: EditorCanvas) -> Tool:
         "sensor_joint_angle": JointAngleTool, "sensor_fuel": FuelSensorTool, "checkpoints": CheckpointTool,
         "motor": MotorTool,
         "spawn": SpawnTool,
-        "path": PathTool, "jump": JumpTool, "wing": WingTool, "aero": AeroTool,
+        "path": PathTool, "jump": JumpTool, "wing": WingTool, "aero": AeroTool, "move": MoveTool,
     }
     cls = classes.get(tool_id)
     if cls is None:

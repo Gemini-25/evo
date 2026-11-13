@@ -2,6 +2,11 @@
 
 한 번에 도구 하나만 켜진다. 도구를 고르면 tool_changed(도구 id). Esc를 누르면 선택 도구로 돌아간다.
 바로 실행하는 도구(지형 자동 생성, 트랙 자동 생성, 남은 시간)는 눌러도 켜진 상태로 남지 않는다.
+
+6.2.0: 맨 앞 묶음 「틀」의 단추 둘(「몸 틀…」·「물건…」, buttons["tpl_body" | "tpl_prop"])은 도구가 아닌 보통 단추다(TOOL_IDS 밖,
+설계 D48). 누르면 template_requested(틀 종류)를 내고, 캔버스가 보관함 창을 띄운다. 「모양」 묶음의 「새로 그리는 것」은 이름표 한 줄 +
+큰 단추 둘(「에이전트(몸)」·「세계(땅·벽·공)」, 소유 색 띠) + 세계일 때만 보이는 고정/움직임 고르기다(설계 DU 4.3.2, 다듬기 U38 ④).
+팔레트의 최소 폭은 안의 위젯이 가로로 다 보이는 폭(+ 세로 스크롤 막대)이다.
 """
 
 from __future__ import annotations
@@ -17,9 +22,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QRadioButton,
+    QComboBox,
     QScrollArea,
     QSizePolicy,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -27,11 +33,23 @@ from PySide6.QtWidgets import (
 
 from evolab.app import strings as S
 from evolab.app import style
-from evolab.app.editor.tools import INSTANT_TOOLS, TOOL_GROUPS, TOOL_HINTS, TOOL_IDS, TOOL_LABELS
+from evolab.app.editor.tools import (
+    INSTANT_TOOLS,
+    OWNER_COLORS,
+    TEMPLATE_BUTTONS,
+    TEMPLATE_HINTS,
+    TEMPLATE_LABELS,
+    TOOL_GROUPS,
+    TOOL_HINTS,
+    TOOL_IDS,
+    TOOL_LABELS,
+    WORLD_MOTIONS,
+)
 
 __all__ = ["Palette", "TOOL_IDS", "tool_icon"]
 
 GROUP_LABELS = {
+    "templates": S.EDC_GROUP_TEMPLATES,
     "select": S.EDC_GROUP_SELECT,
     "shapes": S.EDC_GROUP_SHAPES,
     "terrain": S.EDC_GROUP_TERRAIN,
@@ -49,6 +67,8 @@ _INSTANT_HINTS = {
     "obstacles": S.EDC_HINT_OBSTACLES,
 }
 ICON_SIZE = 20
+MIN_WIDTH = 170
+"""팔레트 최소 폭의 아래 끝(px). 실제 최소 폭은 안의 위젯이 가로로 다 보이는 폭과 이것 가운데 큰 것."""
 
 _FG = QColor("#d8dee9")
 _ACCENT = QColor("#88c0d0")
@@ -220,11 +240,45 @@ def _draw_icon(p: QPainter, tool_id: str, fg: QColor) -> None:
         p.drawPolygon(poly((18, 10), (14, 7.5), (8, 7.8), (2, 10.5), (8, 11), (14, 11.2)))
         use(_ACCENT, 1.6, _ACCENT)
         p.drawEllipse(QPointF(17.5, 10), 1.2, 1.2)
+    elif t == "move":  # 6.2.0 밀기(이동): 둥근 몸과 네 방향 화살표
+        p.drawEllipse(QPointF(10, 10), 3.5, 3.5)
+        use(_FLAME, 1.4)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            tip = QPointF(10 + 8.5 * dx, 10 + 8.5 * dy)
+            p.drawLine(QPointF(10 + 5 * dx, 10 + 5 * dy), tip)
+            p.drawLine(tip, tip + QPointF(-2.5 * dx + 2.5 * dy, -2.5 * dy + 2.5 * dx))
+            p.drawLine(tip, tip + QPointF(-2.5 * dx - 2.5 * dy, -2.5 * dy - 2.5 * dx))
+    elif t == "tpl_body":  # 6.2.0 몸 틀: 막대 사람
+        p.drawEllipse(QPointF(10, 4), 2.2, 2.2)
+        p.drawLine(QPointF(10, 6.5), QPointF(10, 12))
+        p.drawPolyline(poly((5, 9), (10, 8), (15, 9)))
+        p.drawPolyline(poly((6, 18), (10, 12), (14, 18)))
+    elif t == "tpl_prop":  # 6.2.0 물건: 땅·벽·공
+        use(fg, 1.2, QColor("#4c566a"))
+        p.drawRect(QRectF(13, 6, 4, 10))
+        use(_YELLOW, 1.4)
+        p.drawEllipse(QPointF(7, 12.5), 3.5, 3.5)
+        use(fg, 1.6)
+        p.drawLine(QPointF(2, 17), QPointF(18, 17))
     elif t == "aero":  # 바람 줄기
         use(_ACCENT, 1.4)
         for y in (5.0, 10.0, 15.0):
             path = QPolygonF([QPointF(2 + k, y + 1.6 * math.sin(k / 16 * 2 * math.pi)) for k in range(0, 17, 2)])
             p.drawPolyline(path)
+
+
+def _swatch(color: QColor) -> QIcon:
+    """「새로 그리는 것」 단추의 소유 색 띠(세로 막대)."""
+    pm = QPixmap(12, 32)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(color))
+    p.drawRoundedRect(QRectF(0.5, 0.5, 5, 15), 2, 2)
+    p.end()
+    return QIcon(pm)
 
 
 def tool_icon(tool_id: str, fg: QColor | None = None) -> QIcon:
@@ -245,6 +299,10 @@ class Palette(QWidget):
     tool_changed = Signal(str)
     owner_changed = Signal(str)
     """새 물체의 소유: agent 또는 world."""
+    motion_changed = Signal(str)
+    """세계 물체를 그릴 때의 움직임: static 또는 dynamic(6.2.0)."""
+    template_requested = Signal(str)
+    """「틀」 묶음 단추를 눌렀다: 틀 종류(body·prop, 6.2.0). connect_canvas가 canvas.pick_template에 잇는다."""
     snap_changed = Signal(bool, float)
     """격자 맞춤 켬/끔, 간격(m)."""
 
@@ -257,10 +315,12 @@ class Palette(QWidget):
         self.group.setExclusive(True)
 
         inner = QWidget()
+        self.inner = inner
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(2)
-        for group, ids in TOOL_GROUPS:
+        groups: list[tuple[str, list[str]]] = [("templates", list(TEMPLATE_BUTTONS)), *TOOL_GROUPS]
+        for group, ids in groups:
             title = QLabel(GROUP_LABELS[group])
             style.tone(title, "muted")  # 흐린 글(6.2.0 U2). 굵기와 위 여백은 글꼴·여백으로(tone이 스타일시트를 쓴다)
             title.setFont(style.font(title, "strong"))
@@ -269,7 +329,7 @@ class Palette(QWidget):
             if group == "shapes":
                 lay.addWidget(self._owner_row())
             for tool_id in ids:
-                lay.addWidget(self._button(tool_id))
+                lay.addWidget(self._template_button(tool_id) if tool_id in TEMPLATE_BUTTONS else self._button(tool_id))
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(line)
@@ -277,6 +337,7 @@ class Palette(QWidget):
         lay.addStretch(1)
 
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -284,7 +345,7 @@ class Palette(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
-        self.setMinimumWidth(170)
+        self._fit_width()
         self.buttons["select"].setChecked(True)
 
     def _button(self, tool_id: str) -> QToolButton:
@@ -307,20 +368,99 @@ class Palette(QWidget):
         self.buttons[tool_id] = b
         return b
 
+    def _template_button(self, button_id: str) -> QToolButton:
+        """「틀」 묶음의 보통 단추(켜진 상태가 없는 단추: 도구 무리 밖)."""
+        b = QToolButton()
+        b.setText(TEMPLATE_LABELS[button_id])
+        b.setIcon(tool_icon(button_id, self.palette().color(QPalette.ColorRole.WindowText)))
+        b.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        b.setAutoRaise(True)
+        b.setToolTip(TEMPLATE_HINTS[button_id])
+        b.setObjectName(f"tool_{button_id}")
+        b.setCheckable(False)
+        b.clicked.connect(lambda _=False, k=TEMPLATE_BUTTONS[button_id]: self.template_requested.emit(k))
+        self.buttons[button_id] = b
+        return b
+
+    def _owner_button(self, owner: str, text: str, tip: str) -> QToolButton:
+        b = QToolButton()
+        b.setText(text)
+        b.setToolTip(tip)
+        b.setObjectName(f"owner_{owner}")
+        b.setCheckable(True)
+        b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        b.setIcon(_swatch(OWNER_COLORS[owner]))
+        b.setIconSize(QSize(6, 16))
+        b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return b
+
     def _owner_row(self) -> QWidget:
+        """「새로 그리는 것」: 이름표 한 줄 + 큰 단추 둘 + (세계일 때) 고정/움직임 고르기(6.2.0)."""
         w = QWidget()
-        row = QHBoxLayout(w)
-        row.setContentsMargins(4, 0, 0, 2)
-        row.addWidget(QLabel(S.EDC_OWNER_LABEL))
-        self.owner_agent = QRadioButton(S.EDC_OWNER_AGENT)
-        self.owner_world = QRadioButton(S.EDC_OWNER_WORLD)
+        col = QVBoxLayout(w)
+        col.setContentsMargins(4, 0, 0, 2)
+        col.setSpacing(2)
+        self.owner_label = QLabel(S.EDC_OWNER_LABEL)
+        col.addWidget(self.owner_label)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        self.owner_agent = self._owner_button("agent", S.EDC_OWNER_AGENT, S.EDC_OWNER_AGENT_TIP)
+        self.owner_world = self._owner_button("world", S.EDC_OWNER_WORLD, S.EDC_OWNER_WORLD_TIP)
+        self.owner_group = QButtonGroup(self)
+        self.owner_group.setExclusive(True)
+        for b in (self.owner_agent, self.owner_world):
+            self.owner_group.addButton(b)
+            row.addWidget(b)
         self.owner_agent.setChecked(True)
-        self.owner_agent.toggled.connect(lambda on: on and self.owner_changed.emit("agent"))
-        self.owner_world.toggled.connect(lambda on: on and self.owner_changed.emit("world"))
-        row.addWidget(self.owner_agent)
-        row.addWidget(self.owner_world)
-        row.addStretch(1)
+        self.owner_agent.toggled.connect(lambda on: on and self._owner_toggled("agent"))
+        self.owner_world.toggled.connect(lambda on: on and self._owner_toggled("world"))
+        col.addLayout(row)
+        self.world_motion = QComboBox()
+        self.world_motion.setObjectName("world_motion")
+        for motion in WORLD_MOTIONS:
+            self.world_motion.addItem(S.EDC_WORLD_MOTION[motion], motion)
+        self.world_motion.setToolTip(S.EDC_WORLD_MOTION_TIP)
+        self.world_motion.currentIndexChanged.connect(lambda _i: self.motion_changed.emit(self.motion))
+        self.world_motion.setVisible(False)
+        col.addWidget(self.world_motion)
         return w
+
+    def _owner_toggled(self, owner: str) -> None:
+        self.world_motion.setVisible(owner == "world")
+        self.owner_changed.emit(owner)
+
+    @property
+    def owner(self) -> str:
+        return "world" if self.owner_world.isChecked() else "agent"
+
+    @property
+    def motion(self) -> str:
+        return str(self.world_motion.currentData() or "static")
+
+    def set_owner_mode(self, owner: str, motion: str | None = None) -> None:
+        """바깥에서 소유·움직임을 바꾼다(신호도 낸다)."""
+        (self.owner_world if owner == "world" else self.owner_agent).setChecked(True)
+        if motion in WORLD_MOTIONS:
+            self.world_motion.setCurrentIndex(WORLD_MOTIONS.index(motion))
+
+    def _needed_width(self) -> int:
+        """안의 위젯이 가로로 다 보이는 팔레트 폭: 안 위젯의 최소 폭(숨은 고르기 포함) + 세로 스크롤 막대 + 테."""
+        inner = self.inner.minimumSizeHint().width()
+        motion = self.world_motion.sizeHint().width() + 4 + 12  # 숨어 있어도 보일 때 자리가 있게(바깥 여백 6 × 2)
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent, None, self)
+        frame = 2 * self.scroll.frameWidth()
+        return max(MIN_WIDTH, inner, motion) + bar + frame + 2
+
+    def _fit_width(self) -> None:
+        self.setMinimumWidth(self._needed_width())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        """바라는 폭 = 최소 폭(가로로 다 보임). 에디터의 나눔 막대가 이 폭으로 연다(다듬기 U38 ①)."""
+        hint = super().sizeHint()
+        return QSize(self._needed_width(), hint.height())
 
     def _snap_row(self) -> QWidget:
         w = QWidget()
@@ -381,12 +521,18 @@ class Palette(QWidget):
             fg = self.palette().color(QPalette.ColorRole.WindowText)
             for tool_id, b in self.buttons.items():
                 b.setIcon(tool_icon(tool_id, fg))
+        elif ev.type() == QEvent.Type.FontChange and hasattr(self, "inner"):  # 글꼴이 커지면 최소 폭을 다시 잰다
+            self._fit_width()
         super().changeEvent(ev)
 
     def connect_canvas(self, canvas: object) -> None:
-        """캔버스와 양쪽으로 잇는다: 팔레트 -> canvas.set_tool / set_new_owner / set_snap, 캔버스 -> set_tool."""
+        """캔버스와 양쪽으로 잇는다: 팔레트 -> canvas.set_tool / set_new_owner / set_new_motion / pick_template / set_snap,
+        캔버스 -> set_tool."""
         self.tool_changed.connect(canvas.set_tool)  # type: ignore[attr-defined]
         canvas.tool_changed.connect(self.set_tool)  # type: ignore[attr-defined]
         self.owner_changed.connect(canvas.set_new_owner)  # type: ignore[attr-defined]
+        self.motion_changed.connect(canvas.set_new_motion)  # type: ignore[attr-defined]
+        self.template_requested.connect(canvas.pick_template)  # type: ignore[attr-defined]
+        canvas.set_owner_mode(self.owner, self.motion)  # type: ignore[attr-defined]
         self.snap_changed.connect(canvas.set_snap)  # type: ignore[attr-defined]
         self.set_tool(canvas.tool_id)  # type: ignore[attr-defined]
