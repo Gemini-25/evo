@@ -23,7 +23,15 @@ from evolab.app import strings as S
 from evolab.spec import model as m
 from evolab.spec import symbols as sy
 from evolab.spec.compiled import check_env
-from evolab.spec.io import FIELD_SINCE, KIND_SINCE, compile_env, dump_env, env_hash, feature_version, parse_env
+from evolab.spec.io import (
+    FIELD_SINCE,
+    KIND_SINCE,
+    compile_env,
+    dump_env,
+    env_hash,
+    feature_version,
+    parse_env,
+)
 from tests.oracle.frozen import frozen_envs, frozen_run
 
 RELEASE = "v6.1.0"

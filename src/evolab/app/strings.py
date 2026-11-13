@@ -3198,3 +3198,6 @@ TPL_UNIT_NAMES: Final = {"times": "배", "m": "m", "s": "초"}
 CLI_HELP_PRESET_RECIPE: Final = "조리법 JSON 파일, 또는 내장 조리법 이름(예: running)"
 CLI_HELP_PRESET_OUT: Final = "만든 환경 파일을 쓸 곳(없으면 조리법 이름으로 지금 폴더에)"
 CLI_PRESET_SAVED: Final = "환경 파일을 만들었습니다: {path} (형식 {version}, 입력 {inputs}개, 출력 {outputs}개)"
+# 규칙을 더할 수 없는 까닭(presets/rules.available: RULES_NEEDS의 {what})
+RULE_NEEDS_WHAT: Final = {"agent": "에이전트(몸)", "region": "영역(골·결승선 같은 것)", "target": "거리를 잴 대상(공·골 같은 것)"}
+RULES_ALREADY: Final = "이 규칙은 이미 있습니다."

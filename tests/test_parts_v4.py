@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from pathlib import Path
@@ -88,7 +89,7 @@ def test_move_speed_never_overshoots_and_rises_like_the_exponential() -> None:
         ep.step([1.0, 0.0])
         speeds.append(ep.bodies["disc"].velocity.x)
     assert max(speeds) <= 2.5 * (1 + 1e-9)
-    assert all(b >= a for a, b in zip(speeds, speeds[1:], strict=False))
+    assert all(b >= a for a, b in itertools.pairwise(speeds))
     for n in (10, 30, 60):  # 지수 적분: v(n) = vmax (1 − e^(−k n dt))
         assert speeds[n - 1] == pytest.approx(2.5 * (1 - math.exp(-k * n * DT)), rel=0.01)
 
