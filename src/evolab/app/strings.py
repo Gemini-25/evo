@@ -3248,3 +3248,12 @@ PLAY_RESULT_BAND: Final = "{label} · {score}점"
 PLAY_RESULT_KEYS: Final = "R 다시 시작 · N 새 시드"
 # 센서가 없는 환경(표를 숨기고 이 한 줄, U13 ⑥)
 PLAY_NO_SENSORS: Final = "이 환경에는 센서가 없습니다."
+
+# ---------------------------------------------------------------------------
+# 6.2.0 묶음 PC (비교·기록·경주·내보내기: app/compare/*, app/records/view.py, app/race/*, app/export/dialog.py)가 더한 것
+# ---------------------------------------------------------------------------
+# 경주 창의 키(다듬기 U23): Enter·Space는 「출발」/「일시 정지」, R은 「처음부터」(초점 위젯이 쓰지 않은 키만)
+RACE_START_TIP: Final = "모든 칸을 함께 출발시키거나 잠시 멈춥니다(Enter, Space)."
+RACE_RESTART_TIP: Final = "모든 칸을 처음부터 다시 달리게 합니다(R)."
+RACE_WHY_PREPARING: Final = "경주 준비가 끝나면 쓸 수 있습니다."
+RACE_WHY_FAILED: Final = "경주를 준비하지 못했습니다. 위의 알림을 보세요."

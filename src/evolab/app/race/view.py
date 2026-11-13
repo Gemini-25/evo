@@ -28,8 +28,10 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QPaintEvent, QShowEvent, QStandardItemModel
+from PySide6.QtGui import QCloseEvent, QColor, QHideEvent, QKeyEvent, QPaintEvent, QShowEvent, QStandardItemModel
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -47,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.race.model import (
     COURSES,
@@ -327,7 +330,12 @@ class RaceView(QWidget):
         self.message.hide()
         self.start_button = QPushButton(S.RACE_START)
         self.start_button.clicked.connect(self.toggle)
+        # U23: Enter는 「출발」(기본 단추). 다른 단추의 autoDefault는 그대로 둔다(초점을 둔 단추는 Enter로 그 단추를 누름)
+        self.start_button.setDefault(True)
+        self.start_button.setToolTip(S.RACE_START_TIP)
+        style.set_role(self.start_button, "primary")
         self.restart_button = QPushButton(S.RACE_RESTART)
+        self.restart_button.setToolTip(S.RACE_RESTART_TIP)
         self.restart_button.clicked.connect(self.restart)
         self.speed_box = QComboBox()
         for s in SPEEDS:
@@ -597,6 +605,7 @@ class RaceView(QWidget):
         self.t = 0.0
         self._show_time()
         self._update_controls()
+        self.focus_start()
         self.prepared.emit()
         if self.isVisible():
             self.start()
@@ -747,10 +756,36 @@ class RaceView(QWidget):
 
     def _update_controls(self) -> None:
         self.start_button.setText(S.RACE_PAUSE if self.playing else S.RACE_START)
-        self.start_button.setEnabled(self.ready)
-        self.restart_button.setEnabled(self.ready)
-        self.gif_button.setEnabled(self.ready)
+        why = "" if self.ready else (S.RACE_WHY_FAILED if self.failure else S.RACE_WHY_PREPARING)
+        for button in (self.start_button, self.restart_button, self.gif_button):
+            style.set_enabled(button, self.ready, why)
         self._update_hud()
+
+    # ------------------------------------------------------------------
+    # 키 (U23): 창 단위 단축키를 쓰지 않는다. 초점 위젯이 쓰지 않은 키만 여기로 올라온다(단추의 Space는 그 단추,
+    # 체크 상자의 Space는 체크, 고르기 칸의 글자는 글자 찾기). Enter는 대화 상자의 기본 단추(「출발」)가 받는다.
+    # ------------------------------------------------------------------
+    def focus_start(self) -> None:
+        """초점을 「출발」에 둔다: 창이 뜰 때와 준비가 끝날 때. 사용자가 단추가 아닌 칸(고르기 칸·체크 상자)에 둔 초점은
+        옮기지 않는다."""
+        if not self.start_button.isEnabled() or not self.isVisible():
+            return
+        fw = QApplication.focusWidget()
+        if fw is not None and self.isAncestorOf(fw) and not isinstance(fw, QAbstractButton):
+            return
+        self.start_button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        plain = event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier)
+        if plain and self.ready and event.key() == Qt.Key.Key_Space:
+            self.toggle()
+            event.accept()
+            return
+        if plain and self.ready and event.key() == Qt.Key.Key_R:
+            self.restart()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
     # 경주 영상
@@ -869,6 +904,13 @@ class RaceView(QWidget):
         elif not self.ready and self._cancel is None and self.entries and not self.failure:
             self.prepare()  # 준비 중에 닫았다가 다시 연 창
         self._resume_on_show = False
+        QTimer.singleShot(0, self._focus_start_if_alive)
+
+    def _focus_start_if_alive(self) -> None:
+        try:
+            self.focus_start()
+        except RuntimeError:  # 창이 이미 지워졌다
+            pass
 
 
 class RaceDialog(QDialog):
