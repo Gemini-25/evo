@@ -67,6 +67,8 @@ class GrowTile(_WatchTile):
     """「뇌 크기」: 자라는 뇌 실행의 세대마다 은닉 뉴런 수(계단)와 연결 수(점선), 자란 세대 세로선, 보는 세대 세로선."""
 
     follows_axis = True
+    _legend_key: tuple[str, bool, bool] | None = None
+    """마지막으로 범례를 만든 (마우스 글, 계열이 있나, 자란 세대가 있나): 범례 글은 이 셋으로 정해진다(update_legend)."""
 
     def __init__(self, dash: Dashboard, tile_id: str) -> None:
         super().__init__(dash, tile_id)
@@ -290,6 +292,15 @@ class GrowTile(_WatchTile):
             self.focus_line.hide()
 
     # -- 범례·마우스 ------------------------------------------------------------
+    def update_legend(self) -> None:
+        """범례 글은 마우스 글(_hover_text)과 범례 항목(계열이 있나, 자란 세대가 있나)으로 정해진다: 셋이 그대로면 다시 만들지
+        않는다(세대가 올 때마다 갱신이 부른다)."""
+        s = self.series
+        key = (self._hover_text, s is not None, s is not None and len(s.events) > 0)
+        if key != self._legend_key:
+            self._legend_key = key
+            super().update_legend()
+
     def entries(self) -> list[_Entry]:
         s = self.series
         if s is None:

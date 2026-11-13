@@ -145,6 +145,8 @@ class _NeuronCoords:
 
     def __init__(self, frame: BrainFrame) -> None:
         self.frame = frame
+        self.shape = (frame.layout.dim,)
+        """유전자 모양(틀 길이,). layout.dim은 부를 때마다 층을 더해 세는 속성이라 여기 적어 둔다."""
         sizes = frame.sizes
         coords: list[np.ndarray] = []
         starts: list[int] = []
@@ -916,15 +918,20 @@ class BrainTile(_WatchTile):
             self._coords = None
         return self._frame[1]
 
-    def _active(self, frame: BrainFrame, genome: np.ndarray) -> tuple[np.ndarray, ...]:
-        """유전자의 켜진 뉴런(은닉층마다 bool). frame.active_neurons(genome)과 같은 답을 뉴런 좌표 표(_NeuronCoords)로 구한다.
-        모양이 틀과 다르면 FrameError(frame.active_neurons의 것)."""
-        g = np.asarray(genome)
-        if g.shape != (frame.layout.dim,):
-            return tuple(frame.active_neurons(g))
+    def _coords_for(self, frame: BrainFrame) -> _NeuronCoords:
+        """이 틀의 뉴런 좌표 표(처음 쓸 때 만든다)."""
         coords = self._coords
         if coords is None or coords.frame is not frame:
             coords = self._coords = _NeuronCoords(frame)
+        return coords
+
+    def _active(self, frame: BrainFrame, genome: np.ndarray) -> tuple[np.ndarray, ...]:
+        """유전자의 켜진 뉴런(은닉층마다 bool). frame.active_neurons(genome)과 같은 답을 뉴런 좌표 표(_NeuronCoords)로 구한다.
+        모양이 틀과 다르면 FrameError(frame.active_neurons의 것)."""
+        coords = self._coords_for(frame)
+        g = np.asarray(genome)
+        if g.shape != coords.shape:
+            return tuple(frame.active_neurons(g))
         return coords.masks(g)
 
     def active_at(self, generation: int) -> tuple[np.ndarray, ...] | None:
@@ -941,14 +948,17 @@ class BrainTile(_WatchTile):
         if hit is not None:
             return hit
         entry = self.history.entry(int(generation))
+        block = entry.map_genomes if entry is not None else None
         genome: np.ndarray | None = None
-        if entry is not None and entry.map_genomes is not None:
-            genome = entry.map_genomes[entry.map_rep]  # float16 그대로: 0인지만 본다
+        if block is not None:
+            assert entry is not None
+            genome = block[entry.map_rep]  # float16 그대로: 0인지만 본다
         else:
             genome = self.dash.rep_genome(int(generation))
-        if genome is None or genome.shape != (meta.dim,):
+        coords = self._coords_for(frame)
+        if genome is None or genome.shape != coords.shape:
             return None
-        out = self._active(frame, genome)
+        out = coords.masks(genome)
         if len(self._active_cache) >= ACTIVE_CACHE:
             self._active_cache.pop(next(iter(self._active_cache)))
         self._active_cache[int(generation)] = out
