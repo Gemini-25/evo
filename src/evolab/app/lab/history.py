@@ -514,15 +514,21 @@ def grow_series(columns: Mapping[str, np.ndarray]) -> GrowSeries | None:
     if neurons is None:
         return None
     n = np.asarray(neurons, dtype=np.float64)
-    ok = np.isfinite(n)
-    if not ok.any():
+    rows = np.isfinite(n).nonzero()[0]  # 오름차순 intp
+    if not rows.size:
         return None
-    rows = np.flatnonzero(ok).astype(np.intp)
+    # 자라는 뇌 실행은 모든 줄에 값이 있다(whole): 줄을 골라 담는 대신 한 번 복사한다. 「뇌 크기」 타일이 세대마다 부르므로
+    # 넘파이 호출 수를 줄인다(측정 M12: 세대가 올 때의 갱신은 호출마다 캐시가 식어 있어 호출 수가 곧 비용이다)
+    whole = rows.size == n.size
     links = columns.get("brain_links")
-    lk = np.asarray(links, dtype=np.float64)[rows] if links is not None else np.full(len(rows), math.nan)
+    if links is None:
+        lk = np.full(rows.size, math.nan)
+    else:
+        lk = np.asarray(links, dtype=np.float64)
+        lk = lk.copy() if whole else lk[rows]
     grow = columns.get("grow")
-    events = np.zeros(0, dtype=np.intp) if grow is None else np.flatnonzero(np.asarray(grow) == 1.0).astype(np.intp)
-    return GrowSeries(rows=rows, neurons=n[rows], links=lk, events=events)
+    events = np.zeros(0, dtype=np.intp) if grow is None else (np.asarray(grow) == 1.0).nonzero()[0]
+    return GrowSeries(rows=rows, neurons=n.copy() if whole else n[rows], links=lk, events=events)
 
 
 # ---------------------------------------------------------------------------
