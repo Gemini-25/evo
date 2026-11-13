@@ -523,6 +523,55 @@ GLYPH_HIDE = "\u2715"
 
 
 # ---------------------------------------------------------------------------
+# 축
+class _Axis(pg.AxisItem):
+    """(6.2.0 U18, 다듬기 3.3) 대시보드 그래프의 축. integer(세대 축이면 참)일 때 눈금 간격이 1보다 작아지지 않고(큰 눈금 ≥ 1,
+    작은 눈금 없음) 눈금 글이 정수다. 어느 축이든 절댓값 1,000 이상의 눈금 글에 천 단위 구분 기호를 넣는다.
+
+    눈금 글은 범위가 바뀔 때만 다시 만든다(pyqtgraph가 그림을 기억해 둔다). 로그 축과 tickSpacing을 따로 준 축은 원래대로."""
+
+    def __init__(self, orientation: str, *, integer: bool = False, **kwargs: Any) -> None:
+        super().__init__(orientation, **kwargs)
+        self.integer = integer
+
+    def set_integer(self, on: bool) -> None:
+        """정수 눈금을 켜고 끈다(가로축을 세대 ↔ 시험 횟수·시간으로 바꿀 때). 바뀌면 눈금을 다시 그린다."""
+        if on == self.integer:
+            return
+        self.integer = on
+        self.picture = None
+        self.update()
+
+    def tickSpacing(self, minVal: float, maxVal: float, size: float) -> list[tuple[float, float]]:  # noqa: N802
+        levels = super().tickSpacing(minVal, maxVal, size)
+        if not self.integer or self._tickSpacing is not None or not levels:
+            return levels
+        return [(max(1.0, float(levels[0][0])), 0.0)]  # 1·2·5·10… 배 간격은 1 이상이면 이미 정수다
+
+    def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:  # noqa: N802
+        if self.logMode:
+            return super().tickStrings(values, scale, spacing)
+        step = abs(spacing * scale)
+        if self.integer and step >= 1.0:
+            return [f"{round(v * scale):,}" for v in values]
+        places = max(0, math.ceil(-math.log10(step))) if step > 0.0 else 0
+        out: list[str] = []
+        for v in values:
+            vs = v * scale
+            a = abs(vs)
+            if a < step * 1e-6:  # 0에 붙은 반올림 찌꺼기(2e-17 따위)
+                text = "0"
+            elif a < 0.001:
+                text = f"{vs:g}"
+            else:
+                text = f"{vs:,.{places}f}"
+                if text.startswith("-") and not text.strip("-0.,"):
+                    text = text[1:]
+            out.append(text)
+        return out
+
+
+# ---------------------------------------------------------------------------
 # 타일
 class _GraphView(pg.GraphicsLayoutWidget):
     """그래프 칸. 기본 권장 크기(600×480)가 크면 스크롤 영역이 타일을 너무 키워서 작게 알린다."""
@@ -543,6 +592,8 @@ class _Tile(QFrame):
 
     follows_axis = True  # 가로축 전환을 따르는가 (아니면 언제나 세대)
     mark_labels = False  # 세로선 위에 사건 이름을 적는가
+    x_generation = True
+    """(6.2.0 U18) 가로축을 따르지 않을 때 가로축이 세대인가(유전자 지도처럼 세대가 아닌 가로축은 거짓): 세대면 눈금이 정수."""
 
     def __init__(self, dash: Dashboard, tile_id: str) -> None:
         super().__init__()
@@ -596,6 +647,8 @@ class _Tile(QFrame):
         self.view.ci.setContentsMargins(2, 2, 6, 2)
         self.view.ci.setSpacing(0)
         self.message = QLabel()
+        self.empty_text = S.DASH_TILE_EMPTY.get(tile_id, "")
+        """(6.2.0 U18) 통계 줄이 0일 때 그래프 대신 쓰는 한 문장(「학습 그래프」 쪽 타일만. 「보는 재미」 타일은 저마다의 글)."""
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.message.setWordWrap(True)
         self.message.setStyleSheet(f"color: {self.theme.ink2};")
@@ -619,7 +672,8 @@ class _Tile(QFrame):
     # -- 그래프 만들기 --------------------------------------------------------
     def add_plot(self, y_label: str, *, x_axis: bool = True) -> pg.PlotItem:
         t = self.theme
-        plot = self.view.ci.addPlot(row=len(self.plots), col=0)
+        axes = {"left": _Axis("left"), "bottom": _Axis("bottom", integer=self.x_integer()), "right": _Axis("right")}
+        plot = self.view.ci.addPlot(row=len(self.plots), col=0, axisItems=axes)
         plot.setMenuEnabled(False)
         plot.showGrid(x=False, y=True, alpha=0.35)
         for name in ("left", "bottom"):
@@ -648,9 +702,18 @@ class _Tile(QFrame):
     def x_label(self) -> str:
         return S.DASH_AXIS_NAMES[self.dash.axis if self.follows_axis else "generation"]
 
+    def x_integer(self) -> bool:
+        """(6.2.0 U18) 지금 가로축이 세대인가(눈금을 정수로)."""
+        return self.dash.axis == "generation" if self.follows_axis else self.x_generation
+
     def axis_changed(self) -> None:
         if not self.follows_axis or not self.plots:
             return
+        integer = self.x_integer()
+        for plot in self.plots:
+            ax = plot.getAxis("bottom")
+            if isinstance(ax, _Axis):
+                ax.set_integer(integer)
         self.plots[-1].setLabel("bottom", self.x_label(), color=self.theme.ink2)
         self.reset_view()
         self._mark_key = None
@@ -676,8 +739,20 @@ class _Tile(QFrame):
         """대시보드 자료로 그래프를 다시 채운다(항목은 그대로, setData만)."""
         self.dirty = False
         self.update_data()
+        if self.empty_text:
+            self._show_empty(self.dash.table.n == 0)
         self.sync_marks()
         self.update_legend()
+
+    def _show_empty(self, empty: bool) -> None:
+        """(6.2.0 U18) 통계 줄이 없으면 빈 축 대신 타일별 한 문장(empty_text), 줄이 생기면 그래프로 돌아간다."""
+        if empty:
+            if self.message.text() != self.empty_text:
+                self.message.setText(self.empty_text)
+            if self.stack.currentWidget() is not self.message:
+                self.stack.setCurrentWidget(self.message)
+        elif self.stack.currentWidget() is self.message and self.message.text() == self.empty_text:
+            self.stack.setCurrentWidget(self.view)
 
     def update_data(self) -> None:
         raise NotImplementedError
@@ -1182,6 +1257,8 @@ class _BlocksTile(_StackTile):
         d = self.dash
         series = self.block_series()
         if not series and d.table.n > 0:
+            if self.message.text() != S.DASH_BLOCKS_NONE:  # 줄이 없을 때는 같은 칸에 빈 타일 글(U18)을 쓴다
+                self.message.setText(S.DASH_BLOCKS_NONE)
             self.stack.setCurrentWidget(self.message)
             self.set_stack([], np.zeros((0, 0)), np.zeros(0), True)
             self.total.setData([], [])

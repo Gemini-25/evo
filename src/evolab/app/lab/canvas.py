@@ -298,6 +298,10 @@ class SpectatorCanvas(QWidget):
         """정적인 세계를 그려 둔 그림으로 다시 쓴다(성능 측정에서 끄고 비교할 수 있게)."""
         self.empty_text = S.SPEC_NO_SCENE
         """세계가 없을 때 가운데에 쓰는 글. 준비 중을 다른 곳에서 알리는 화면(나란히 경주 칸)은 빈 글로 둔다."""
+        self.notice = ""
+        """(6.2.0 U6) 가운데에 띄운 멈춘 알림 글(""이면 없음). 세계가 없을 때는 empty_text 대신 이 글을 쓴다(set_notice)."""
+        self._notice_box: tuple[str, int, int, QRectF] | None = None
+        """알림 상자 자리 기억: (글, 캔버스 폭, 높이, 글 상자). 글과 크기가 같으면 글자 재기를 다시 하지 않는다."""
         self._t = 0.0
         self._zoom = 1.0
         self._center = (0.0, 0.0)
@@ -575,6 +579,17 @@ class SpectatorCanvas(QWidget):
     def set_hud(self, text: str) -> None:
         """구석의 작은 글상자(세대, 시각, 배속 등). 빈 글이면 숨긴다."""
         self.hud = text
+        self.update()
+
+    def set_notice(self, text: str) -> None:
+        """(6.2.0 U6, 다듬기 3.3) 캔버스 가운데에 HUD 상자 모양의 멈춘 글을 띄운다. 빈 글이면 지운다(그리는 일 없음).
+
+        세계가 없을 때는 empty_text보다 앞선다(「1세대를 계산하는 중…」이 「세계 없음」을 가린다). 같은 글이면 아무것도 하지
+        않는다(다시 그리기 없음)."""
+        if text == self.notice:
+            return
+        self.notice = text
+        self._notice_box = None
         self.update()
 
     def agent_frame(self, index: int) -> tuple[int, bool] | None:
@@ -881,7 +896,9 @@ class SpectatorCanvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.world is None:
             p.fillRect(self.rect(), COLOR_BG)
-            if self.empty_text:
+            if self.notice:
+                self._draw_notice(p)
+            elif self.empty_text:
                 p.setPen(COLOR_HUD)
                 p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.empty_text)
             p.end()
@@ -904,6 +921,8 @@ class SpectatorCanvas(QWidget):
         p.resetTransform()
         self._draw_legend(p)
         self._draw_hud(p)
+        if self.notice:
+            self._draw_notice(p)
         p.end()
 
     def _paint_static(self, p: QPainter, base: QTransform, s: float, ox: float, oy: float) -> None:
@@ -1167,6 +1186,31 @@ class SpectatorCanvas(QWidget):
         p.drawRoundedRect(box, 4.0, 4.0)
         p.setPen(COLOR_HUD)
         p.drawText(box.adjusted(8.0, 5.0, -8.0, -5.0), int(Qt.AlignmentFlag.AlignLeft), self.hud)
+
+    def notice_rect(self) -> QRectF:
+        """알림 상자의 자리(캔버스 좌표). 알림이 없으면 빈 사각형."""
+        if not self.notice:
+            return QRectF()
+        w, h = self.width(), self.height()
+        cached = self._notice_box
+        if cached is None or cached[:3] != (self.notice, w, h):
+            flags = int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap)
+            limit = max(40.0, min(float(w) - 40.0, 520.0))
+            r = self._font_metrics.boundingRect(QRectF(0.0, 0.0, limit, 10000.0), flags, self.notice)
+            bw, bh = r.width() + 24.0, r.height() + 16.0
+            cached = (self.notice, w, h, QRectF((w - bw) / 2.0, (h - bh) / 2.0, bw, bh))
+            self._notice_box = cached
+        return QRectF(cached[3])
+
+    def _draw_notice(self, p: QPainter) -> None:
+        box = self.notice_rect()
+        p.setFont(self._font)
+        p.setPen(_pen(COLOR_HUD_EDGE, 1.0))
+        p.setBrush(QBrush(COLOR_HUD_BOX))
+        p.drawRoundedRect(box, 4.0, 4.0)
+        p.setPen(COLOR_HUD)
+        flags = int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap)
+        p.drawText(box.adjusted(12.0, 8.0, -12.0, -8.0), flags, self.notice)
 
     # ------------------------------------------------------------------
     # 입력

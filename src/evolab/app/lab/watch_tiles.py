@@ -541,6 +541,7 @@ class GeneMapTile(_WatchTile):
     잔상 점을 누르면 그 세대로(focus_requested), 점을 두 번 누르면 그 개체 재생(individual_requested)."""
 
     follows_axis = False
+    x_generation = False  # 가로축은 PCA 첫 축(눈금 글은 숨김): 정수 눈금으로 하지 않는다(U18)
     SETTING_KEYS = ("genemap_color",)
 
     def __init__(self, dash: Dashboard, tile_id: str) -> None:
