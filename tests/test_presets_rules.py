@@ -321,7 +321,7 @@ def test_summary_line() -> None:
     R.add_rule(data, "fall", parts=["torso"], what="tag.ground", root="torso", height=0.0, penalty=1.0)
     R.add_rule(data, "save_energy", weight=0.05)
     R.add_rule(data, "near", thing="ball", where="goal", per_m=2.0, when="min")
-    assert R.summary(data) == "앞으로 간 거리 × 1 − 넘어짐 × 1 − 힘 × 0.05 − 공에서 골까지 거리 × 2"
+    assert R.summary(data) == "오른쪽으로 간 거리 × 1 − 넘어짐 × 1 − 힘 × 0.05 − 공에서 골까지 거리 × 2"
     data["scoring"]["blocks"].append({"kind": "final_speed", "id": "fast", "body": "torso"})
     assert R.summary(data).endswith(" + " + S.RULE_SUMMARY_TERMS["other"].format(n=1))
     data["scoring"]["formula"] = "fast"

@@ -96,7 +96,7 @@ class _StopFlag:
 def _config_from_args(args: Any, base: TrainConfig | None = None, spec: EnvSpec | None = None) -> TrainConfig:
     """명령줄 인수로 설정을 만든다. base가 없으면 새 실행: 자동 재시작 같은 권장값(NEW_RUN_DEFAULTS)과, spec에 있음 유전자가
     있으면 구조 뒤집기 권장값(v2.1, for_new_run(spec)) 위에 인수. --structure-flip은 GA·담금질 둘 다의 확률이다."""
-    c = base.to_dict() if base is not None else TrainConfig.for_new_run(spec).to_dict()
+    given: dict[str, Any] = {}
     for key, attr in (
         ("method", "method"), ("run_seed", "seed"), ("popsize", "popsize"), ("sigma0", "sigma"),
         ("max_generations", "max_generations"), ("max_evaluations", "max_evaluations"), ("max_time", "max_time"),
@@ -107,9 +107,12 @@ def _config_from_args(args: Any, base: TrainConfig | None = None, spec: EnvSpec 
     ):
         value = getattr(args, attr, None)
         if value is not None:
-            c[key] = value
+            given[key] = value
     if getattr(args, "no_restart", False):
-        c["restart_patience"] = None
+        given["restart_patience"] = None
+    # 새 실행이면 인수를 for_new_run에 넘긴다: 프리셋 권장값(editor.train)은 준 검증 주기 등과 맞지 않으면 빠져야 한다(설계 D31).
+    c = base.to_dict() if base is not None else TrainConfig.for_new_run(spec, **given).to_dict()
+    c.update(given)
     flip = getattr(args, "structure_flip", None)
     if flip is not None:
         c["ga_structure_flip"] = c["sa_structure_flip"] = flip

@@ -720,7 +720,7 @@ class LabView(QWidget):
         """상태 글 끝줄(학습 전): 프리셋 권장 설정을 칸에 넣었다는 한 줄(LAB_PRESET_TRAIN_APPLIED). 실행이 바뀌면 지움."""
         self._preset_form = False
         """「학습 안정성」 칸에 지금 프리셋 권장값이 들어 있다(다음에 권장값 없는 환경을 고르면 새 실행 기본값으로 되돌린다)."""
-        self._emitted_state: str | None = None
+        self._emitted_state: Any = None
         self._roles_key: tuple[Any, ...] | None = None
         self._why_key: tuple[bool, ...] | None = None
         self._stop_reason = ""
@@ -2268,6 +2268,7 @@ class LabView(QWidget):
     def _update_roles(self, active: bool) -> None:
         """(6.2.0 U7) 「진행」 묶음의 으뜸 단추 하나와 상태 점. 같으면 바로 돌아간다(세대마다 불림). 상태가 바뀌었을 때만
         state_changed를 낸다."""
+        self.dashboard.set_live(active)  # 첫 세대 전 타일 문장(「학습을 시작하면…」)과 안내 카드가 겹치지 않게(U18)
         if active:
             primary = self.btn_pause if self.state in ("starting", "running") else self.btn_continue
         else:
@@ -2278,8 +2279,10 @@ class LabView(QWidget):
             for button in (self.btn_start, self.btn_pause, self.btn_continue):
                 style.set_role(button, "primary" if button is primary else "normal")
             self.state_dot.set_kind(self.state)
-        if self.state != self._emitted_state:
-            self._emitted_state = self.state
+        # 학습이 없을 때 다른 저장된 실행을 열면 상태 글(「저장됨」)은 같아도 꼬리표·제목의 실행·세대가 바뀐다: 그때도 낸다
+        emit_key = (self.state, None if active else (str(self.run_dir), self.generation))
+        if emit_key != self._emitted_state:
+            self._emitted_state = emit_key
             self.state_changed.emit(self.state)
 
     # ------------------------------------------------------------------

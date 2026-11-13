@@ -453,7 +453,7 @@ def _preset(recipe_arg: str, out: Path | None) -> int:
     text = dump_env(spec.file)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        target.write_bytes(text.encode("utf-8"))  # 윈도우에서도 LF 그대로(.gitattributes eol=lf, W1의 SHA-256 비교)
     except OSError as exc:
         _print_err(S.PRESET_SAVE_FAILED.format(reason=exc.strerror or exc))
         return 1

@@ -81,6 +81,7 @@ def _heat_map(theme: Theme) -> pg.ColorMap:
 def _style_bar(bar: pg.ColorBarItem, theme: Theme) -> None:
     bar.axis.setPen(_pen(theme.axis, 1))
     bar.axis.setTextPen(_pen(theme.tick, 1))
+    bar.getAxis("left").setTextPen(_pen(theme.ink2, 1))  # 세로 막대의 이름 글(왼쪽 축): 기본 회색 대신 테마 색
 
 
 def density_lut() -> np.ndarray:

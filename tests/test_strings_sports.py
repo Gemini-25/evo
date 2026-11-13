@@ -30,8 +30,6 @@ SPORTS = ("running",)
 
 PENDING = {
     "HINT_LAB_IDLE_SPORT": "Ha: help/hints.lab_idle_text가 내장 종목 환경이면 이 글을 쓴다",
-    "SETTINGS_PRESET_USAGE_LOG": "Ha: 설정 메뉴의 체크(preset.wizard.set_usage_log_enabled, D49 「설정으로 끔」)",
-    "SETTINGS_PRESET_USAGE_LOG_TIP": "Ha: 위 체크의 풍선",
     "PRESET_COACH": "Ha: 안내 창 처음 풍선(DU 4.8, 6.2.0에서 하지 않음)",
     "PRESET_SAVED": "Ha·ED2: 안내 창이 저장한 뒤 상태 줄 한 줄",
     "TPL_BUILTIN": "W: 보관함 창에서 내장 틀과 사용자 틀을 가르는 꼬리표",

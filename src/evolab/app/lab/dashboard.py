@@ -746,8 +746,8 @@ class _Tile(QFrame):
         """대시보드 자료로 그래프를 다시 채운다(항목은 그대로, setData만)."""
         self.dirty = False
         self.update_data()
-        if self.empty_text:
-            self._show_empty(self.dash.table.n == 0)
+        if self.empty_text:  # 학습이 도는 동안(첫 세대 전)은 「학습을 시작하면…」 대신 대시보드 안내 카드(HINT_DASH_EMPTY)만
+            self._show_empty(self.dash.table.n == 0 and not getattr(self.dash, "live", False))
         self.sync_marks()
         self.update_legend()
 
@@ -1082,6 +1082,8 @@ class _HeatmapTile(_Tile):
         )
         self.bar.axis.setPen(_pen(t.axis, 1))
         self.bar.axis.setTextPen(_pen(t.tick, 1))
+        # 세로 막대의 이름(label)은 왼쪽 축에 붙는다(pyqtgraph ColorBarItem): 그 글도 테마 색(기본 회색은 밝은 바탕에서 2.9:1)
+        self.bar.getAxis("left").setTextPen(_pen(t.ink2, 1))
         self.bar.setImageItem(self.image, insert_in=self.plot)
         self._first_gen = _NAN
         self._hover_text = ""
@@ -1548,6 +1550,8 @@ class Dashboard(QWidget):
         self.play_time = 0.0
         """show_time으로 받은 마지막 재생 시각(초)."""
         self.flipping = False
+        self.live = False
+        """학습 프로세스가 도는 중(실험실이 set_live로 알림). 그동안 타일의 빈 상태 문장을 보이지 않는다(U18)."""
         """「세대 넘겨 보기」 중(유전자 지도 축을 다시 맞추지 않음)."""
         self.history: RunHistory = RunHistory()
         self.history_loading: tuple[int, int] | None = None
@@ -2129,6 +2133,13 @@ class Dashboard(QWidget):
         if self.follow is not None and latest is not None:
             return min(self.follow, latest)
         return latest
+
+    def set_live(self, on: bool) -> None:
+        """학습 프로세스가 도는지(시작하는 중 포함). 바뀌면 빈 상태 문장이 있는 타일을 다시 그린다."""
+        on = bool(on)
+        if on != self.live:
+            self.live = on
+            self._invalidate([tid for tid, tile in self._tiles.items() if getattr(tile, "empty_text", "")])
 
     def set_flipping(self, on: bool) -> None:
         """「세대 넘겨 보기」 중이면 True(그동안 유전자 지도 축을 다시 맞추지 않는다)."""

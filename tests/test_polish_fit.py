@@ -356,3 +356,106 @@ def test_c8_tooltips_are_at_most_440_px_wide(qtbot: Any, isolated: Path) -> None
         assert max(WIDEST) > 300  # 긴 풍선(줄바꿈된 것)도 띄워 보았다
     if LINUX:
         assert not any(wide.values()), {k: v for k, v in wide.items() if v}
+
+
+# ---------------------------------------------------------------------------
+# C2·C5: 경주 창·내보내기 창·반복 실행 창(다듬기 5.1 C2가 이름 대는 「경주·내보내기」, 1.5 표의 대화 상자 으뜸 단추)
+# ---------------------------------------------------------------------------
+_LANDER = paths.builtin_env_dir() / "lander.evoenv"
+
+
+def _race_dialog(qtbot: Any) -> Any:
+    import numpy as np
+
+    from evolab.app.race import model as M
+    from evolab.app.race.model import RaceEntry
+    from evolab.app.race.view import RaceDialog
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import compile_env, env_hash
+
+    text = _LANDER.read_text(encoding="utf-8")
+    spec = M.compile_cached(text)
+    size = layout_for(spec).dim
+    h = env_hash(compile_env(text).file)[:16]
+    rng = np.random.default_rng(7)
+    entries = [RaceEntry(f"칸 {k}", "", c, text, h, rng.normal(0, 0.5, size), 1)
+               for k, c in enumerate(("#3987e5", "#d95926"))]
+    dlg = RaceDialog()
+    qtbot.addWidget(dlg)
+    dlg.set_race(entries, title=S.RACE_TITLE)
+    return dlg
+
+
+def _export_dialog(qtbot: Any, tmp: Path) -> Any:
+    import numpy as np
+    from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QColor
+
+    from evolab.app.export.dialog import ExportDialog
+    from evolab.engine import seeds
+    from evolab.engine.replay import replay
+    from evolab.policy.genome import layout_for
+    from evolab.spec.io import load_env
+
+    spec = load_env(_LANDER)
+    layout = layout_for(spec)
+    reps = [replay(spec, layout, np.random.default_rng(k).normal(0.0, 1.0, layout.dim), seeds.display_trial())
+            for k in (1, 2)]
+    settings = QSettings(str(tmp / "export.ini"), QSettings.Format.IniFormat)
+    dlg = ExportDialog(None, kind="race", items=[(r, QColor(c), n) for r, c, n in zip(
+        reps, ("#3987e5", "#d95926"), ("a", "b"), strict=True)], title="나란히 경주", default_name="경주", meta={},
+        settings=settings, probe=False)
+    qtbot.addWidget(dlg)
+    return dlg
+
+
+@pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+def test_c2_race_window(qtbot: Any, isolated: Path, scaled: float, size: tuple[int, int]) -> None:
+    dlg = _race_dialog(qtbot)
+    dlg.resize(*size)
+    dlg.show()
+    QTest.qWaitForWindowExposed(dlg)
+    qtbot.waitUntil(lambda: dlg.view.ready, timeout=30000)
+    QTest.qWait(50)
+    report = (clipped(dlg), hscrolls(dlg))
+    dlg.close()
+    if LINUX:
+        assert not report[0] and not report[1], report
+    else:
+        assert dlg.view.start_button.isVisibleTo(dlg)
+
+
+def test_c2_export_dialog_all_formats(qtbot: Any, isolated: Path, scaled: float) -> None:
+    dlg = _export_dialog(qtbot, isolated)
+    dlg.show()
+    QTest.qWaitForWindowExposed(dlg)
+    report = {}
+    for fmt in ("mp4", "gif", "html"):
+        dlg.set_format(fmt)
+        QApplication.processEvents()
+        report[fmt] = (clipped(dlg), hscrolls(dlg))
+    dlg.close()
+    if LINUX:
+        assert all(not bad and not bars for bad, bars in report.values()), report
+
+
+def test_c5_export_and_repeat_dialogs_have_one_primary_default(qtbot: Any, isolated: Path) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from evolab.app.compare.repeat import RepeatDialog
+
+    export = _export_dialog(qtbot, isolated)
+    export.show()
+    QTest.qWaitForWindowExposed(export)
+    repeat = RepeatDialog(runs_dir=isolated / "runs", env_path=_LANDER)
+    qtbot.addWidget(repeat)
+    repeat.show()
+    QTest.qWaitForWindowExposed(repeat)
+    for dlg, text in ((export, S.EXP_SAVE), (repeat, S.CMP_REPEAT_START)):
+        shown, on = _primaries(dlg)
+        assert len(shown) == 1 and on == shown, (type(dlg).__name__, [b.text() for b in shown])
+        button = shown[0]
+        assert isinstance(button, QPushButton) and button.text() == text, type(dlg).__name__
+        assert button.isDefault(), (type(dlg).__name__, QApplication.focusWidget())
+    export.close()
+    repeat.close()

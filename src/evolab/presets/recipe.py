@@ -21,7 +21,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from evolab import paths
 from evolab.app import strings as S
@@ -480,14 +480,27 @@ def build(recipe: Recipe, lib: Library | None = None) -> dict[str, Any]:
     if arena.bounds is not None:
         world["bounds"] = evaluate(list(arena.bounds), arena_values)
     view = evaluate(list(arena.view), arena_values) if arena.view is not None else None
-    # 물건
+    seats = recipe.players.seats or [Seat(recipe.roles[0].id)]
+    # 물건: 자리 이름으로 놓되, 선수 자리나 앞서 놓은 물건과 같은 점이면 PROP_GAP씩 +x로 비킨다(시작부터 겹치지 않게).
+    # 겹치지 않는 조리법(내장 drill·running 등)은 예전과 같은 결과다.
+    taken: list[tuple[float, float]] = []
+    for seat in seats:
+        role = next((r for r in recipe.roles if r.id == seat.role), None)
+        if role is not None:
+            taken.append(tuple(role.body.at) if role.body.at is not None  # type: ignore[arg-type]
+                         else _spawn_point(arena, arena_values, seat.spawn))
     for i, use in enumerate(recipe.props):
         tpl = _get(lib, use.template)
         used_templates[tpl.id] = template_hash(tpl)
-        at = tuple(use.at) if use.at is not None else _spawn_point(arena, arena_values, use.spawn or tpl.id)
+        if use.at is not None:
+            at = (float(use.at[0]), float(use.at[1]))
+        else:
+            at = _spawn_point(arena, arena_values, use.spawn or tpl.id)
+            while any(abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in taken):
+                at = (at[0] + PROP_GAP, at[1])
+        taken.append(at)
         built.maps[f"prop{i}"] = _place(data, tpl, use, (float(at[0]), float(at[1])))
     # 역할의 몸(6.2.0: 혼자. 자리 하나에 선수 하나)
-    seats = recipe.players.seats or [Seat(recipe.roles[0].id)]
     placed: set[str] = set()
     for seat in seats:
         role = next((r for r in recipe.roles if r.id == seat.role), None)
@@ -671,6 +684,8 @@ def adjust(recipe: Recipe, lib: Library | None = None) -> tuple[Recipe, list[str
     for use in r.props:
         if lib.has(use.template) and _fits(lib.get(use.template), "prop", r.world):
             use.values = _clean_values(lib.get(use.template), use.values)
+            if use.at is None and (use.spawn or use.template) not in arena.spawns:
+                use.spawn = prop_spawn(arena, use.template)  # 경기장을 바꿔 없는 자리면(또는 자리 없이 (0, 0)이면) 맞는 자리로
             kept.append(use)
     r.props = kept
     # 규칙
@@ -689,10 +704,25 @@ def _seat_spawn(r: Recipe, arena: Template) -> str:
     return "start" if "start" in arena.spawns else next(iter(arena.spawns))
 
 
+PROP_GAP = 1.5
+"""build: 같은 자리에 놓이는 물건(또는 선수 자리와 같은 점)을 비키는 거리(m, +x 쪽)."""
+
+PROP_SPAWNS: Final[dict[str, tuple[str, ...]]] = {"goal": ("goal", "finish", "ahead", "center")}
+"""물건 틀마다 찾을 경기장 자리 이름(앞의 것부터). 없는 틀은 (틀 id, "ahead", "center")."""
+
+
+def prop_spawn(arena: Template, tid: str) -> str | None:
+    """물건 tid를 놓을 경기장 자리 이름(선수의 "start"는 쓰지 않는다). 맞는 자리가 없으면 None."""
+    for name in PROP_SPAWNS.get(tid, (tid, "ahead", "center")):
+        if name in arena.spawns and name != "start":
+            return name
+    return None
+
+
 def _prop_with(r: Recipe, lib: Library, region: bool) -> Use | None:
-    """규칙에 필요해 넣을 물건: 영역이 필요하면 골대."""
+    """규칙에 필요해 넣을 물건: 영역이 필요하면 골대(경기장의 골 자리, 없으면 결승점·앞쪽: 선수 자리에 놓지 않는다)."""
     if region and lib.has("goal") and _fits(lib.get("goal"), "prop", r.world):
-        return Use("goal", {}, None, "goal")
+        return Use("goal", {}, None, prop_spawn(lib.get(r.arena.template), "goal"))
     return None
 
 
@@ -726,7 +756,7 @@ def _adjust_rules(r: Recipe, lib: Library, notes: list[str]) -> list[dict[str, A
             continue
         rule["who"] = role.id
         data, built = _scene_for(r, lib)
-        if "region" in rk.needs and not data.get("regions"):
+        if ("region" in rk.needs and not data.get("regions")) or ("target" in rk.needs and not R.target_pool(data)):
             prop = _prop_with(r, lib, True)
             if prop is None:
                 notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": _why(fill(
@@ -756,6 +786,18 @@ def _resolvable(value: Any, who: str, built: _Built, data: Mapping[str, Any]) ->
     return ref in all_ids(data)
 
 
+def _allowed_target(value: Any, kind: str, slot: R.RuleSlot, who: str, built: _Built, data: Mapping[str, Any]) -> bool:
+    """where·thing 빈칸 값이 화면이 고를 수 있는 것(R.candidates)인가: 있는 id라도 고정 물체나, 「들어가면 성공」의 영역 자리에
+    놓인 물체는 컴파일이 거절하므로 받지 않는다(태그도 받지 않음)."""
+    try:
+        ref = _resolve(value, who, built)
+    except RecipeError:
+        return False
+    if ref.startswith("tag."):
+        return False
+    return ref in {v for v, _ in R.candidates(data, slot, kind)}
+
+
 def _fix_rule(rule: dict[str, Any], kind: str, data: Mapping[str, Any], built: _Built, who: str) -> dict[str, Any] | None:
     """규칙 한 줄의 빈칸을 장면에 맞춘다(없는 부품 → 뿌리, 없는 태그 → 장면의 첫 태그, 범위 밖 숫자 → 처음 값)."""
     root_tpl_id = next((k for k, v in built.maps.get(who, {}).items() if v == built.roots.get(who)), None)
@@ -782,7 +824,7 @@ def _fix_rule(rule: dict[str, Any], kind: str, data: Mapping[str, Any], built: _
                 v = "tag." + pick
             out[slot.id] = v
         elif slot.kind in ("where", "thing"):
-            if not _resolvable(v, who, built, data) or (isinstance(v, str) and v.startswith("tag.")):
+            if not _allowed_target(v, kind, slot, who, built, data):
                 pick = _first_target(kind, slot.id, data, built, who, out)
                 if pick is None:
                     return None
@@ -796,7 +838,10 @@ def _fix_rule(rule: dict[str, Any], kind: str, data: Mapping[str, Any], built: _
                 ok = False
             out[slot.id] = round(float(v), 6) + 0.0 if ok else slot.default
     if kind == "near" and out.get("thing") == out.get("where"):
-        return None
+        pick = _first_target(kind, "where", data, built, who, out)  # 같은 것끼리의 거리는 늘 0: 다른 대상으로(없으면 끈다)
+        if pick is None:
+            return None
+        out["where"] = pick
     return out
 
 
@@ -823,5 +868,5 @@ def _first_target(kind: str, slot: str, data: Mapping[str, Any], built: _Built, 
 __all__ = [
     "DEFAULT_ARENA", "DEFAULT_BODY", "RECIPE_VERSION", "STARTER_ORDER", "Players", "Recipe", "RecipeError", "Role", "Seat",
     "Starter", "Use", "adjust", "build", "builtin_names", "builtin_status", "default_recipe", "load_builtin", "matches",
-    "physics_view", "starters", "text_of",
+    "physics_view", "prop_spawn", "starters", "text_of",
 ]

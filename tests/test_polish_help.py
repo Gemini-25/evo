@@ -118,8 +118,7 @@ def test_title_and_chip_follow_the_lab(window: Any, qtbot: Any) -> None:
 def test_state_changed_signal_refreshes_when_the_lab_has_it(window: Any) -> None:
     lab = window.lab
     signal = getattr(lab, "state_changed", None)
-    if signal is None:
-        pytest.skip("LabView.state_changed(Hb의 계약 3.3)이 아직 없다: run_started·closed와 타이머로 맞춘다")
+    assert signal is not None, "LabView.state_changed (Hb 3.3) missing"
     lab.run_dir, lab.state, lab.generation = Path("run"), "paused", 3
     try:
         signal.emit("paused")

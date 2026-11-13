@@ -109,6 +109,72 @@ def test_t5_parts_world_fast_and_public_paths_match(monkeypatch: pytest.MonkeyPa
     assert len(absent) >= 3
 
 
+NAMES_V62 = ("running",)
+"""6.2.0 형식 4의 내장 환경(밀기·균형·세계 감쇠). 옛 환경의 대조 시험(NAMES)은 건드리지 않는다."""
+
+
+def moves_world(damping: float = 0.6) -> EnvSpec:
+    """형식 4 부품 시험 세계: 밀기 셋(x·xy·heading) + 균형 + 세계 감쇠 < 1 + 움직이는 공."""
+    from evolab.spec import model as m
+
+    data = {
+        "version": m.CURRENT_VERSION, "name": "moves",
+        "world": {"gravity": [0.0, -9.81], "damping": damping, "max_time": 4.0, "bounds": [-20, -5, 20, 20]},
+        "bodies": [
+            {"id": "ground", "owner": "world", "type": "static", "tags": ["ground"],
+             "shapes": [{"kind": "chain", "points": [[-20, 0], [20, 0]], "radius": 0.05}]},
+            {"id": "a", "pos": [0.0, 1.0], "shapes": [{"kind": "box", "w": 0.6, "h": 0.4}]},
+            {"id": "b", "pos": [0.0, 1.6], "shapes": [{"kind": "circle", "r": 0.2}]},
+            {"id": "c", "pos": [0.0, 2.2], "shapes": [{"kind": "box", "w": 0.4, "h": 0.2}]},
+            {"id": "ball", "owner": "world", "pos": [2.0, 0.5], "shapes": [{"kind": "circle", "r": 0.25}]},
+        ],
+        "joints": [{"kind": "pivot", "id": "j1", "a": "a", "b": "b", "anchor_a": [0.0, 0.3], "anchor_b": [0.0, -0.3]},
+                   {"kind": "pivot", "id": "j2", "a": "b", "b": "c", "anchor_a": [0.0, 0.3], "anchor_b": [0.0, -0.3]}],
+        "actuators": [
+            {"kind": "move", "id": "mx", "body": "a", "mode": "x", "max_force": 40.0, "max_speed": 3.0},
+            {"kind": "move", "id": "mxy", "body": "b", "mode": "xy", "max_force": 20.0, "max_speed": 2.0},
+            {"kind": "move", "id": "mh", "body": "c", "mode": "heading", "max_force": 10.0, "max_speed": 2.0,
+             "max_turn": 3.0},
+            {"kind": "balance", "id": "bal", "body": "a", "stiffness": 30.0, "damping": 2.0, "max_torque": 20.0},
+        ],
+        "sensors": [{"kind": "body_state", "id": "st", "body": "a", "fields": ["x", "y", "vx", "vy", "angle"]}],
+        "scoring": {"blocks": [{"kind": "progress", "id": "prog", "body": "a", "direction": 0.0, "weight": 1.0}]},
+    }
+    return compile_env(json.dumps(data, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("name", NAMES_V62)
+def test_t5_v62_builtins_fast_and_public_paths_match(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T5(6.2.0, 검토 고침): 형식 4 내장 환경도 무작위 유전자 2 × 학습 시험에서 두 길이 스텝마다 같다."""
+    spec, layout = builtin(name)
+    total = 0
+    for i, g in enumerate(random_genomes(layout, 2, seed=57)):
+        total += run_fast_and_public(monkeypatch, spec, layout, g, seeds.train_trials(5, i, 1)[0], values=i == 1,
+                                     max_steps=600)
+    assert total > 50  # 무작위 뇌의 달리기는 곧 넘어진다(2시험 합계 100스텝 남짓)
+
+
+@pytest.mark.parametrize("damping", [0.6, 1.0])
+def test_t5_moves_world_fast_and_public_paths_match(damping: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T5(6.2.0, 검토 고침): 밀기 x·xy·heading, 균형, 세계 감쇠."""
+    spec = moves_world(damping)
+    layout = layout_for(spec)
+    rng = np.random.default_rng(58)
+    for i, g in enumerate(rng.normal(0.0, 1.0, (4, layout.dim))):
+        run_fast_and_public(monkeypatch, spec, layout, g, Trial(seeds.derive(58, i)), values=i % 2 == 0)
+
+
+def test_t6_v62_move_pointers_are_on() -> None:
+    assert episode_mod._CP_FAST
+    for spec in (builtin("running")[0], moves_world()):  # 달리기는 모터·균형(밀기 없음), 시험 세계는 밀기 셋·균형
+        ep = Episode(spec, None, seeds.display_trial())
+        assert ep._balances
+        assert all(mv.raw is not None for mv in ep._moves)
+        assert ep._motor_raw is not None and len(ep._motor_raw) == len(ep._motors)
+        assert set(ep._raw) == set(ep.bodies) and all(r is not None for r in ep._raw.values())
+    assert len(Episode(moves_world(), None, seeds.display_trial())._moves) == 3
+
+
 # ---------------------------------------------------------------------------
 # T6 빠른 길이 켜짐
 # ---------------------------------------------------------------------------

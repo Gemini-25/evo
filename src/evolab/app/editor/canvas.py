@@ -1262,6 +1262,7 @@ class EditorCanvas(QWidget):
         self.last_picker: Any = None
         """마지막으로 띄운 틀 보관함 창(테스트용)."""
         self._drop: tuple[Any, dict[str, float] | None, bool] | None = None
+        self._drop_needs: list[Any] = []  # 놓을 틀 앞에 함께 넣을 틀(보관함 창의 「…도 함께 넣기」)
         self._swallow_release = False
         self.status_text = ""
         self.cursor_world: Point | None = None
@@ -1800,13 +1801,19 @@ class EditorCanvas(QWidget):
         if not choice:
             return False
         tpl, values, mirror = choice[0], choice[1], bool(choice[2])  # 4번째(진화할 슬라이더)는 6.2.0에 없다(「나중에」)
-        self.begin_template_drop(tpl, values, mirror)
+        needs_add = getattr(picker, "needs_add", None)
+        needs = list(needs_add()) if callable(needs_add) else []  # 「…도 함께 넣기」를 켰으면 먼저 넣을 틀(땅 등)
+        self.begin_template_drop(tpl, values, mirror, needs)
         return True
 
-    def begin_template_drop(self, tpl: Any, values: dict[str, float] | None = None, mirror: bool = False) -> None:
-        """다음에 캔버스를 누른 자리(격자에 맞춤)에 이 틀을 넣는다. Esc나 오른쪽 단추로 그만둔다."""
+    def begin_template_drop(self, tpl: Any, values: dict[str, float] | None = None, mirror: bool = False,
+                            needs: list[Any] | None = None) -> None:
+        """다음에 캔버스를 누른 자리(격자에 맞춤)에 이 틀을 넣는다. Esc나 오른쪽 단추로 그만둔다.
+
+        needs: 그 앞에 기본 자리((0, 0))에 함께 넣을 틀(보관함 창의 「…도 함께 넣기」). 모두 되돌리기 한 단계."""
         self._tool.cancel()
         self._drop = (tpl, dict(values) if values else None, bool(mirror))
+        self._drop_needs = list(needs or [])
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.message(S.TPL_INSERT_HINT.format(name=tpl.name), transient=False)
         self.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -1828,17 +1835,26 @@ class EditorCanvas(QWidget):
         if self._drop is None:
             return []
         tpl, values, mirror = self._drop
+        needs, self._drop_needs = self._drop_needs, []
         self._drop = None
         self.setCursor(self._tool.cursor)
         at = self.snap(w, e)
         from evolab.presets import template as tp
 
-        _slots, missing = tp.resolve_slots(tpl, self.doc.data)
+        stack = self.doc.undo_stack
+        stack.beginMacro(S.TPL_UNDO_INSERT.format(name=tpl.name))
         try:
+            for need in needs:  # 빈자리를 채울 틀(땅 등)을 먼저: 그래야 아래 틀의 빈자리가 그것을 가리킨다
+                T.insert_template(self.doc, need, None, at=(0.0, 0.0))
+            _slots, missing = tp.resolve_slots(tpl, self.doc.data)
             refs = T.insert_template(self.doc, tpl, values, at=at, mirror=mirror)
         except (tp.TemplateError, ValueError) as exc:
+            stack.endMacro()
+            if needs:
+                stack.undo()  # 반쯤 넣은 것을 남기지 않는다
             self.message(str(exc))
             return []
+        stack.endMacro()
         n = T.template_counts(refs)
         text = S.TPL_INSERTED.format(name=tpl.name, bodies=n["bodies"], joints=n["joints"], actuators=n["actuators"],
                                      sensors=n["sensors"])

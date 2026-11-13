@@ -308,8 +308,6 @@ def test_cli_preset_with_a_template_folder(tmp_path: Path, monkeypatch: pytest.M
 RUNNING_ENV = ROOT / "environments" / "running.evoenv"
 
 
-@pytest.mark.skipif(not (RECIPES / "running.json").exists() or not RUNNING_ENV.exists(),
-                    reason="running.json·running.evoenv are added by group PM")
 def test_running_env_is_the_recipe_output() -> None:
     data = json.loads(RUNNING_ENV.read_text(encoding="utf-8"))
     assert env_hash(parse_env(data)) == env_hash(parse_env(RC.build(RC.load_builtin("running"))))
@@ -382,10 +380,64 @@ def _check_combo(recipe: RC.Recipe, lib: Library) -> None:
     assert [r.get("rule") for r in fixed.rules][-1] == "time_limit"
 
 
+def _check_every_slot_choice(fixed: RC.Recipe, lib: Library) -> int:
+    """화면 고르기 칸이 내는 값 전부(R.candidates): 규칙마다 where·thing·what·part 칸을 하나씩 바꿔도 adjust → build → L1(검토 고침).
+    고른 값이 그대로 남는지도 본다(남지 않으면 화면이 고를 수 없는 값을 낸 것). 본 조합 수."""
+    from evolab.presets import rules as R
+
+    data = RC.build(fixed, lib)
+    seen = 0
+    for k, rule in enumerate(fixed.rules):
+        kind = rule.get("rule")
+        if kind not in R.RULES:
+            continue
+        for slot in R.RULES[kind].slots:
+            if slot.kind not in ("where", "thing", "what", "part"):
+                continue
+            for value, _name in R.candidates(data, slot):
+                trial = copy.deepcopy(fixed)
+                trial.rules[k][slot.id] = value
+                again, _ = RC.adjust(trial, lib)
+                built = RC.build(again, lib)
+                quick = quick_check(built)
+                assert quick.ok, (kind, slot.id, value, [str(i) for i in quick.errors])
+                nth = sum(1 for r in fixed.rules[:k] if r.get("rule") == kind)
+                kept = [r for r in again.rules if r.get("rule") == kind]
+                if slot.kind in ("where", "thing") and not (kind == "near" and value == rule.get(
+                        "thing" if slot.id == "where" else "where")):
+                    assert len(kept) > nth and kept[nth].get(slot.id) == value, (kind, slot.id, value, kept)
+                seen += 1
+    return seen
+
+
 def test_random_choices_always_give_an_l1_file(lib: Library) -> None:
     rng = random.Random(6200)
-    for _ in range(300):
-        _check_combo(_combo(lib, rng), lib)
+    walked = 0
+    for i in range(300):
+        recipe = _combo(lib, rng)
+        _check_combo(recipe, lib)
+        if i < 60:  # 처음 60개는 규칙 칸의 고를 것 전부도(T15 「모든 빈칸의 모든 고를 것」)
+            walked += _check_every_slot_choice(RC.adjust(recipe, lib)[0], lib)
+    assert walked > 50
+
+
+def test_every_rule_slot_choice_of_every_starter_gives_an_l1_file() -> None:
+    """내장 보관함으로: 첫 카드마다 「가까울수록 점수」「들어가면 성공」을 켜고 그 칸의 고를 것 전부 → L1, 그리고 L2(바로 끝나지 않음)."""
+    from evolab.presets.library import default_library
+    from evolab.presets.trainable import alive
+
+    lib = default_library()
+    for name in RC.builtin_names():
+        for kind in ("near", "reach"):
+            recipe = RC.load_builtin(name)
+            recipe.rules = [r for r in recipe.rules if r.get("rule") != kind] + [{"rule": kind}]
+            fixed, _notes = RC.adjust(recipe, lib)
+            assert any(r.get("rule") == kind for r in fixed.rules), (name, kind)  # 대상이 없으면 골대를 함께 넣는다
+            quick = quick_check(RC.build(fixed, lib))
+            assert quick.ok and quick.spec is not None
+            verdict = alive(quick.spec)
+            assert verdict.ok, (name, kind, verdict)  # 자동으로 넣은 골대가 선수 위에 놓이지 않는다
+            assert _check_every_slot_choice(fixed, lib) > 0
 
 
 def test_adjust_reports_what_it_changed(lib: Library) -> None:

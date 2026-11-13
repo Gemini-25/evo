@@ -40,7 +40,20 @@ def stats_hash(path: Path) -> tuple[str, list[dict[str, str]]]:
     return hashlib.sha256(text.encode("utf-8")).hexdigest(), body
 
 
+def _cpu_model() -> str:
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith("model name"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
 def _same_cpu_family() -> bool:
+    """바이트 비교 값을 잰 쪽(인텔)인가. AMD 러너는 3세대부터 1e-9쯤 달랐다(설계 0.0b LD2). 잰 CPU의 모델 이름은 기록되지
+    않아 제조사로 가른다."""
     try:
         return "GenuineIntel" in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -63,10 +76,11 @@ def test_builtin_running_repeats_the_prototype_learning(tmp_path: Path) -> None:
         head = list(csv.reader(f))[:101]
     cut = head[0].index("gen_seconds")
     prefix = hashlib.sha256("\n".join(",".join(r[:cut]) for r in head).encode("utf-8")).hexdigest()
+    if not _same_cpu_family():  # 다른 CPU: 처음 두 세대만 같다고 기대할 수 있다(설계 0.2 #9)
+        pytest.skip(f"byte comparison is for the Intel reference container; this CPU is {_cpu_model() or 'unknown'}")
     assert prefix == PROTOTYPE_F5_S5_100
-    if _same_cpu_family():
-        assert rows[-1]["champion_score"] == want_champion
-        assert digest == want_hash
+    assert rows[-1]["champion_score"] == want_champion
+    assert digest == want_hash
 
 
 @pytest.mark.slow

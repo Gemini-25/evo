@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.export import job as J
 from evolab.app.export.job import ExportJob
 
@@ -149,6 +150,7 @@ class ExportDialog(QDialog):
         buttons.addStretch(1)
         self.btn_save = QPushButton(S.EXP_SAVE)
         self.btn_save.setDefault(True)
+        style.set_role(self.btn_save, "primary")  # 다듬기 1.5: 대화 상자의 「저장…」은 으뜸 단추
         self.btn_save.clicked.connect(self.save)
         self.btn_close = QPushButton(S.EXP_CLOSE)
         self.btn_close.clicked.connect(self.reject)

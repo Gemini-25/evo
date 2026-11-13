@@ -29,6 +29,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SECTIONS = ("bodies", "joints", "actuators", "sensors", "regions")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """안내 창(쓰임 기록·QSettings·틀 폴더)과 에디터가 실제 사용자 폴더를 읽고 쓰지 않게(검토 고침)."""
+    monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "evolab_data"))
+    monkeypatch.setenv(paths.STATE_DIR_ENV, str(tmp_path / "evolab_state"))
+
+
 @pytest.fixture
 def font_scale() -> Iterator[Any]:
     """앱 글꼴을 배율로 바꾸고 테스트가 끝나면 되돌린다(맑은 고딕이 리눅스 글꼴보다 넓은 몫: 계획 1.4·C2)."""

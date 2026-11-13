@@ -108,6 +108,15 @@ class MainWindow(QMainWindow):
         settings_menu = self.menuBar().addMenu(S.MENU_SETTINGS)
         settings_menu.addAction(S.MENU_DATA_DIR).triggered.connect(self.choose_data_dir)
         settings_menu.addAction(S.MENU_DATA_DIR_RESET).triggered.connect(lambda: self.set_data_dir(None))
+        # 6.2.0 D49: 「새 프리셋」 창의 쓰임 기록을 끄고 켠다(값은 메뉴를 펼 때 읽는다: 안내 창 모듈을 시작 때 불러오지 않게)
+        settings_menu.addSeparator()
+        self.act_usage_log = settings_menu.addAction(S.SETTINGS_PRESET_USAGE_LOG)
+        self.act_usage_log.setCheckable(True)
+        self.act_usage_log.setToolTip(S.SETTINGS_PRESET_USAGE_LOG_TIP)
+        self.act_usage_log.setStatusTip(S.SETTINGS_PRESET_USAGE_LOG_TIP)
+        settings_menu.setToolTipsVisible(True)
+        settings_menu.aboutToShow.connect(self._sync_settings_menu)
+        self.act_usage_log.triggered.connect(self._set_usage_log)
         help_menu = self.menuBar().addMenu(S.MENU_HELP)
         help_menu.addAction(S.MENU_OPEN_DATA).triggered.connect(self._open_data_dir)
         help_menu.addAction(S.MENU_ABOUT).triggered.connect(self.show_about)
@@ -117,6 +126,16 @@ class MainWindow(QMainWindow):
         from evolab.app.help import setup as help_setup
 
         help_setup.install(self)
+
+    def _sync_settings_menu(self) -> None:
+        from evolab.app.preset.wizard import usage_log_enabled
+
+        self.act_usage_log.setChecked(usage_log_enabled())
+
+    def _set_usage_log(self, on: bool) -> None:
+        from evolab.app.preset.wizard import set_usage_log_enabled
+
+        set_usage_log_enabled(bool(on))
 
     # -- 6.2.0 U32: 상태 막대 꼬리표와 창 제목 ---------------------------------------
     def state_texts(self) -> tuple[str, str, str]:

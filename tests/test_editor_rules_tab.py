@@ -180,7 +180,7 @@ def test_summary_line_and_formula_note(qtbot: Any) -> None:
     tab.add_rule("distance")
     tab.add_rule("save_energy")
     assert tab.summary.text() == S.PRESET_RULE_SUMMARY.format(formula=R.summary(doc.data))
-    assert "앞으로 간 거리 × 1" in tab.summary.text() and "힘 × 0.05" in tab.summary.text()
+    assert "오른쪽으로 간 거리 × 1" in tab.summary.text() and "힘 × 0.05" in tab.summary.text()
     data = _scene()
     data["scoring"] = {"formula": "time"}
     tab2 = _tab(qtbot, _doc(data))

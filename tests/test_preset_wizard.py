@@ -549,6 +549,32 @@ def test_t27_usage_log_can_be_turned_off(qtbot: Any, iso: Path) -> None:
     assert WZ.usage_log_enabled()
 
 
+def test_t27_usage_log_is_turned_off_from_the_settings_menu(qtbot: Any, iso: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D49 「설정으로 꺼짐」: 주 창 「설정」 메뉴의 체크(검토 고침: 전에는 API만 있었다)."""
+    from evolab.app.main import MainWindow
+
+    monkeypatch.setenv("EVOLAB_NO_TOUR", "1")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    act = window.act_usage_log
+    assert act.isCheckable() and act.text() == S.SETTINGS_PRESET_USAGE_LOG
+    assert act.toolTip() == S.SETTINGS_PRESET_USAGE_LOG_TIP
+    menu = next(a.menu() for a in window.menuBar().actions() if a.text() == S.MENU_SETTINGS)
+    assert act in menu.actions()
+    menu.aboutToShow.emit()
+    assert act.isChecked() and WZ.usage_log_enabled()
+    act.trigger()  # 사용자가 체크를 끈다
+    assert not act.isChecked() and not WZ.usage_log_enabled()
+    w = make(qtbot)
+    w.go(2)
+    w.reject()
+    assert not WZ.usage_log_path().exists()
+    menu.aboutToShow.emit()
+    assert not act.isChecked()
+    act.trigger()
+    assert WZ.usage_log_enabled()
+
+
 def test_t27_usage_log_is_not_in_the_error_report_bundle(qtbot: Any, iso: Path) -> None:
     from evolab.app.report.bundle import BundleOptions, collect
 

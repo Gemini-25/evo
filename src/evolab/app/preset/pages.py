@@ -40,7 +40,7 @@ from evolab.app.preset.cards import (
 )
 from evolab.presets import rules as R
 from evolab.presets.josa import fill
-from evolab.presets.recipe import Recipe, Use
+from evolab.presets.recipe import Recipe, Use, prop_spawn
 from evolab.presets.template import Template, expand
 
 if TYPE_CHECKING:
@@ -317,11 +317,7 @@ class ArenaPage(Page):
         r = self.w.recipe
         if not self.w.library.has(r.arena.template):
             return None
-        spawns = self.w.library.get(r.arena.template).spawns
-        for name in (tid, "ahead", "center"):
-            if name in spawns:
-                return name
-        return None
+        return prop_spawn(self.w.library.get(r.arena.template), tid)  # 골대는 골·결승점 자리(선수 자리가 아닌 곳)
 
     def _toggle_prop(self, tid: str, on: bool) -> None:
         spawn = self._spawn_for(tid)
@@ -537,7 +533,7 @@ class RuleRow(QWidget):
             why = ""
             if not on:
                 ok, why = R.available(data, self.kind)
-                if not ok and why == fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["region"]}) \
+                if not ok and why in (fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT[k]}) for k in ("region", "target")) \
                         and self.page.w.can_add_region():
                     ok = True  # 켜면 adjust가 골대를 함께 넣고 상태 줄에 알린다
                 why = "" if ok else why

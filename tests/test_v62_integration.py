@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QWidget
 from evolab import paths
 from evolab.app import strings as S
 from evolab.app import style
+from evolab.presets import rules as R
 from evolab.presets import trainable as TR
 from evolab.spec.io import parse_env
 
@@ -172,8 +173,11 @@ def test_naive_user_builds_ball_and_goal_within_the_step_limit(qtbot: Any, isola
     assert user.presses <= STEP_LIMIT and user.l1_always, user.presses
     kinds = [r["rule"] for r in data["editor"]["recipe"]["rules"]]
     assert "reach" in kinds and "time_limit" in kinds
-    ids = {b["id"] for b in data["bodies"]}
-    assert {"ball", "goal"} <= ids or any("ball" in i for i in ids)
+    ids = {b["id"] for b in data["bodies"]} | {r["id"] for r in data.get("regions", [])}
+    assert any("ball" in i for i in ids) and any("goal" in i for i in ids), ids
+    reach = next(u for u in R.find_rules(data)[0] if u.kind == "reach")
+    goals = {r["id"] for r in data.get("regions", []) if "goal" in r["id"]}
+    assert reach.args["where"] in goals, (reach.args, goals)  # 「들어가면 성공」이 그 골대를 가리킨다
     quick = TR.quick_check(data)
     assert quick.ok and TR.alive(quick.spec).ok and TR.probe(quick.spec).ok
     lab = window.lab

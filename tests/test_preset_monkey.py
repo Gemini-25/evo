@@ -103,6 +103,15 @@ def test_t23_random_presses_keep_the_file_valid(qtbot: Any, iso: Path, seed: int
         lab_on += alive.ok
         lab_off += not alive.ok
         assert w.isVisible() and not got
+        if w.step == 3:  # 규칙 쪽의 고르기 칸은 받아들인 조리법 값을 보인다(되돌린 선택이 화면에 남지 않음: 검토 고침)
+            from evolab.presets import rules as R
+
+            uses = {u.kind: u for u in R.find_rules(w.data)[0]}
+            for kind, row in w.pages[3].rows.items():
+                use = uses.get(kind)
+                for sid, widget in row.slots.items():
+                    if use is not None and sid in use.args and isinstance(widget, QComboBox):
+                        assert widget.currentData() == use.args[sid], (k, trail[-5:], kind, sid)
     folder = paths.user_env_dir()
     assert not (folder.is_dir() and list(folder.glob("*.evoenv")))
     # 길이 실제로 여러 상태를 지났나(누름이 헛돌지 않았나)

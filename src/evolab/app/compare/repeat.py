@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app import style
 from evolab.app.lab.client import TrainingClient
 from evolab.engine.session import SessionRequest
 from evolab.engine.trainer import TrainConfig, make_learner, qualify_budget_problem
@@ -530,6 +531,7 @@ class RepeatDialog(QDialog):
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setText(S.CMP_REPEAT_START)
+        style.set_role(ok, "primary")  # 다듬기 1.5: 「시작」은 으뜸 단추(기본 단추로는 대화 상자에 붙인 뒤에 정한다)
         self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(S.CMP_REPEAT_CANCEL_DIALOG)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -540,6 +542,7 @@ class RepeatDialog(QDialog):
         lay.addWidget(note)
         lay.addLayout(form)
         lay.addWidget(self.buttons)
+        ok.setDefault(True)  # 단추 상자가 이 대화 상자 안에 들어간 뒤라야 QDialog가 기본 단추로 기억한다
 
         self._update_stop()
         if env_path is not None:
@@ -632,6 +635,7 @@ class RepeatDialog(QDialog):
         self.size_label.setText(S.CMP_REPEAT_NEIGHBORS if m == "sa" else S.CMP_REPEAT_POPSIZE)
         self.size_spin.setValue(default_popsize(m))
         self._update_seeds()
+        self._update_qualify_note()  # 환경(_load_env → _fill_methods)이나 방법이 바뀌면 권장 예선도 바뀐다
 
     def _update_seeds(self) -> None:
         seeds = [self.base_seed.value() + i for i in range(self.count_spin.value())]
@@ -656,8 +660,17 @@ class RepeatDialog(QDialog):
             c.qualify_entrants = 1
 
     def _update_qualify_note(self) -> None:
-        """예선을 끄게 되면 그렇다고 알린다(새 실행 권장값에서 예선이 꺼져 있으면 늘 숨김)."""
-        c = TrainConfig.for_new_run()
+        """예선을 끄게 되면 그렇다고 알린다(새 실행 권장값에서 예선이 꺼져 있으면 늘 숨김).
+
+        바탕은 config()와 같은 새 실행 권장값(고른 환경·학습 방법의 것: 종목 프리셋은 예선을 켠다)이다.
+        """
+        if not hasattr(self, "qualify_note"):
+            return
+        m = str(self.method.currentData() or "cmaes")
+        try:
+            c = TrainConfig.for_new_run(self.spec_obj, method=m)
+        except Exception:  # 환경이 없거나 그 방법을 못 쓰면 일반 권장값으로
+            c = TrainConfig.for_new_run()
         if self.stop_evals.isChecked():
             c.max_evaluations = self.max_evaluations.value()
         total = qualify_too_big(c)

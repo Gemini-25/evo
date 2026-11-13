@@ -2961,7 +2961,7 @@ PRESET_ALIVE_INSTANT: Final = "시작하자마자 끝납니다. 「{rule}」 규
 PRESET_ALIVE_NO_SCORE: Final = "선수의 움직임에 따라 달라지는 점수 규칙이 없어 아직 보낼 수 없습니다."
 PRESET_ALIVE_NO_IO: Final = "뇌가 볼 것이나 움직일 것이 없어 아직 보낼 수 없습니다."
 PRESET_ALIVE_STILL_END: Final = "가만히 두면 {t:.1f}초에 끝납니다({end}). 보낼 수는 있습니다."
-PRESET_ALIVE_FIXES: Final = {"add_rule": "점수 규칙 더하기", "move_part": "시작 자리 옮기기"}
+PRESET_ALIVE_FIXES: Final = {"add_rule": "점수 규칙 더하기", "move_part": "끝내는 규칙 고치기"}
 PRESET_PROBE_RUNNING: Final = "학습할 수 있는지 확인 중…"
 PRESET_PROBE_OK: Final = "✔ 무작위 뇌 {n}개의 점수가 서로 다릅니다(학습할 것이 있습니다)."
 PRESET_PROBE_FLAT: Final = "무작위 뇌 {n}개의 점수가 모두 같습니다. 보낼 수는 있지만 배울 것이 없을 수 있습니다."
@@ -3101,7 +3101,7 @@ RULE_DIRECTIONS: Final = {"right": "오른쪽", "left": "왼쪽", "up": "위", "
 RULE_OUTCOMES: Final = {"failure": "끝(실패)", "success": "성공", "neutral": "끝(중립)"}
 RULE_WHEN: Final = {"min": "가장 가까웠을 때", "final": "끝났을 때"}
 RULE_SUMMARY_TERMS: Final = {
-    "distance": "앞으로 간 거리 × {w:g}", "fall": "− 넘어짐 × {w:g}", "near": "− {thing}에서 {where}까지 거리 × {w:g}",
+    "distance": "{direction}(으)로 간 거리 × {w}", "fall": "− 넘어짐 × {w:g}", "near": "− {thing}에서 {where}까지 거리 × {w:g}",
     "reach": "{where} 도착 {w:g}점", "survive": "버틴 시간 × {w:g}", "upright": "− 기울기 × {w:g}",
     "save_energy": "− 힘 × {w:g}", "touch_penalty": "− 닿은 시간 × {w:g}", "other": "고급 블록 {n}개",
 }
@@ -3310,3 +3310,14 @@ HINT_LAB_IDLE_SPORT: Final = {
     "running": "「{start}」을 누르면 막대 사람 {pop}명이 동시에 걷는 연습을 시작합니다. 처음에는 모두 넘어집니다.",
 }
 """실험실 학습 전 캔버스 가운데 글(종목 환경일 때 HINT_LAB_IDLE_ANY 대신). 키는 내장 파일 이름(줄기)."""
+
+
+# ---------------------------------------------------------------------------
+# 6.2.0 검토 고침(fixall): 검토에서 찾은 결함을 고치며 더한 글
+# ---------------------------------------------------------------------------
+PRESET_SAVE_TOO_MANY: Final = "같은 이름의 파일이 너무 많습니다. 이름을 바꿔 주세요"
+"""프리셋 저장: 「이름 2」…「이름 999」가 모두 있을 때 PRESET_SAVE_FAILED의 {reason}."""
+PRESET_CHOICE_UNDONE: Final = "그 선택으로는 환경을 만들 수 없어 앞의 값으로 되돌렸습니다."
+"""프리셋 만들기: 받아들이지 않은 바꿈(만들기·검사 실패)을 되돌렸을 때 상태 줄."""
+RULES_WRONG_WORLD_TIP: Final = "이 규칙은 {world}에서만 뜻이 맞아 여기서는 고칠 수 없습니다. 세계를 되돌리거나 고급 탭에서 지우세요."
+"""규칙 탭·안내 창: 지금 세계와 맞지 않는 규칙 줄(읽기 전용)의 풍선."""

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import errno
 import json
 import threading
 import time
@@ -29,6 +30,8 @@ from typing import Any
 from PySide6.QtCore import QRect, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -56,6 +59,7 @@ from evolab.app.preset.pages import (
 )
 from evolab.app.preset.preview import PresetPreview
 from evolab.presets import recipe as RC
+from evolab.presets import rules as R
 from evolab.presets import trainable as TR
 from evolab.presets.library import Library, default_library
 from evolab.presets.recipe import Recipe, RecipeError
@@ -70,6 +74,8 @@ STEP_COUNT = 5
 USAGE_LOG_FILE = "wizard_log.jsonl"
 USAGE_LOG_KEY = "preset/usage_log"
 SETTINGS_FILE = "settings.ini"
+_NUMBERED_MAX = 999
+"""target_path가 「이름 2」…「이름 999」까지 찾고, 그래도 다 있으면 OSError(그 이상은 사람이 이름을 바꿀 일)."""
 STEP_ACTIONS = frozenset({"open", "step", "back", "next", "card", "body", "arena", "prop", "slider", "rule",
                           "rule_slot", "reset", "play", "edit", "lab", "close", "stay", "save_failed", "name"})
 """쓰임 기록에 적는 행동 이름(이 밖의 글은 적지 않는다)."""
@@ -412,15 +418,12 @@ class PresetWizard(QDialog):
         try:
             r, notes = RC.adjust(r, self.library)
             data = RC.build(r, self.library)
-        except (RecipeError, KeyError, ValueError) as exc:
-            self._show_status(S.PRESET_STATUS_BAD.format(n=1, first=str(exc)))
-            self._sync_all()
+        except (RecipeError, KeyError, ValueError):
+            self._reject()
             return False
         quick = TR.quick_check(data)
         if not quick.ok:  # 생기면 안 되는 상태(T15·T23): 받아들이지 않는다
-            first = quick.errors[0].message if quick.errors else ""
-            self._show_status(S.PRESET_STATUS_BAD.format(n=len(quick.errors), first=first))
-            self._sync_all()
+            self._reject()
             return False
         self.recipe = r
         self.notes = notes
@@ -438,6 +441,12 @@ class PresetWizard(QDialog):
         if action is not None:
             self.usage.write(self.step, action)
         return True
+
+    def _reject(self) -> None:
+        """받아들이지 않은 바꿈: 지금 쪽의 칸을 받아들인 조리법 값으로 되돌려 그리고, 쉬운 말로 알린다(컴파일러 글이 아니라)."""
+        self._dirty_pages.add(self.step)
+        self._sync_all()
+        self._show_status(S.PRESET_CHOICE_UNDONE)
 
     def _sync_all(self) -> None:
         """보이는 쪽만 지금 그리고 나머지는 보일 때 그린다."""
@@ -601,6 +610,8 @@ class PresetWizard(QDialog):
         style.set_enabled(self.btn_edit, ok1)
         style.set_enabled(self.btn_play, ok1 and self.spec is not None and bool(self.spec.outputs))
         fix = self.alive.fix if self.alive is not None and not self.alive.ok else None
+        if fix == "move_part" and self.instant_rule() is None:
+            fix = None  # 이 창에 바로 끝남을 풀 칸이 없다: 까닭 글만 보인다
         if fix:
             self.btn_fix.setText(S.PRESET_ALIVE_FIXES.get(fix, ""))
             self.btn_fix.setToolTip(S.PRESET_FIX_TIP)
@@ -608,9 +619,30 @@ class PresetWizard(QDialog):
         else:
             self.btn_fix.hide()
 
+    def instant_rule(self) -> str | None:
+        """시작하자마자 끝나게 한 규칙(④ 규칙 쪽에 줄이 있는 것)의 종류. L2가 바로 끝남이 아니거나 그런 규칙이 없으면 None."""
+        a = self.alive
+        if a is None or a.ok or a.fix != "move_part" or a.still_end is None or self.data is None:
+            return None
+        try:
+            uses, _ = R.find_rules(self.data)
+        except Exception:  # noqa: BLE001 - 고칠 길 찾기일 뿐
+            return None
+        rows = getattr(self.pages[3], "rows", {})
+        return next((u.kind for u in uses if u.event == a.still_end[2] and u.kind in rows), None)
+
     def _fix(self) -> None:
         fix = self.alive.fix if self.alive is not None else None
-        self.go(3 if fix == "add_rule" else 2)
+        if fix == "add_rule":
+            self.go(3)
+            return
+        kind = self.instant_rule()
+        if kind is None:
+            return
+        self.go(3)  # 바로 끝나게 한 규칙의 줄로: 그 칸(높이·닿는 것·영역 등)을 바꾸거나 끈다
+        controls = [c for c in self.pages[3].rows[kind].controls() if c.isEnabled()]
+        if controls:
+            controls[-1 if len(controls) > 1 else 0].setFocus(Qt.FocusReason.OtherFocusReason)
 
     def check_text(self) -> str:
         """「해 보기」 쪽의 확인 결과: L2 알림 + L3 결과(돌고 있으면 「확인 중…」)."""
@@ -678,12 +710,23 @@ class PresetWizard(QDialog):
     # 나가기
     # ------------------------------------------------------------------
 
+    def _commit_editing(self) -> None:
+        """초점이 있는 숫자 칸에 쳐 둔 값을 받아들인다(keyboardTracking이 꺼져 있어 Enter·초점 이동 전에는 반영되지 않음).
+        값이 바뀌면 그 칸의 valueChanged가 _apply까지 부른다."""
+        w: QWidget | None = QApplication.focusWidget()
+        while w is not None and not isinstance(w, QAbstractSpinBox):
+            w = w.parentWidget()
+        if w is not None and self.isAncestorOf(w):
+            w.interpretText()
+
     def _lab_key(self) -> None:
+        self._commit_editing()
         if self.btn_lab.isEnabled():
             self._leave("lab")
 
     def play(self) -> QWidget | None:
         """직접 해 보기: 메모리의 환경으로 직접 조종 창을 자식 창으로. 저장하지도 닫지도 않는다."""
+        self._commit_editing()
         self._commit_name()
         if self.spec is None:
             return None
@@ -713,8 +756,13 @@ class PresetWizard(QDialog):
         n = 2
         final = name
         while path.exists():
+            if n > _NUMBERED_MAX:
+                raise OSError(errno.EEXIST, S.PRESET_SAVE_TOO_MANY, str(path))
             final = S.PRESET_NAME_NUMBERED.format(name=name, n=n)
-            path = folder / f"{paths.safe_file_stem(final)}.evoenv"
+            # 줄기는 SAFE_STEM_MAX에서 잘리므로, 번호 몫을 남기고 이름을 먼저 잘라야 번호마다 새 파일이 된다(긴 이름 무한 반복 방지).
+            suffix = S.PRESET_NAME_NUMBERED.format(name="", n=n)
+            base = stem[: max(1, paths.SAFE_STEM_MAX - len(suffix))].rstrip(". ")
+            path = folder / f"{paths.safe_file_stem(base + suffix)}.evoenv"
             n += 1
         return path, final
 
@@ -731,6 +779,7 @@ class PresetWizard(QDialog):
         return path
 
     def _leave(self, what: str) -> bool:
+        self._commit_editing()
         self._commit_name()
         ok1 = self.quick is not None and self.quick.ok
         if not ok1 or (what == "lab" and not (self.alive is not None and self.alive.ok)):

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -763,12 +765,36 @@ def display_name(data: Mapping[str, Any], ref: str) -> str:
     return ref
 
 
-def candidates(data: Mapping[str, Any], slot: RuleSlot) -> list[tuple[str, str]]:
-    """빈칸에서 고를 것: (값, 표시 이름). 고르기 빈칸은 (이름, 화면 말)."""
+def _rule_of(slot: RuleSlot) -> str | None:
+    """빈칸이 속한 규칙 이름(RULES의 빈칸 객체 자체로 찾는다; 따로 만든 빈칸이면 None)."""
+    for name, rk in RULES.items():
+        if any(s is slot for s in rk.slots):
+            return name
+    return None
+
+
+def _is_mover(b: Mapping[str, Any]) -> bool:
+    """세계의 움직이는 물체(공 같은 것). 고정 물체(땅·벽)는 거리·영역 대상이 될 수 없다(컴파일이 거절)."""
+    return b.get("owner", "agent") == "world" and b.get("type", "dynamic") == "dynamic"
+
+
+def target_pool(data: Mapping[str, Any]) -> bool:
+    """「가까울수록 점수」「들어가면 성공」이 잴 대상(영역 또는 세계의 움직이는 물체)이 장면에 있나."""
+    return bool(_items(data, "regions")) or any(_is_mover(b) for b in _items(data, "bodies"))
+
+
+def candidates(data: Mapping[str, Any], slot: RuleSlot, rule: str | None = None) -> list[tuple[str, str]]:
+    """빈칸에서 고를 것: (값, 표시 이름). 고르기 빈칸은 (이름, 화면 말).
+
+    rule(없으면 slot이 속한 RULES의 규칙)에 따라 컴파일이 받는 것만 낸다: 「들어가면 성공」의 where는 영역만, 「가까울수록
+    점수」의 where·thing과 thing 빈칸은 영역(where만)·세계의 움직이는 물체·내 몸 부품(고정 물체는 빼고).
+    """
+    rule = rule if rule is not None else _rule_of(slot)
     bodies = _items(data, "bodies")
     regions = _items(data, "regions")
     agent = [(b["id"], _label_of(b)) for b in bodies if b.get("owner", "agent") == "agent" and "id" in b]
     world = [(b["id"], _label_of(b)) for b in bodies if b.get("owner", "agent") == "world" and "id" in b]
+    movers = [(b["id"], _label_of(b)) for b in bodies if _is_mover(b) and "id" in b]
     if slot.kind in ("part", "parts"):
         return agent
     if slot.kind == "what":
@@ -778,9 +804,10 @@ def candidates(data: Mapping[str, Any], slot: RuleSlot) -> list[tuple[str, str]]
                 tags += [t for t in b.get("tags", []) or [] if isinstance(t, str) and t not in tags]
         return [("tag." + t, display_name(data, "tag." + t)) for t in tags] + world
     if slot.kind == "where":
-        return [(r["id"], _label_of(r)) for r in regions if "id" in r] + world + agent
+        areas = [(r["id"], _label_of(r)) for r in regions if "id" in r]
+        return areas if rule == "reach" else areas + movers + agent
     if slot.kind == "thing":
-        return agent + world
+        return agent + movers
     if slot.kind == "choice":
         table = {"direction": S.RULE_DIRECTIONS, "outcome": S.RULE_OUTCOMES, "when": S.RULE_WHEN}.get(slot.id, {})
         return [(c, table.get(c, c)) for c in slot.choices]
@@ -806,8 +833,7 @@ def available(data: Mapping[str, Any], kind: str) -> tuple[bool, str]:
             return False, fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["agent"]})
         if need == "region" and not _items(data, "regions"):
             return False, fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["region"]})
-        if need == "target" and not (_items(data, "regions") or any(
-                b.get("owner", "agent") == "world" for b in _items(data, "bodies"))):
+        if need == "target" and not target_pool(data):  # 고정 물체(땅)는 대상이 아니다(adjust의 _first_target과 같은 풀)
             return False, fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["target"]})
     if kind == "out_ends" and any(t.get("event") == "out_of_bounds" for t in _items(data, "termination")):
         return False, S.RULES_ALREADY
@@ -854,7 +880,8 @@ def summary(data: Mapping[str, Any]) -> str:
         seen.update(u.blocks)
         a = u.args
         if u.kind == "distance":
-            terms.append(S.RULE_SUMMARY_TERMS["distance"].format(w=_w(a["per_m"])))
+            terms.append(fill(S.RULE_SUMMARY_TERMS["distance"], {  # 문장(RULE_SENTENCES)과 같은 방향 이름
+                "direction": S.RULE_DIRECTIONS.get(a.get("direction"), a.get("direction")), "w": f"{_w(a['per_m']):g}"}))
         elif u.kind == "fall":
             terms.append(S.RULE_SUMMARY_TERMS["fall"].format(w=_w(a["penalty"])))
         elif u.kind == "near":
@@ -898,8 +925,14 @@ def rows(data: Mapping[str, Any]) -> tuple[list[RuleRowInfo], int]:
     """(규칙 줄, 고급 탭에 남은 줄 수). 읽기 전용 줄의 풍선은 RULES_READONLY_TIP, 고정 줄은 RULES_FIXED_TIP."""
     uses, rest = find_rules(data)
     out = []
+    world = scene_world(data)
     for u in uses:
         tip = S.RULES_FIXED_TIP if u.fixed else ("" if u.editable else S.RULES_READONLY_TIP)
+        rk = RULES.get(u.kind)
+        if rk is not None and rk.world != "any" and rk.world != world and not u.fixed:
+            # 다른 세계의 규칙(옆 세계를 위에서 본 세계로 바꾼 뒤의 「넘어지면」 등): 뜻이 맞지 않아 고칠 수 없게 하고 까닭을 단다
+            u = dataclasses.replace(u, editable=False)
+            tip = S.RULES_WRONG_WORLD_TIP.format(world=S.TPL_WORLD_NAMES[rk.world])
         out.append(RuleRowInfo(u, sentence(data, u), tip))
     return out, rest
 
@@ -907,5 +940,5 @@ def rows(data: Mapping[str, Any]) -> tuple[list[RuleRowInfo], int]:
 __all__ = [
     "BLOCK_IDS", "DIRECTIONS", "EVENT_IDS", "RULES", "RuleKind", "RuleRowInfo", "RuleSlot", "RuleUse", "add_rule",
     "available", "candidates", "display_name", "find_rules", "num_text", "remove_rule", "root_body", "rows",
-    "scene_world", "sentence", "set_rule", "summary",
+    "scene_world", "sentence", "set_rule", "summary", "target_pool",
 ]
