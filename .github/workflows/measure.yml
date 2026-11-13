@@ -4,16 +4,19 @@
 #   {"tag":   "c3_s13",                         artifact 이름 measure-<tag> (영문·숫자·_ . - 만)
 #    "pre":   "<학습 전에 돌릴 셸 명령>",        선택. 측정할 환경 파일을 만드는 일 등. 저장소 뿌리에서 돈다
 #    "train": "<evolab train 뒤에 붙는 인자>",   --out은 붙이지 않는다(자동). 워커 수는 결과를 바꾸지 않으므로 --workers 3을 권한다
-#    "judge": "<evolab judge 실행폴더 뒤 인자>"} 선택. 예: "--seeds 100 --workers 3"
-# 결과: artifact measure-<tag> = 실행 폴더(run/…) + train.log + judge.log + pre.log + machine.txt(코어 수·CPU·커밋·시각).
-# 러너와 개발 컨테이너는 CPU가 달라 같은 시드라도 비트까지 같다는 보장이 없다. 보고서에는 「GitHub 러너에서 잰 값」이라고 적는다.
+#    "judge": "<evolab judge 실행폴더 뒤 인자>",  선택. 예: "--seeds 100 --workers 3"
+#    "cmd":   "<셸 명령>"}                        선택. 있으면 train·judge 대신 이것만 돈다(원형 실험 research/… 등). 결과는
+#                                                 환경 변수 MEASURE_OUT 폴더에 쓴다. 저장소 뿌리에서 돌고 uv run을 쓸 수 있다
+# 결과: artifact measure-<tag> = 실행 폴더(run/…) + train.log + judge.log + pre.log + cmd.log + machine.txt(코어 수·CPU·커밋·시각).
+# 러너와 개발 컨테이너는 CPU가 달라 같은 시드라도 비트까지 같다는 보장이 없다(2026-11-13 시험: 인텔 러너는 개발 컨테이너와 점수 열이
+# 바이트까지 같았고, AMD 러너는 3세대부터 1e-9쯤 달랐다). 보고서에는 「GitHub 러너에서 잰 값」이라고 적고 machine.txt의 CPU를 함께 적는다.
 name: measure
 
 on:
   workflow_dispatch:
     inputs:
       runs:
-        description: 'JSON 배열: [{"tag":"…","pre":"…","train":"…","judge":"…"}]'
+        description: 'JSON 배열: [{"tag":"…","pre":"…","train":"…","judge":"…"}] 또는 [{"tag":"…","cmd":"…"}]'
         required: true
         type: string
 
@@ -41,6 +44,7 @@ jobs:
       PRE: ${{ matrix.run.pre }}
       TRAIN: ${{ matrix.run.train }}
       JUDGE: ${{ matrix.run.judge }}
+      CMD: ${{ matrix.run.cmd }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +68,7 @@ jobs:
           mkdir -p "$out"
           {
             echo "tag $TAG"
-            echo "cores $(nproc)"
+            echo "cores $(nproc --all)"
             grep -m1 "model name" /proc/cpuinfo
             uname -sr
             uv run python -c "import sys, numpy, pymunk; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'pymunk', pymunk.version)"
@@ -72,13 +76,22 @@ jobs:
             echo "start $(date -u +%FT%TZ)"
             echo "train $TRAIN"
             echo "judge ${JUDGE:-}"
+            echo "cmd ${CMD:-}"
           } > "$out/machine.txt" 2>&1
           cat "$out/machine.txt"
           filter() { grep --line-buffered -v -e matplotlib -e _warnings; }
           if [ -n "${PRE:-}" ]; then
-            export MEASURE_OUT="$out"
-            bash -c "$PRE" 2>&1 | tee "$out/pre.log"
+            MEASURE_OUT="$out" bash -c "$PRE" 2>&1 | tee "$out/pre.log"
             if [ "${PIPESTATUS[0]}" -ne 0 ]; then echo "::error::pre command failed"; exit 1; fi
+          fi
+          export MEASURE_OUT="$out"
+          if [ -n "${CMD:-}" ]; then
+            start=$(date +%s)
+            bash -c "$CMD" 2>&1 | filter | tee "$out/cmd.log"
+            rc=${PIPESTATUS[0]}
+            echo "# cmd exit $rc seconds $(( $(date +%s) - start )) load $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$out/cmd.log"
+            echo "end $(date -u +%FT%TZ)" >> "$out/machine.txt"
+            exit "$rc"
           fi
           start=$(date +%s)
           eval "uv run evolab train $TRAIN --out \"\$out/run\"" 2>&1 | filter | tee "$out/train.log"
