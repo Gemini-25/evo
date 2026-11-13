@@ -3243,3 +3243,8 @@ HINT_LAB_MORE_GENS: Final = "{n}세대 더 학습"
 HINT_LAB_MORE_GENS_TIP: Final = "「" + LAB_MAX_GENERATIONS + "」 칸을 {n}만큼 늘리고 설정을 적용한 뒤 바로 이어서 학습합니다."
 HINT_LAB_CHANGE_STOP: Final = "정지 조건 바꾸기"
 HINT_LAB_CHANGE_STOP_TIP: Final = "오른쪽 패널의 「" + LAB_STOP_GROUP + "」 묶음으로 갑니다. 바꾼 뒤 「" + LAB_APPLY + "」 단추를 누르세요."
+# 직접 조종 캔버스 가운데의 결과 띠(6.2.0 다듬기 U13 ②): 한 판이 끝나면 두 줄. 점수는 style.fmt_score
+PLAY_RESULT_BAND: Final = "{label} · {score}점"
+PLAY_RESULT_KEYS: Final = "R 다시 시작 · N 새 시드"
+# 센서가 없는 환경(표를 숨기고 이 한 줄, U13 ⑥)
+PLAY_NO_SENSORS: Final = "이 환경에는 센서가 없습니다."
