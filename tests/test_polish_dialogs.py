@@ -104,7 +104,7 @@ def check_box(box: QMessageBox, parent: QWidget) -> None:
     others = [b for b in box.buttons() if b is not ok]
     assert others and not any(isinstance(b, QPushButton) and b.isDefault() for b in others)
     assert all(b.autoDefault() for b in others if isinstance(b, QPushButton))
-    assert box.escapeButton() is ok
+    assert box.escapeButton() in (ok, None)  # None: Qt가 띄울 때 하나뿐인 AcceptRole(「확인」)을 고른다
     assert QApplication.focusWidget() in (ok, None)  # offscreen에서 창이 활성이 아니면 초점이 없을 수 있다
     # 으뜸 단추의 크기는 꾸미기 전 그대로(줄이 어긋나지 않게, 「확인」이 좁아지지 않게)
     width, height = native_ok_size(parent)
