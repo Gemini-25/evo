@@ -71,7 +71,7 @@ from evolab.app.lab.dashboard import (
     GLYPH_FILL,
     GLYPH_LINE,
     Theme,
-    fmt_value,
+    _Axis,
     theme_for,
     to_float,
 )
@@ -94,6 +94,8 @@ SETTINGS_GROUP = "compare"
 SETTINGS_FILE = "settings.ini"
 PATH_ROLE = Qt.ItemDataRole.UserRole
 GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
+SWATCH_ROLE = Qt.ItemDataRole.UserRole + 2
+"""0열 색 견본의 색 글(U24: 같은 색이면 아이콘을 다시 만들지 않는다)."""
 LIST_COL_ENV, LIST_COL_METHOD, LIST_COL_SEED, LIST_COL_GENERATIONS, LIST_COL_GROUP = range(5)
 (TABLE_COL_NAME, TABLE_COL_METHOD, TABLE_COL_SEED, TABLE_COL_FINAL, TABLE_COL_TARGET, TABLE_COL_TIME,
  TABLE_COL_SUCCESS) = range(7)
@@ -496,25 +498,10 @@ def table_row(name: str, color: str, entries: Sequence[RunEntry], datas: Sequenc
     )
 
 
-def format_count(v: float) -> str:
-    return f"{round(v):,}" if math.isfinite(v) else S.CMP_NONE
-
-
-def format_duration(seconds: float) -> str:
-    if not math.isfinite(seconds):
-        return S.CMP_NONE
-    if seconds < 60:
-        return S.CMP_SECONDS.format(s=seconds)
-    total = round(seconds)
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return S.CMP_HOURS.format(h=h, m=m)
-    return S.CMP_MINUTES.format(m=m, s=s)
-
-
-def format_percent(v: float) -> str:
-    return S.CMP_PERCENT.format(v=v) if math.isfinite(v) else S.CMP_NONE
+# U29: 숫자는 style.fmt_* 하나씩만 거친다(기록·비교·실험실이 같은 글). 옛 이름은 같은 함수다.
+format_count = style.fmt_count
+format_duration = style.fmt_duration
+format_percent = style.fmt_percent
 
 
 def format_seeds(seeds: Sequence[int | None]) -> str:
@@ -533,7 +520,7 @@ def format_mean_std(mean: float, std: float) -> str:
     if not math.isfinite(mean):
         return S.CMP_NONE
     if not math.isfinite(std):
-        return fmt_value(mean)
+        return style.fmt_score(mean)
     a = abs(mean)
     digits = 0 if a >= 1000 else 1 if a >= 100 else 2 if a >= 1 else 3
     return S.CMP_MEAN_STD.format(mean=f"{mean:,.{digits}f}", std=f"{std:,.{digits}f}")
@@ -548,7 +535,7 @@ def row_texts(r: TableRow) -> list[str]:
         success = (S.CMP_MEAN_STD.format(mean=format_percent(r.success), std=format_percent(r.success_std))
                    if math.isfinite(r.success_std) else format_percent(r.success))
     else:
-        final = fmt_value(r.final)
+        final = style.fmt_score(r.final)
         target = format_count(r.to_target)
         success = format_percent(r.success)
     if not r.has_success:  # 성공 판정이 없는 환경(글라이더): 0%가 실패처럼 보이지 않게
@@ -660,6 +647,9 @@ class CompareView(QWidget):
         self._checked: set[str] = set()
         self._collapsed: set[str] = set()
         self.shown: list[Shown] = []
+        self.slots: dict[str, int] = {}
+        """보이는 항목(실행 키 또는 「묶음 키」) → 색 칸(U24). 보이는 항목의 칸은 늘 0..k−1."""
+        self._reslot = False
         self._no_success_hidden = False
         """성공률 그래프에서 성공 판정이 없는 환경의 실행을 뺐는가(안내 CMP_NO_SUCCESS_RATE)."""
         self.rows: list[TableRow] = []
@@ -814,7 +804,9 @@ class CompareView(QWidget):
         self.note_label.setWordWrap(True)
         self.note_label.setStyleSheet(f"color: {t.tick};")
         self.note_label.hide()
-        self.plot_widget = _PlotWidget(background=t.surface)
+        # U29: 대시보드와 같은 축(천 단위 구분, 세대 축은 정수 눈금)
+        self.plot_widget = _PlotWidget(background=t.surface, axisItems={
+            "left": _Axis("left"), "bottom": _Axis("bottom", integer=self.x_axis == "generation")})
         self.plot = self.plot_widget.getPlotItem()
         self._style_plot()
         self.message = QLabel(S.CMP_PICK_RUNS)
@@ -1004,6 +996,7 @@ class CompareView(QWidget):
                 top.setExpanded(info["id"] not in self._collapsed)
         finally:
             self._filling = False
+        self._update_swatches()
 
     def _run_item(self, e: RunEntry, in_group: bool) -> QTreeWidgetItem:
         item = QTreeWidgetItem()
@@ -1089,6 +1082,7 @@ class CompareView(QWidget):
         self._fill_tree()
         self.folder_label.setText(S.CMP_FOLDER.format(count=len(self.entries), path=self.runs_dir()))
         self.empty_label.setVisible(not self.entries)
+        self._reslot = True  # 한꺼번에 고름: 목록 차례로 칸을 다시 준다(U24 ③)
         self.redraw()
 
     def set_group_checked(self, group_id: str, checked: bool = True) -> bool:
@@ -1098,6 +1092,7 @@ class CompareView(QWidget):
             return False
         self._checked = (self._checked | keys) if checked else (self._checked - keys)
         self._apply_checked_to_tree()
+        self._reslot = True
         self.redraw()
         return True
 
@@ -1124,6 +1119,9 @@ class CompareView(QWidget):
         if axis == self.x_axis:
             return
         self.x_axis = axis
+        bottom = self.plot.getAxis("bottom")
+        if isinstance(bottom, _Axis):
+            bottom.set_integer(axis == "generation")
         self.save_settings()
         if not self._loading:
             self.redraw()
@@ -1226,6 +1224,65 @@ class CompareView(QWidget):
                 out.extend(("run", m.display_name(), [m], info["id"]) for m in chosen)
         return out
 
+    @staticmethod
+    def _item_key(kind: str, entries: Sequence[RunEntry], gid: str) -> str:
+        return f"group\0{gid}" if kind == "group" else entries[0].key
+
+    def _assign_slots(self, keys: list[str]) -> dict[str, int]:
+        """U24(V11): 보이는 항목마다 색 칸. ① 새로 보이는 항목은 다음 칸 k를 받고 다른 항목의 칸은 그대로 ② 빠진 항목이 있으면
+        가장 높은 칸의 항목 하나만 그 빈 칸으로 내려온다 ③ 한꺼번에 고른 길(_reslot)은 목록 차례로 다시 준다.
+        보이는 항목의 칸은 늘 0..k−1이다(팔레트의 앞쪽 칸만 이웃끼리 색각 검증됨)."""
+        if self._reslot:
+            self._reslot = False
+            self.slots = {key: k for k, key in enumerate(keys)}
+            return self.slots
+        now = set(keys)
+        slots = dict(self.slots)
+        for gone in [key for key in slots if key not in now]:
+            hole = slots.pop(gone)
+            if not slots:
+                continue
+            top = max(slots, key=lambda key: slots[key])
+            if slots[top] > hole:
+                slots[top] = hole
+        for key in keys:
+            if key not in slots:
+                slots[key] = len(slots)
+        self.slots = slots
+        return slots
+
+    def _update_swatches(self) -> None:
+        """체크한 줄의 0열에 그 항목의 색 견본(목록·범례·표·경주 칸이 같은 색). 색이 옮겨 가도 목록에서 바로 보인다."""
+        colors: dict[str, str] = {}
+        for s in self.shown:
+            if s.kind == "group":
+                colors[f"group\0{s.group_id}"] = s.color
+            else:
+                colors[s.entries[0].key] = s.color
+        self._filling = True  # 아이콘을 바꾸면 itemChanged가 난다: 체크 바뀜으로 읽지 않게
+        try:
+            for i in range(self.tree.topLevelItemCount()):
+                top = self.tree.topLevelItem(i)
+                if top is None:
+                    continue
+                gid = top.data(0, GROUP_ROLE)
+                if gid:
+                    self._set_swatch(top, colors.get(f"group\0{gid}"))
+                    for j in range(top.childCount()):
+                        child = top.child(j)
+                        self._set_swatch(child, colors.get(str(child.data(0, PATH_ROLE))))
+                else:
+                    self._set_swatch(top, colors.get(str(top.data(0, PATH_ROLE))))
+        finally:
+            self._filling = False
+
+    @staticmethod
+    def _set_swatch(item: QTreeWidgetItem, color: str | None) -> None:
+        if (item.data(0, SWATCH_ROLE) or None) == color:
+            return
+        item.setData(0, SWATCH_ROLE, color)
+        item.setIcon(0, _swatch(color) if color else QIcon())
+
     def redraw(self, keep_view: bool = False) -> None:
         """고른 실행을 다시 읽어(바뀐 파일만) 그래프와 표를 다시 그린다."""
         self._redraw_timer.stop()
@@ -1236,7 +1293,10 @@ class CompareView(QWidget):
         rate = self.y_metric in PERCENT_METRICS
         self._no_success_hidden = False
         shown: list[Shown] = []
-        for k, (kind, name, entries, gid) in enumerate(self._items_to_show()):
+        items = self._items_to_show()
+        slots = self._assign_slots([self._item_key(kind, entries, gid) for kind, _n, entries, gid in items])
+        for kind, name, entries, gid in items:
+            k = slots[self._item_key(kind, entries, gid)]
             color = t.series[k % len(t.series)]
             style = _STYLES[(k // len(t.series)) % len(_STYLES)]
             datas = [self.cache.get(e.path) for e in entries]
@@ -1258,6 +1318,7 @@ class CompareView(QWidget):
             self._maybe_default_target()
         self._draw(keep_view)
         self._fill_table()
+        self._update_swatches()
         has = bool(shown)
         self.png_button.setEnabled(has)
         self.csv_button.setEnabled(has)
@@ -1365,7 +1426,7 @@ class CompareView(QWidget):
         if self.y_metric in ("compare_score", "champion_score", "score_best") and self.shown:
             line.setPos(self.target)
             if line.label is not None:
-                line.label.setFormat(S.CMP_TARGET_LINE.format(v=fmt_value(self.target)).replace("{", "{{").replace("}", "}}"))
+                line.label.setFormat(S.CMP_TARGET_LINE.format(v=style.fmt_score(self.target)).replace("{", "{{").replace("}", "}}"))
             line.show()
         else:
             line.hide()

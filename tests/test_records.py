@@ -479,7 +479,7 @@ def test_view_lists_runs(qtbot: Any, view_runs: Path) -> None:
     qtbot.addWidget(view)
     t = view.table
     assert [t.horizontalHeaderItem(c).text() for c in range(t.columnCount())] == \
-        ["환경", "방법", "시작 시각", "세대 수", "최고 점수", "메모"]
+        ["환경", "방법", "시드", "묶음", "시작 시각", "세대 수", "최고 점수", "메모"]  # 6.2.0 U26: 시드·묶음
     assert t.rowCount() == 3
     texts = {t.item(r, COL_ENV).text(): r for r in range(t.rowCount())}
     r = texts["e"]

@@ -87,6 +87,10 @@ class RunSummary:
     """False면 run.json이 없거나 읽을 수 없는 폴더(열기·이어하기 불가)."""
     error: str | None = None
     """ok가 False인 까닭, 또는 ok인데 통계를 읽지 못한 경고(한국어)."""
+    seed: int | None = None
+    """실행 시드(run.json config.run_seed). 없으면 None(6.2.0 다듬기 U26: 같은 환경·방법의 실행을 가른다)."""
+    group: str = ""
+    """반복 실행 묶음의 이름(run.json group.name, 이름이 없으면 묶음 id). 묶음이 아니면 빈 글."""
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +141,9 @@ def _summarize(root: Path) -> RunSummary:
     parent = info.get("parent")
     summary.parent = dict(parent) if isinstance(parent, dict) else None
     summary.started = _text(info.get("created")) or _first_event_time(root) or _mtime_iso(info_path)
+    seed = config.get("run_seed")
+    summary.seed = seed if isinstance(seed, int) and not isinstance(seed, bool) else None
+    summary.group = _group_name(info.get("group"))
     fmt = info.get("store_format", STORE_FORMAT)
     if not isinstance(fmt, int) or fmt > STORE_FORMAT:
         summary.ok = False
@@ -155,6 +162,13 @@ def _summarize(root: Path) -> RunSummary:
         return summary
     summary.generations, summary.best_score = _progress(header, rows)
     return summary
+
+
+def _group_name(group: Any) -> str:
+    if not isinstance(group, dict) or not isinstance(group.get("id"), str) or not group["id"]:
+        return ""
+    name = group.get("name")
+    return name if isinstance(name, str) and name else str(group["id"])
 
 
 def _text(value: Any) -> str:

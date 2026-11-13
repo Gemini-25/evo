@@ -3257,3 +3257,13 @@ RACE_START_TIP: Final = "모든 칸을 함께 출발시키거나 잠시 멈춥�
 RACE_RESTART_TIP: Final = "모든 칸을 처음부터 다시 달리게 합니다(R)."
 RACE_WHY_PREPARING: Final = "경주 준비가 끝나면 쓸 수 있습니다."
 RACE_WHY_FAILED: Final = "경주를 준비하지 못했습니다. 위의 알림을 보세요."
+# 기록 목록(다듬기 U26): 열 「시드」·「묶음」(「방법」 뒤), 꺼진 단추의 까닭(REC_WHY_PICK·REC_PICK_NOTE는 바탕 묶음이 더함)
+REC_COL_SEED: Final = "시드"
+REC_COL_GROUP: Final = "묶음"
+REC_WHY_ONE: Final = "실행을 하나만 고르면 쓸 수 있습니다."
+REC_WHY_UNREADABLE: Final = "읽을 수 없는 실행이라 쓸 수 없습니다. 폴더의 run.json을 확인하세요."
+
+
+# 6.2.0 묶음 PD (대화 상자: app/errors.py, app/report/dialog.py)가 더한 것
+# 오류 보고 묶음 창의 「저장…」(으뜸)이 꺼졌을 때 풍선에 붙는 까닭(다듬기 1.8)
+REP_SAVE_WHY_OFF: Final = "넣을 것을 하나 이상 고르면 만들 수 있습니다."

@@ -273,6 +273,7 @@ class RaceView(QWidget):
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(FAST_MS)
         self._timer.timeout.connect(self._tick)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # 준비 중 초점 자리(U23). 탭 차례에는 들지 않는다
 
         # -- 위 줄 --------------------------------------------------------------
         self.course_box = QComboBox()
@@ -766,14 +767,18 @@ class RaceView(QWidget):
     # 체크 상자의 Space는 체크, 고르기 칸의 글자는 글자 찾기). Enter는 대화 상자의 기본 단추(「출발」)가 받는다.
     # ------------------------------------------------------------------
     def focus_start(self) -> None:
-        """초점을 「출발」에 둔다: 창이 뜰 때와 준비가 끝날 때. 사용자가 단추가 아닌 칸(고르기 칸·체크 상자)에 둔 초점은
-        옮기지 않는다."""
-        if not self.start_button.isEnabled() or not self.isVisible():
-            return
+        """준비가 끝날 때: 초점을 「출발」에 둔다. 사용자가 단추가 아닌 칸(고르기 칸·체크 상자)에 둔 초점은 옮기지 않는다."""
         fw = QApplication.focusWidget()
-        if fw is not None and self.isAncestorOf(fw) and not isinstance(fw, QAbstractButton):
+        if fw is not None and fw is not self and self.isAncestorOf(fw) and not isinstance(fw, QAbstractButton):
             return
-        self.start_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._focus_default()
+
+    def _focus_default(self) -> None:
+        """「출발」에 초점(준비 중이라 꺼져 있으면 화면 자신에: 그동안 Enter·Space는 아무것도 하지 않는다)."""
+        if self.start_button.isEnabled():
+            self.start_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        else:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         plain = event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier)
@@ -904,11 +909,13 @@ class RaceView(QWidget):
         elif not self.ready and self._cancel is None and self.entries and not self.failure:
             self.prepare()  # 준비 중에 닫았다가 다시 연 창
         self._resume_on_show = False
-        QTimer.singleShot(0, self._focus_start_if_alive)
+        QTimer.singleShot(0, self._focus_on_show)
 
-    def _focus_start_if_alive(self) -> None:
+    def _focus_on_show(self) -> None:
+        """창이 뜰 때: Qt가 처음 칸(「코스」 고르기 칸)에 준 초점 대신 「출발」에."""
         try:
-            self.focus_start()
+            if self.isVisible():
+                self._focus_default()
         except RuntimeError:  # 창이 이미 지워졌다
             pass
 

@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from evolab.app import strings as S
+from evolab.app import style
+from evolab.app.errors import tidy_box
 from evolab.app.report import bundle
 from evolab.app.report.bundle import BundleOptions, ReportItem
 
@@ -96,10 +98,12 @@ class ReportDialog(QDialog):
         self.btn_open_folder = QPushButton(S.REP_OPEN_FOLDER)
         self.btn_open_folder.clicked.connect(self.open_folder)
         self.btn_open_folder.hide()
+        style.set_role(self.btn_open_folder, "quiet")  # 다듬기 1.5: 「폴더 열기」는 조용한 단추
         row.addWidget(self.btn_open_folder)
         row.addStretch(1)
         self.btn_save = QPushButton(S.REP_SAVE)
         self.btn_save.setDefault(True)
+        style.set_role(self.btn_save, "primary")  # 다듬기 1.5: 이 창의 으뜸(기본 단추와 같음)
         self.btn_save.clicked.connect(self.save)
         self.btn_close = QPushButton(S.REP_CANCEL)
         self.btn_close.clicked.connect(self.reject)
@@ -131,7 +135,11 @@ class ReportDialog(QDialog):
         self.file_list.clear()
         for item in self.items:
             self.file_list.addItem(f"{item.arcname}  ({bundle.human_size(item.size)})")
-        self.btn_save.setEnabled(bool(self.items))
+        self._update_save()
+
+    def _update_save(self) -> None:
+        """「저장…」은 넣을 파일이 있을 때만. 꺼지면 까닭을 풍선에(다듬기 1.8: toolTip()은 그대로)."""
+        style.set_enabled(self.btn_save, bool(self.items), S.REP_SAVE_WHY_OFF)
 
     def current_options(self) -> BundleOptions:
         return replace(self.opts, note=self.note.toPlainText(), include_run=self.checks["run"].isChecked(),
@@ -171,7 +179,7 @@ class ReportDialog(QDialog):
             loop.exec()
         timer.stop()
         thread.join()
-        self.btn_save.setEnabled(bool(self.items))
+        self._update_save()
         self.status.show()
         error = result.get("error")
         if error is not None:
@@ -210,6 +218,7 @@ def show_crash_box(parent: QWidget | None, line: str, opts: BundleOptions) -> No
     box.setDetailedText(line)
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
     report = box.addButton(S.ERR_REPORT_BUTTON, QMessageBox.ButtonRole.ActionRole)
+    tidy_box(box)  # 오류 상자와 같은 폭과 으뜸 「확인」(다듬기 U35)
     box.setModal(False)
     box.setWindowModality(Qt.WindowModality.NonModal)
     box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)

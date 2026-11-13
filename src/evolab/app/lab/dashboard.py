@@ -843,10 +843,10 @@ class _Tile(QFrame):
             value = ""
             if i is not None and e.text is not None:
                 value = " " + e.text(i)
-            name = _escape(e.name)
-            if e.dim:
-                name = f'<span style="color:{tick}">{name}</span>'
-            parts.append(f"{swatch}&nbsp;{name}{_escape(value)}")
+            text = _escape(e.name) + _escape(value)
+            if e.dim:  # 이름과 값을 함께 흐린 글로(「이름 값」이 한 덩어리로 읽히게)
+                text = f'<span style="color:{tick}">{text}</span>'
+            parts.append(f"{swatch}&nbsp;{text}")
         return "&nbsp;&nbsp; ".join(parts)
 
     def update_legend(self) -> None:

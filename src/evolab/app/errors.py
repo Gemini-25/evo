@@ -21,7 +21,7 @@
   짧은 까닭이다(모르는 예외면 예외 종류 이름만, 원문은 「자세히」로).
 - `show_error(parent, title, error, *, next_step=None, message=None)`: 제목은 부르는 쪽 그대로, 본문 = 무엇이 잘못됐나, 그 아래
   「다음에 할 일: …」, 단추 [확인] [오류 보고 묶음 만들기…], 「자세히」 = 예외 원문과 traceback. 늘 오류 기록(errors.jsonl)에
-  kind="shown" 한 줄을 남긴다. 상자는 **막지 않고** 띄운다(`open()`: 그 창만 막는 창 모달): 부르는 쪽은 곧바로 이어 가고, 학습
+  kind="shown" 한 줄을 남긴다. 상자 모양은 `tidy_box`(폭, 으뜸 「확인」: 다듬기 U35). 상자는 **막지 않고** 띄운다(`open()`: 그 창만 막는 창 모달): 부르는 쪽은 곧바로 이어 가고, 학습
   클라이언트 타이머 같은 슬롯 안에서 중첩 이벤트 루프가 생기지 않는다(안내·자체 점검이 상자 때문에 멈추지 않음). 상자를 띄운 창이
   닫히면(프로그램이 숨기면) 그 상자도 닫는다.
 - 화면 파일은 `QMessageBox.*`에 예외(except 이름, `str(이름)`, 그 이름을 넣은 `format`)를 넣지 않는다: tests/test_errors.py가 AST로
@@ -40,9 +40,18 @@ from dataclasses import dataclass, replace
 from typing import Any, Final
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Slot
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QGridLayout,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpacerItem,
+    QWidget,
+)
 
 from evolab.app import strings as S
+from evolab.app import style
 
 PERMISSION_ERRNOS: Final = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
 PERMISSION_WINERRORS: Final = frozenset({5, 19, 32, 33})
@@ -54,6 +63,8 @@ NOT_FOUND_WINERRORS: Final = frozenset({2, 3})
 """윈도우: 파일 없음, 경로 없음."""
 BOX_NAME: Final = "evolabErrorBox"
 """show_error 상자의 objectName(안내·테스트가 찾는 이름)."""
+BOX_MIN_WIDTH: Final = 460
+"""오류 상자 격자 맨 아래 빈 칸의 폭(px, 다듬기 U35): 상자가 이만큼 넓어져 본문이 두 줄 안에 든다."""
 REPORT_REASON: Final = "error"
 """「오류 보고 묶음 만들기…」로 만든 묶음의 까닭(REP_REASONS 키)."""
 
@@ -255,6 +266,33 @@ def _record(title: str, friendly: Friendly) -> None:
         pass
 
 
+def tidy_box(box: QMessageBox, ok: QAbstractButton | None = None) -> None:
+    """오류 상자의 모양(6.2.0 다듬기 U35). 글과 단추를 다 정한 **뒤에** 부른다(QMessageBox는 글을 바꿀 때 격자를 새로 만든다).
+
+    - 격자 맨 아래 줄에 폭 BOX_MIN_WIDTH의 빈 칸: 상자가 그만큼 넓어져 본문과 「다음에 할 일」 줄이 3~4줄로 꺾이지 않는다
+      (Qt는 상자 폭을 격자의 최소 폭으로 정한다. 글 형식은 그대로 보통 글).
+    - 「확인」(ok, 없으면 표준 Ok)만 기본 단추이자 으뜸(style.set_role). 으뜸의 QSS가 지우는 기본 단추 최소 폭은 되살린다.
+      다른 단추의 autoDefault는 끄지 않는다(초점을 둔 단추는 Enter로 누를 수 있게: 다듬기 1.5).
+    - 「자세히」와 「오류 보고 묶음 만들기…」는 둘 다 ActionRole이고 자세히 단추가 먼저 생기므로 묶음 단추는 늘 자세히 단추 바로 옆이다.
+    두 번 불러도 빈 칸은 하나다.
+    """
+    grid = box.layout()
+    if isinstance(grid, QGridLayout) and not any(grid.itemAt(i) is getattr(box, "_evo_spacer", None)
+                                                for i in range(grid.count())):
+        spacer = QSpacerItem(BOX_MIN_WIDTH, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        grid.addItem(spacer, grid.rowCount(), 0, 1, max(1, grid.columnCount()))
+        box._evo_spacer = spacer  # type: ignore[attr-defined]
+    if ok is None:
+        ok = box.button(QMessageBox.StandardButton.Ok)
+    if ok is None:
+        return
+    native = ok.sizeHint().width() if ok.property(style.ROLE_PROPERTY) != "primary" else ok.minimumWidth()
+    if isinstance(ok, QPushButton):
+        box.setDefaultButton(ok)
+    style.set_role(ok, "primary")
+    ok.setMinimumWidth(native)
+
+
 def error_box(parent: QWidget | None, title: str, friendly: Friendly) -> QMessageBox:
     """오류 상자를 만든다(띄우지는 않음). 글은 모두 일반 글(예외 글의 <, & 를 HTML로 읽지 않게)."""
     box = QMessageBox(parent)
@@ -272,6 +310,7 @@ def error_box(parent: QWidget | None, title: str, friendly: Friendly) -> QMessag
     box.setEscapeButton(QMessageBox.StandardButton.Ok)
     report = box.addButton(S.ERR_REPORT_BUTTON, QMessageBox.ButtonRole.ActionRole)
     box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    tidy_box(box)
     box.friendly = friendly  # type: ignore[attr-defined]  # 안내·테스트가 읽는다
     box.report_button = report  # type: ignore[attr-defined]
     return box
@@ -367,4 +406,4 @@ def open_error_boxes() -> list[QMessageBox]:
 
 __all__ = ["BOX_NAME", "Friendly", "REPORT_REASON", "TRAINING_TEMPLATES", "detail_text", "error_box", "explain",
            "open_error_boxes", "open_report", "os_cause", "os_error_from_text", "os_error_from_traceback", "reason",
-           "show_error", "split_training_message", "structure_next_step", "training_error"]
+           "show_error", "split_training_message", "structure_next_step", "tidy_box", "training_error"]

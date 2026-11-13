@@ -20,8 +20,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QShowEvent
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
@@ -29,7 +29,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
+    QSizePolicy,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -44,22 +46,22 @@ from evolab.app import style
 from evolab.runs.catalog import RunSummary, branch_run, delete_run, list_runs, read_summary, set_memo
 from evolab.runs.store import RunStore, RunStoreError
 
-COL_ENV, COL_METHOD, COL_STARTED, COL_GENERATIONS, COL_BEST, COL_MEMO = range(6)
-COLUMN_TITLES = (S.REC_COL_ENV, S.REC_COL_METHOD, S.REC_COL_STARTED, S.REC_COL_GENERATIONS, S.REC_COL_BEST,
-                 S.REC_COL_MEMO)
+COL_ENV, COL_METHOD, COL_SEED, COL_GROUP, COL_STARTED, COL_GENERATIONS, COL_BEST, COL_MEMO = range(8)
+COLUMN_TITLES = (S.REC_COL_ENV, S.REC_COL_METHOD, S.REC_COL_SEED, S.REC_COL_GROUP, S.REC_COL_STARTED,
+                 S.REC_COL_GENERATIONS, S.REC_COL_BEST, S.REC_COL_MEMO)
 PATH_ROLE = Qt.ItemDataRole.UserRole
+ENV_MIN_WIDTH = 180
+"""「환경」 열의 최소 폭(px, U26)."""
 
 
 def format_started(iso: str) -> str:
-    """ISO 8601 시각을 '2026-11-07 15:30'으로. 읽을 수 없으면 그대로."""
-    try:
-        return f"{dt.datetime.fromisoformat(iso):%Y-%m-%d %H:%M}"
-    except ValueError:
-        return iso
+    """시작 시각(U29): 「11월 13일 12:07」, 해가 다르면 해를 앞에(style.fmt_when). 읽을 수 없으면 그대로. 풍선에 ISO 시각."""
+    return style.fmt_when(iso)
 
 
 def format_score(score: float | None) -> str:
-    return S.REC_NONE if score is None else f"{score:.2f}"
+    """점수(U29): 비교 화면·실험실과 같은 style.fmt_score. 값이 없으면 「—」."""
+    return S.REC_NONE if score is None else style.fmt_score(score)
 
 
 def _started_key(iso: str) -> float:
@@ -151,7 +153,10 @@ class RecordsView(QWidget):
         header = self.table.horizontalHeader()
         for col in range(len(COLUMN_TITLES)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COL_ENV, QHeaderView.ResizeMode.Interactive)  # 글 폭에 맞추되 ENV_MIN_WIDTH 이상
         header.setSectionResizeMode(COL_MEMO, QHeaderView.ResizeMode.Stretch)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_context_menu)
         self.table.setSortingEnabled(True)
         self.table.sortItems(COL_STARTED, Qt.SortOrder.DescendingOrder)
 
@@ -172,7 +177,17 @@ class RecordsView(QWidget):
         self.bundle_button = button(S.REC_BUNDLE, self._on_bundle, S.REC_BUNDLE_TIP)
         self.csv_button = button(S.REC_CSV, self._on_csv, S.REC_CSV_TIP)
 
+        # U26: 「열기」가 으뜸(고른 것이 없으면 꺼진 으뜸 + 까닭), 「삭제」는 위험 단추로 따로
+        style.set_role(self.open_button, "primary")
+        style.set_role(self.delete_button, "danger")
+        self.pick_note = style.note(S.REC_PICK_NOTE)
+        self.pick_note.setWordWrap(False)
+        keep = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        keep.setRetainSizeWhenHidden(True)  # 고르면 숨지만 단추 자리는 움직이지 않는다
+        self.pick_note.setSizePolicy(keep)
+
         buttons = QHBoxLayout()
+        buttons.addWidget(self.pick_note)
         for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.compare_button,
                   self.bundle_button, self.csv_button):
             buttons.addWidget(b)
@@ -244,6 +259,9 @@ class RecordsView(QWidget):
         finally:
             self.table.setSortingEnabled(True)  # 머리글에서 고른 정렬 기준으로 다시 정렬
             self._filling = False
+        self.table.resizeColumnToContents(COL_ENV)
+        if self.table.columnWidth(COL_ENV) < ENV_MIN_WIDTH:
+            self.table.setColumnWidth(COL_ENV, ENV_MIN_WIDTH)
 
     @staticmethod
     def _cells(s: RunSummary) -> list[tuple[str, Any]]:
@@ -252,9 +270,12 @@ class RecordsView(QWidget):
         env = s.env_name or s.name
         if s.parent is not None:
             env = S.REC_ENV_BRANCHED.format(env=env, generation=s.parent.get("generation", "?"))
+        seed = str(s.seed) if s.seed is not None else S.REC_NONE
         return [
             (env, env),
             (method if s.ok else S.REC_UNREADABLE, method),
+            (seed if s.ok else S.REC_NONE, -1 if s.seed is None else s.seed),
+            (s.group or S.REC_NONE, s.group),
             (format_started(s.started), _started_key(s.started)),
             (str(s.generations) if s.ok else S.REC_NONE, s.generations),
             (format_score(s.best_score), float("-inf") if s.best_score is None else s.best_score),
@@ -270,10 +291,10 @@ class RecordsView(QWidget):
                 flags |= Qt.ItemFlag.ItemIsEditable
             item.setFlags(flags)
             item.setData(PATH_ROLE, str(s.path))
-            item.setToolTip(tip)
+            item.setToolTip(self._cell_tip(tip, col, s))
             if not s.ok:
                 item.setForeground(QBrush(QColor(style.ui_for().muted)))
-            if col in (COL_GENERATIONS, COL_BEST):
+            if col in (COL_SEED, COL_GENERATIONS, COL_BEST):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, col, item)
 
@@ -286,7 +307,14 @@ class RecordsView(QWidget):
                 item.sort_key = key
                 if item.text() != text:
                     item.setText(text)
-                item.setToolTip(tip)
+                item.setToolTip(self._cell_tip(tip, col, s))
+
+    @staticmethod
+    def _cell_tip(tip: str, col: int, s: RunSummary) -> str:
+        """칸 풍선: 시작 시각 칸은 ISO 시각을 덧붙인다(U26: 목록에는 「11월 13일 12:07」)."""
+        if col == COL_STARTED and s.started:
+            return f"{tip}\n{S.CMP_TIP_STARTED.format(started=s.started.replace('T', ' '))}"
+        return tip
 
     @staticmethod
     def _tooltip(s: RunSummary) -> str:
@@ -375,13 +403,63 @@ class RecordsView(QWidget):
         return any(_same(Path(path), b) for b in self._busy)
 
     def _update_buttons(self) -> None:
+        """단추 켜기와 꺼진 까닭(U26: style.set_enabled. toolTip()은 「무엇을 하나」 그대로)."""
+        chosen = self.selected_runs()
         s = self.selected_run()
-        ok = s is not None and s.ok
-        for b in (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.bundle_button,
-                  self.csv_button):
-            b.setEnabled(ok)
-        self.delete_button.setEnabled(s is not None and not self.is_busy(s.path))
-        self.compare_button.setEnabled(any(r.ok for r in self.selected_runs()))
+        if not chosen:
+            why_one = S.REC_WHY_PICK
+        elif s is None:
+            why_one = S.REC_WHY_ONE
+        elif not s.ok:
+            why_one = S.REC_WHY_UNREADABLE
+        else:
+            why_one = ""
+        for b in self._single_buttons():
+            style.set_enabled(b, not why_one, why_one)
+        if s is None:
+            why_delete = S.REC_WHY_PICK if not chosen else S.REC_WHY_ONE
+        else:
+            why_delete = S.REC_DELETE_BUSY if self.is_busy(s.path) else ""
+        style.set_enabled(self.delete_button, not why_delete, why_delete)
+        any_ok = any(r.ok for r in chosen)
+        style.set_enabled(self.compare_button, any_ok, "" if any_ok else (S.REC_WHY_UNREADABLE if chosen else S.REC_WHY_PICK))
+        self.pick_note.setVisible(not chosen)
+
+    def _single_buttons(self) -> tuple[QPushButton, ...]:
+        """실행 하나(읽을 수 있는 것)를 골랐을 때만 쓰는 단추."""
+        return (self.open_button, self.resume_button, self.clone_button, self.memo_button, self.bundle_button,
+                self.csv_button)
+
+    # ------------------------------------------------------------------
+    # 오른쪽 클릭 메뉴(U26): 단추와 같은 행동, 같은 켜짐
+    # ------------------------------------------------------------------
+    def context_menu(self) -> QMenu:
+        """지금 고른 줄에 대한 메뉴(단추와 같은 글·켜짐·까닭). 테스트도 이것을 부른다."""
+        menu = QMenu(self)
+        groups = ((self.open_button, self.resume_button, self.clone_button, self.memo_button),
+                  (self.compare_button, self.bundle_button, self.csv_button),
+                  (self.delete_button,))
+        for k, group in enumerate(groups):
+            if k:
+                menu.addSeparator()
+            for b in group:
+                act = QAction(b.text(), menu)
+                act.setToolTip(style.tip_text(b))
+                act.setEnabled(b.isEnabled())
+                act.triggered.connect(b.click)
+                menu.addAction(act)
+        menu.setToolTipsVisible(True)
+        return menu
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        item = self.table.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.table.selectRow(item.row())
+        menu = self.context_menu()
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     # ------------------------------------------------------------------
     # 동작 (대화상자 없이 부를 수 있는 것)
