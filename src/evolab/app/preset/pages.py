@@ -421,6 +421,8 @@ class PartsButton(QToolButton):
             act.setChecked(act.data() in chosen)
             act.blockSignals(False)
         self.setText(", ".join(a.text() for a in self._actions if a.isChecked()) or "-")
+        self.setMinimumWidth(0)
+        self.setMinimumWidth(super().sizeHint().width() + 12)  # 메뉴 화살표가 글을 덮지 않게
 
     def chosen(self) -> list[str]:
         return [str(a.data()) for a in self._actions if a.isChecked()]
@@ -526,6 +528,9 @@ class RuleRow(QWidget):
             why = ""
             if not on:
                 ok, why = R.available(data, self.kind)
+                if not ok and why == fill(S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["region"]}) \
+                        and self.page.w.can_add_region():
+                    ok = True  # 켜면 adjust가 골대를 함께 넣고 상태 줄에 알린다
                 why = "" if ok else why
             style.set_enabled(self.check, not why, why)
         args: Mapping[str, Any] = use.args if use is not None else {}

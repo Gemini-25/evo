@@ -16,8 +16,9 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 
 from evolab.app import strings as S
 from evolab.app import style
-from evolab.app.lab.canvas import SpectatorCanvas
+from evolab.app.lab.canvas import COLOR_AGENT, SpectatorCanvas
 from evolab.engine.evaluate import Trajectory
+from evolab.engine.replay import agent_geoms
 from evolab.engine.seeds import display_trial
 from evolab.spec.compiled import EnvSpec
 from evolab.spec.editor_meta import view_box
@@ -71,6 +72,7 @@ class PresetPreview(QWidget):
         self._timer.timeout.connect(self._tick)
         self._clock = QElapsedTimer()
         self._start_pose: Trajectory | None = None
+        self._agent: list[Any] = []
         self._set_running(False)
 
     # ------------------------------------------------------------------
@@ -103,9 +105,9 @@ class PresetPreview(QWidget):
             return
         geometry = ep.geometry()
         self.canvas.set_scene(geometry, None, list(ep.actuator_channels()), view_box(spec.file))
+        self._agent = agent_geoms(geometry, list(ep.moving_bodies))
         self._start_pose = self._frames(ep, 0.0)
-        self.canvas.set_population([self._start_pose], ranks=np.zeros(1))
-        self.canvas.set_time(0.0)
+        self._show(self._start_pose)
         style.set_enabled(self.btn_run, True)
         self.build_ms = (time.perf_counter() - t0) * 1000.0
         self.drawn.emit()
@@ -149,8 +151,7 @@ class PresetPreview(QWidget):
         traj = self.run_still()
         if traj is None:
             return
-        self.canvas.set_population([traj], ranks=np.zeros(1))
-        self.canvas.set_time(0.0)
+        self._show(traj)
         self._clock.start()
         self._timer.start()
         self._set_running(True)
@@ -160,8 +161,12 @@ class PresetPreview(QWidget):
         self._timer.stop()
         self._set_running(False)
         if self._start_pose is not None and self.canvas.world is not None:
-            self.canvas.set_population([self._start_pose], ranks=np.zeros(1))
-            self.canvas.set_time(0.0)
+            self._show(self._start_pose)
+
+    def _show(self, traj: Trajectory) -> None:
+        """궤적 하나를 이름표 없는 겹쳐 보기로(범례 글이 없다: 집단·챔피언이 아니므로)."""
+        self.canvas.set_overlay([(traj, self._agent, COLOR_AGENT, "")])
+        self.canvas.set_time(0.0)
 
     def _tick(self) -> None:
         if self.trajectory is None:

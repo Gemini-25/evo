@@ -13,16 +13,16 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QIcon, QKeyEvent, QPainter, QPalette, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QIcon, QKeyEvent, QPainter, QPalette, QPen, QPixmap, QPolygonF, QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QComboBox,
     QScrollArea,
     QSizePolicy,
     QStyle,
@@ -337,7 +337,7 @@ class Palette(QWidget):
         lay.addStretch(1)
 
         scroll = QScrollArea()
-        self.scroll = scroll
+        self.scroll_area = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -346,6 +346,7 @@ class Palette(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
         self._fit_width()
+        inner.installEventFilter(self)
         self.buttons["select"].setChecked(True)
 
     def _button(self, tool_id: str) -> QToolButton:
@@ -378,7 +379,7 @@ class Palette(QWidget):
         b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         b.setAutoRaise(True)
         b.setToolTip(TEMPLATE_HINTS[button_id])
-        b.setObjectName(f"tool_{button_id}")
+        b.setObjectName(button_id)  # 설계 3.1의 이름(buttons["tpl_body" | "tpl_prop"]) 그대로
         b.setCheckable(False)
         b.clicked.connect(lambda _=False, k=TEMPLATE_BUTTONS[button_id]: self.template_requested.emit(k))
         self.buttons[button_id] = b
@@ -415,8 +416,8 @@ class Palette(QWidget):
             self.owner_group.addButton(b)
             row.addWidget(b)
         self.owner_agent.setChecked(True)
-        self.owner_agent.toggled.connect(lambda on: on and self._owner_toggled("agent"))
-        self.owner_world.toggled.connect(lambda on: on and self._owner_toggled("world"))
+        self.owner_agent.toggled.connect(lambda on: self._owner_toggled("agent", on))
+        self.owner_world.toggled.connect(lambda on: self._owner_toggled("world", on))
         col.addLayout(row)
         self.world_motion = QComboBox()
         self.world_motion.setObjectName("world_motion")
@@ -428,7 +429,9 @@ class Palette(QWidget):
         col.addWidget(self.world_motion)
         return w
 
-    def _owner_toggled(self, owner: str) -> None:
+    def _owner_toggled(self, owner: str, on: bool) -> None:
+        if not on:
+            return
         self.world_motion.setVisible(owner == "world")
         self.owner_changed.emit(owner)
 
@@ -451,7 +454,7 @@ class Palette(QWidget):
         inner = self.inner.minimumSizeHint().width()
         motion = self.world_motion.sizeHint().width() + 4 + 12  # 숨어 있어도 보일 때 자리가 있게(바깥 여백 6 × 2)
         bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent, None, self)
-        frame = 2 * self.scroll.frameWidth()
+        frame = 2 * self.scroll_area.frameWidth()
         return max(MIN_WIDTH, inner, motion) + bar + frame + 2
 
     def _fit_width(self) -> None:
@@ -521,9 +524,19 @@ class Palette(QWidget):
             fg = self.palette().color(QPalette.ColorRole.WindowText)
             for tool_id, b in self.buttons.items():
                 b.setIcon(tool_icon(tool_id, fg))
-        elif ev.type() == QEvent.Type.FontChange and hasattr(self, "inner"):  # 글꼴이 커지면 최소 폭을 다시 잰다
-            self._fit_width()
+        elif ev.type() == QEvent.Type.FontChange and hasattr(self, "inner"):  # 글꼴이 바뀌면 자식 글꼴이 바뀐 뒤 다시 잰다
+            QTimer.singleShot(0, self, self._fit_width)
         super().changeEvent(ev)
+
+    def showEvent(self, ev: QShowEvent) -> None:  # noqa: N802
+        self._fit_width()
+        super().showEvent(ev)
+
+    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:  # noqa: N802
+        """안 위젯의 배치가 다시 잡히면(글꼴이 커짐, 고르기가 보임) 최소 폭을 다시 잰다."""
+        if obj is getattr(self, "inner", None) and ev.type() == QEvent.Type.LayoutRequest:
+            self._fit_width()
+        return super().eventFilter(obj, ev)
 
     def connect_canvas(self, canvas: object) -> None:
         """캔버스와 양쪽으로 잇는다: 팔레트 -> canvas.set_tool / set_new_owner / set_new_motion / pick_template / set_snap,

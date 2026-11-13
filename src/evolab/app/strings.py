@@ -3203,3 +3203,19 @@ RULE_NEEDS_WHAT: Final = {"agent": "에이전트(몸)", "region": "영역(골·�
 RULES_ALREADY: Final = "이 규칙은 이미 있습니다."
 # 조리법이 더하는 「보는 것」 센서(목표 센서)의 표시 이름: 환경 내용이 되는 글(presets/recipe.py)
 TPL_SEE_LABEL: Final = "{target} 위치"
+
+# ---------------------------------------------------------------------------
+# 6.2.0 묶음 W (「새 프리셋」 창: app/preset/*)가 더한 것
+# ---------------------------------------------------------------------------
+PRESET_PREVIEW_RUN: Final = "가만히 두고 보기"
+PRESET_PREVIEW_RUN_TIP: Final = "아무 키도 누르지 않을 때 몸이 어떻게 되는지 몇 초 동안 보여 줍니다. 저장하지 않습니다."
+PRESET_PREVIEW_STOP: Final = "멈추기"
+PRESET_ARENA_LABEL: Final = "경기장"
+PRESET_ARENA_TIP: Final = "땅·길·벽처럼 장면의 바탕이 되는 것입니다. 하나를 고릅니다."
+PRESET_PROPS_LABEL: Final = "물건"
+PRESET_PROPS_TIP: Final = "경기장에 더 놓을 것입니다. 켠 것만 들어갑니다."
+PRESET_KEYS_NONE: Final = "직접 조종할 키가 없습니다."
+PRESET_RESET_NOTHING: Final = "이 단계에는 고를 것이 없습니다."
+PRESET_BTN_BACK_TIP: Final = "앞 단계로 갑니다 (Alt+←)."
+PRESET_BTN_NEXT_TIP: Final = "다음 단계로 갑니다 (Alt+→). 단계는 어떤 차례로 건너뛰어도 됩니다."
+PRESET_FIX_TIP: Final = "고칠 곳이 있는 단계로 갑니다."

@@ -711,8 +711,8 @@ def world_view(data: Any) -> str:
 
 def body_mass(b: dict[str, Any]) -> float | None:
     """물체 질량(kg): 모양 넓이 × 밀도(모양에 밀도가 있으면 그것). 수식이 섞여 셀 수 없으면 None."""
-    mat = b.get("material") if isinstance(b.get("material"), dict) else {}
-    dens = mat.get("density", 1.0)
+    mat = b.get("material")
+    dens = mat.get("density", 1.0) if isinstance(mat, dict) else 1.0
     if not is_number(dens):
         return None
     total = 0.0
@@ -732,7 +732,7 @@ def body_mass(b: dict[str, Any]) -> float | None:
             area = abs(geo.signed_area([(float(q[0]), float(q[1])) for q in pts]))
         else:
             return None
-        if not is_number(d):
+        if not isinstance(d, (int, float)) or isinstance(d, bool):
             return None
         total += area * float(d)
     return total if total > 0 else None
