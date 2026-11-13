@@ -1,5 +1,5 @@
 """명령줄 진입점: `evolab`, `evolab train`, `evolab bench`, `evolab play`, `evolab selftest`, `evolab report`,
-`evolab export`, `evolab video-probe`.
+`evolab export`, `evolab video-probe`, (6.2.0) `evolab preset`.
 
 이 모듈은 맨 위에서 Qt를 불러오지 않는다. spawn 방식의 자식 프로세스가 주 모듈을 다시
 불러올 때 워커마다 Qt가 올라오지 않게 하기 위해서다.
@@ -232,6 +232,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help=S.CLI_HELP_EXPORT_ENCODER)
     export.add_argument("--out", type=Path, required=True, help=S.CLI_HELP_EXPORT_OUT)
     sub.add_parser("video-probe", help=S.CLI_HELP_VIDEO_PROBE)
+
+    # 조리법으로 환경 파일 만들기(6.2.0, 스포츠 설계 4.1 묶음 P): Qt를 불러오지 않는다.
+    preset = sub.add_parser("preset", help=S.CLI_HELP_PRESET)
+    preset.add_argument("recipe", help=S.CLI_HELP_PRESET_RECIPE)
+    preset.add_argument("-o", "--out", type=Path, default=None, help=S.CLI_HELP_PRESET_OUT)
     return parser
 
 
@@ -295,6 +300,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "video-probe":
         return _video_probe()
+
+    if args.command == "preset":
+        return _preset(args.recipe, args.out)
 
     if args.command in ("train", "bench", "judge", "bundle", "reproduce", "csv"):
         from evolab.engine import commands
@@ -409,6 +417,49 @@ def _video_probe() -> int:
     status = encoder_status()
     if sys.stdout is not None:
         print(S.CLI_VIDEO_PROBE_LINE.format(encoder=status.kind, mf=status.detail))
+    return 0
+
+
+def _preset(recipe_arg: str, out: Path | None) -> int:
+    """`evolab preset <조리법.json | 내장 이름> [-o 파일]`: 0 성공, 1 만들 수 없음(조리법·틀·쓰기), 2 조리법 파일을 못 읽음."""
+    from evolab import paths
+    from evolab.presets.recipe import Recipe, RecipeError, build, load_builtin
+    from evolab.presets.template import TemplateError
+    from evolab.spec.compiled import EnvFileError
+    from evolab.spec.io import compile_env, dump_env, feature_version
+
+    source = Path(recipe_arg)
+    try:
+        if source.suffix.lower() == ".json" or source.exists():
+            import json
+
+            try:
+                raw = json.loads(source.read_bytes().decode("utf-8-sig"))
+            except OSError as exc:
+                _print_err(S.SPEC_READ_FAILED.format(path=source, reason=exc.strerror or exc))
+                return 2
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _print_err(S.RECIPE_ERR_FORMAT.format(reason=S.SPEC_NOT_UTF8))
+                return 2
+            recipe = Recipe.from_json(raw)
+        else:
+            recipe = load_builtin(recipe_arg)
+        data = build(recipe)
+        spec = compile_env(data)
+    except (RecipeError, TemplateError, EnvFileError) as exc:
+        _print_err(str(exc))
+        return 1
+    target = out if out is not None else Path(paths.safe_file_stem(recipe.name or source.stem) + ".evoenv")
+    text = dump_env(spec.file)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        _print_err(S.PRESET_SAVE_FAILED.format(reason=exc.strerror or exc))
+        return 1
+    if sys.stdout is not None:
+        print(S.CLI_PRESET_SAVED.format(path=target, version=feature_version(spec.file), inputs=len(spec.inputs),
+                                        outputs=len(spec.outputs)))
     return 0
 
 

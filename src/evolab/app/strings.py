@@ -3201,3 +3201,5 @@ CLI_PRESET_SAVED: Final = "환경 파일을 만들었습니다: {path} (형식 {
 # 규칙을 더할 수 없는 까닭(presets/rules.available: RULES_NEEDS의 {what})
 RULE_NEEDS_WHAT: Final = {"agent": "에이전트(몸)", "region": "영역(골·결승선 같은 것)", "target": "거리를 잴 대상(공·골 같은 것)"}
 RULES_ALREADY: Final = "이 규칙은 이미 있습니다."
+# 조리법이 더하는 「보는 것」 센서(목표 센서)의 표시 이름: 환경 내용이 되는 글(presets/recipe.py)
+TPL_SEE_LABEL: Final = "{target} 위치"

@@ -1,0 +1,12 @@
+{
+  "recipe": 1, "start": "blank_top", "name": "", "world": "top", "status": "ok",
+  "arena": {"template": "yard_top", "values": {}},
+  "roles": [{"id": "player", "label": "", "body": {"template": "disc", "values": {}}}],
+  "props": [],
+  "rules": [
+    {"rule": "distance", "who": "player", "direction": "right", "per_m": 1.0},
+    {"rule": "time_limit", "seconds": 15.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "player", "count": 1, "spawn": "start"}]},
+  "world_values": {"damping": 0.5}
+}

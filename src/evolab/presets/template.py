@@ -61,6 +61,10 @@ REF_LISTS = frozenset({"with", "hits", "ground", "actuators"})
 KEY_FIELDS = ("keys", "keys_pos", "keys_neg", "keys_up", "keys_down", "keys_left", "keys_right", "keys_forward", "keys_back")
 """직접 조종 키 칸(keys=False로 펼치면 비운다)."""
 
+IF_KEY = "if"
+"""부품 칸 "if": <슬라이더 id>: 그 슬라이더 값이 0.5 이상일 때만 넣는다(체크 슬라이더: 끔 = 그 부품을 넣지 않음, 달리기의 균형 보조:
+D27). 넣지 않은 부품을 가리키는 다른 부품은 틀 안에 없어야 한다(같은 슬라이더로 함께 빠지게 적는다)."""
+
 _SLOT_NAME = re.compile(r"^\$[a-z_][a-z0-9_]*$")
 _T_NAME = re.compile(r"\bt\.([A-Za-z_][A-Za-z0-9_]*)")
 _ID = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_가-힣]*$")
@@ -475,6 +479,12 @@ def parse_template(data: Mapping[str, Any], *, source: str = "user", path: Path 
             raise _field_error(f"parts.{sec}", S.SPEC_ERR_LIST)
     ids = _part_ids(parts)
     _check_refs(parts, ids, slots)
+    param_ids = {p.id for p in params}
+    for sec in SECTIONS:
+        for i, item in enumerate(parts.get(sec, [])):
+            if IF_KEY in item and item[IF_KEY] not in param_ids:
+                raise _field_error(f"parts.{sec}[{i}].{IF_KEY}",
+                                   S.SPEC_ERR_LITERAL.format(expected=", ".join(sorted(param_ids))))
     root = data.get("root")
     if root is not None and ids.get(root) != "bodies":
         raise TemplateError(S.TPL_ERR_REF.format(name=root, where="root"))
@@ -561,7 +571,15 @@ def _check_corners(tpl: Template) -> None:
     for which, values in tpl.corners():
         try:
             data = corner_env(tpl, values)
-            m.EnvFile.model_validate(data)
+            env = m.EnvFile.model_validate(data)
+            from evolab.spec.compiled import EnvFileError, EnvSpec
+
+            try:
+                EnvSpec.build(env)
+            except EnvFileError as exc:
+                first = next((i for i in exc.issues if i.severity == "error"), None)
+                raise TemplateError(S.TPL_ERR_EXPAND.format(which=S.TPL_EXPAND_WHICH[which],
+                                                            reason=str(first) if first else exc)) from None
         except ValidationError as exc:
             raise TemplateError(S.TPL_ERR_EXPAND.format(which=S.TPL_EXPAND_WHICH[which],
                                                         reason=_first_error(exc))) from None
@@ -721,9 +739,15 @@ def expand(tpl: Template, values: Mapping[str, float] | None = None, *, at: Poin
 
     out: Parts = {sec: [] for sec in SECTIONS}
     world_kind = tpl.kind != "body"
+    skipped = {item["id"] for sec in SECTIONS for item in parts.get(sec, [])
+               if isinstance(item.get(IF_KEY), str) and vals.get(item[IF_KEY], 0.0) < 0.5 and "id" in item}
     for sec in SECTIONS:
         for raw in parts.get(sec, []):
+            if raw.get("id") in skipped or (sec == "generators" and isinstance(raw.get(IF_KEY), str)
+                                            and vals.get(raw[IF_KEY], 0.0) < 0.5):
+                continue
             item = dict(raw)
+            item.pop(IF_KEY, None)
             if "id" in item:
                 item["id"] = prefix + item["id"]
             if label_prefix and item.get("label"):

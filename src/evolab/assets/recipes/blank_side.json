@@ -1,0 +1,13 @@
+{
+  "recipe": 1, "start": "blank_side", "name": "", "world": "side", "status": "ok",
+  "arena": {"template": "track_side", "values": {}},
+  "roles": [{"id": "player", "label": "", "body": {"template": "biped", "values": {}}}],
+  "props": [],
+  "rules": [
+    {"rule": "distance", "who": "player", "direction": "right", "per_m": 1.0},
+    {"rule": "fall", "who": "player", "what": "$ground", "height": 0.0, "penalty": 1.0},
+    {"rule": "out_ends", "outcome": "failure"},
+    {"rule": "time_limit", "seconds": 15.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "player", "count": 1, "spawn": "start"}]}
+}
