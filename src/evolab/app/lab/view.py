@@ -119,7 +119,7 @@ from evolab.policy.genome import GenomeLayout, layout_for
 from evolab.spec import model as m
 from evolab.spec import structure as st
 from evolab.spec.compiled import EnvFileError, EnvSpec
-from evolab.spec.editor_meta import editor_train, view_box
+from evolab.spec.editor_meta import view_box
 from evolab.spec.io import compile_env, env_hash, parse_env
 from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
 
@@ -1334,12 +1334,13 @@ class LabView(QWidget):
     def _apply_preset_train(self, spec: EnvSpec) -> None:
         """(6.2.0 설계 D31·3.1 H) 프리셋의 권장 새 실행 설정(editor.train)을 「학습 안정성」 칸에 넣고 상태 글에 한 줄.
 
-        값은 TrainConfig.for_new_run(spec)이 받아들인 것(모르는 키·틀린 값은 빠짐)이다. 권장값이 없는 환경(옛 파일 전부)은
-        칸을 건드리지 않는다(v6.1과 같음). 다만 앞서 고른 프리셋의 권장값이 칸에 남아 있으면 새 실행 기본값으로 되돌린다.
+        값은 TrainConfig.for_new_run(spec)이 받아들인 것(모르는 키·틀린 값은 빠짐)이다: editor.train을 읽는 곳은 그 함수
+        하나뿐이라(D31) 여기서는 환경 없이 만든 새 실행 기본값과 견줘 달라진 칸을 권장값으로 본다. 권장값이 없는 환경(옛 파일
+        전부)은 칸을 건드리지 않는다(v6.1과 같음). 다만 앞서 고른 프리셋의 권장값이 칸에 남아 있으면 기본값으로 되돌린다.
         """
-        raw = editor_train(spec.file.editor)
         fresh = TrainConfig.for_new_run(spec)
-        applied = [k for k in PRESET_TRAIN_KEYS if k in raw and raw[k] == getattr(fresh, k)]
+        plain = TrainConfig.for_new_run()
+        applied = [k for k in PRESET_TRAIN_KEYS if getattr(fresh, k) != getattr(plain, k)]
         self._preset_note = ""
         if not applied and not self._preset_form:
             return

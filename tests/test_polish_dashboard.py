@@ -7,11 +7,12 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QSettings
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from pytestqt.qtbot import QtBot
 
 from evolab import paths
 from evolab.app import strings as S
+from evolab.app.lab import dashboard as D
 from evolab.app.lab.canvas import SpectatorCanvas
 from evolab.app.lab.dashboard import TILE_IDS, Dashboard, _Axis
 from evolab.engine import seeds
@@ -263,3 +264,50 @@ def test_canvas_notice_draws_over_world(qtbot: QtBot) -> None:
 def _bits(img: QImage) -> np.ndarray:
     img = img.convertToFormat(QImage.Format.Format_RGB32)
     return np.frombuffer(img.constBits(), dtype=np.uint8, count=img.sizeInBytes()).copy()
+
+
+# ---------------------------------------------------------------------------
+# 점수 추이의 위계 (U19)와 Tab 사슬 (U20): 하면 좋음
+
+
+def test_trend_champion_is_the_heaviest_line_and_legend_order(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtCore import Qt
+
+    dash = make_dashboard(qtbot, tmp_path)
+    dash.set_rows(synthetic_rows(20))
+    trend = dash.tile("trend")
+    trend.refresh()
+    t = dash.theme
+    widths = {k: c.opts["pen"].widthF() for k, c in trend.lines.items()}
+    champ = trend.champion.opts["pen"].widthF()
+    assert champ == 2.5 and all(w < champ for w in widths.values())
+    assert widths == {"score_min": 1.0, "score_mean": 2.0, "score_median": 1.5, "score_best": 2.0}
+    low = trend.lines["score_min"].opts["pen"]
+    assert low.style() == Qt.PenStyle.DashLine and low.color().alpha() == 120
+    # 색 값은 그대로(P5)
+    for key, _name, slot, _w in trend.LINES:
+        assert trend.lines[key].opts["pen"].color().name() == QColor(t.series[slot]).name()
+    names = [e.name for e in trend.entries()]
+    assert names[:3] == [S.DASH_TREND_CHAMPION, S.DASH_TREND_BEST, S.DASH_TREND_MEAN]
+    assert [e.dim for e in trend.entries()][:3] == [False, False, False]
+    assert all(e.dim for e in trend.entries()[3:])
+    html = trend.legend.text()
+    assert html.count(f"font-size:{D.SWATCH_PX}px") == len(names)  # 견본은 모두 채운 네모
+    assert D.GLYPH_LINE not in html and D.GLYPH_DASH not in html
+    assert f'color:{t.tick}">{S.DASH_TREND_MEDIAN}' in html
+
+
+def test_tile_buttons_graphs_and_scroll_area_are_out_of_the_tab_chain(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QToolButton
+
+    dash = make_dashboard(qtbot, tmp_path)
+    assert dash.scroll.focusPolicy() == Qt.FocusPolicy.NoFocus
+    for tid in D.ALL_TILE_IDS:
+        tile = dash.tile(tid)
+        assert tile.view.focusPolicy() == Qt.FocusPolicy.NoFocus, tid
+        assert tile.view.viewport().focusPolicy() == Qt.FocusPolicy.NoFocus, tid
+        heads = [b for b in tile.findChildren(QToolButton) if b.text() in (D.GLYPH_EARLIER, D.GLYPH_LATER, D.GLYPH_HIDE)]
+        assert len(heads) == 3 and all(b.focusPolicy() == Qt.FocusPolicy.NoFocus for b in heads), tid
+    # 키보드로는 「타일」 메뉴 단추(그대로 Tab 사슬 안)
+    assert dash.tiles_button.focusPolicy() != Qt.FocusPolicy.NoFocus

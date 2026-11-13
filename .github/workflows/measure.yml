@@ -1,0 +1,104 @@
+# 학습 측정을 GitHub 러너에서 나란히 돌린다. 개발할 때만 쓴다: 배포본·릴리스와 무관하고 수동 실행(workflow_dispatch)만 있다.
+#
+# 입력 runs는 JSON 배열이고 항목마다 러너 하나(리눅스, 러너의 코어 수는 machine.txt에 적힌다)가 돈다:
+#   {"tag":   "c3_s13",                         artifact 이름 measure-<tag> (영문·숫자·_ . - 만)
+#    "pre":   "<학습 전에 돌릴 셸 명령>",        선택. 측정할 환경 파일을 만드는 일 등. 저장소 뿌리에서 돈다
+#    "train": "<evolab train 뒤에 붙는 인자>",   --out은 붙이지 않는다(자동). 워커 수는 결과를 바꾸지 않으므로 --workers 3을 권한다
+#    "judge": "<evolab judge 실행폴더 뒤 인자>"} 선택. 예: "--seeds 100 --workers 3"
+# 결과: artifact measure-<tag> = 실행 폴더(run/…) + train.log + judge.log + pre.log + machine.txt(코어 수·CPU·커밋·시각).
+# 러너와 개발 컨테이너는 CPU가 달라 같은 시드라도 비트까지 같다는 보장이 없다. 보고서에는 「GitHub 러너에서 잰 값」이라고 적는다.
+name: measure
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'JSON 배열: [{"tag":"…","pre":"…","train":"…","judge":"…"}]'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ matrix.run.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        run: ${{ fromJSON(inputs.runs) }}
+    env:
+      UV_PYTHON_DOWNLOADS: never
+      UV_LOCKED: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      TAG: ${{ matrix.run.tag }}
+      PRE: ${{ matrix.run.pre }}
+      TRAIN: ${{ matrix.run.train }}
+      JUDGE: ${{ matrix.run.judge }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Train and judge
+        run: |
+          set -uo pipefail
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9_.-]+$ ]]; then echo "::error::bad tag: $TAG"; exit 1; fi
+          export EVOLAB_DATA_DIR="$RUNNER_TEMP/evolab/data" EVOLAB_STATE_DIR="$RUNNER_TEMP/evolab/state"
+          out="$RUNNER_TEMP/measure/$TAG"
+          mkdir -p "$out"
+          {
+            echo "tag $TAG"
+            echo "cores $(nproc)"
+            grep -m1 "model name" /proc/cpuinfo
+            uname -sr
+            uv run python -c "import sys, numpy, pymunk; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'pymunk', pymunk.version)"
+            echo "commit $(git rev-parse HEAD)"
+            echo "start $(date -u +%FT%TZ)"
+            echo "train $TRAIN"
+            echo "judge ${JUDGE:-}"
+          } > "$out/machine.txt" 2>&1
+          cat "$out/machine.txt"
+          filter() { grep --line-buffered -v -e matplotlib -e _warnings; }
+          if [ -n "${PRE:-}" ]; then
+            export MEASURE_OUT="$out"
+            bash -c "$PRE" 2>&1 | tee "$out/pre.log"
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then echo "::error::pre command failed"; exit 1; fi
+          fi
+          start=$(date +%s)
+          eval "uv run evolab train $TRAIN --out \"\$out/run\"" 2>&1 | filter | tee "$out/train.log"
+          rc=${PIPESTATUS[0]}
+          echo "# train exit $rc seconds $(( $(date +%s) - start )) load $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$out/train.log"
+          run=$(find "$out/run" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | head -1)
+          if [ "$rc" -eq 0 ] && [ -n "${JUDGE:-}" ] && [ -n "$run" ]; then
+            start=$(date +%s)
+            eval "uv run evolab judge \"\$run\" $JUDGE" 2>&1 | filter | tee "$out/judge.log"
+            jrc=${PIPESTATUS[0]}
+            echo "# judge exit $jrc seconds $(( $(date +%s) - start ))" | tee -a "$out/judge.log"
+            [ "$jrc" -eq 0 ] || rc=$jrc
+          fi
+          echo "end $(date -u +%FT%TZ)" >> "$out/machine.txt"
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: measure-${{ matrix.run.tag }}
+          path: ${{ runner.temp }}/measure/${{ matrix.run.tag }}
+          retention-days: 30
+          if-no-files-found: warn

@@ -512,11 +512,15 @@ class _Entry:
     glyph: str
     name: str
     text: Callable[[int], str] | None = None
+    dim: bool = False
+    """(6.2.0 U19) 이름을 흐린 글(Theme.tick)로: 주인공이 아닌 범례 항목."""
 
 
 GLYPH_LINE = "━"
 GLYPH_DASH = "╌"
 GLYPH_FILL = "■"
+SWATCH_PX = 12
+"""(6.2.0 U19) 범례 견본: 모든 항목이 이 크기의 채운 네모(가는 옅은 줄표만으로 색을 알리지 않게). glyph는 자료로만 남는다."""
 GLYPH_EARLIER = "\u25c0"
 GLYPH_LATER = "\u25b6"
 GLYPH_HIDE = "\u2715"
@@ -627,6 +631,7 @@ class _Tile(QFrame):
         ):
             btn = QToolButton()
             btn.setAutoRaise(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # (6.2.0 U20) Tab 사슬에서 뺌: 같은 일은 「타일」 메뉴로 키보드에서 된다
             btn.setText(glyph)
             btn.setToolTip(tip)
             btn.clicked.connect(slot)
@@ -643,6 +648,8 @@ class _Tile(QFrame):
         lay.addWidget(self.legend)
 
         self.view = _GraphView()
+        self.view.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # (U20) 그래프는 Tab 사슬 밖(휠·마우스로만 쓴다)
+        self.view.viewport().setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.view.setBackground(self.theme.surface)
         self.view.ci.setContentsMargins(2, 2, 6, 2)
         self.view.ci.setSpacing(0)
@@ -830,12 +837,16 @@ class _Tile(QFrame):
         parts: list[str] = []
         if i is not None:
             parts.append(self.dash.x_text(i, self.follows_axis))
+        tick = self.theme.tick
         for e in self.entries():
-            swatch = f'<span style="color:{e.color}">{e.glyph}</span>'
+            swatch = f'<span style="color:{e.color}; font-size:{SWATCH_PX}px">{GLYPH_FILL}</span>'
             value = ""
             if i is not None and e.text is not None:
                 value = " " + e.text(i)
-            parts.append(f"{swatch}&nbsp;{_escape(e.name)}{_escape(value)}")
+            name = _escape(e.name)
+            if e.dim:
+                name = f'<span style="color:{tick}">{name}</span>'
+            parts.append(f"{swatch}&nbsp;{name}{_escape(value)}")
         return "&nbsp;&nbsp; ".join(parts)
 
     def update_legend(self) -> None:
@@ -901,10 +912,15 @@ class _TrendTile(_Tile):
     mark_labels = True
     LINES = (
         ("score_min", S.DASH_TREND_MIN, 4, 1.0),
-        ("score_mean", S.DASH_TREND_MEAN, 3, 1.2),
+        ("score_mean", S.DASH_TREND_MEAN, 3, 2.0),
         ("score_median", S.DASH_TREND_MEDIAN, 2, 1.5),
-        ("score_best", S.DASH_TREND_BEST, 1, 1.5),
+        ("score_best", S.DASH_TREND_BEST, 1, 2.0),
     )
+    """(key, 이름, 범주 색 번호, 굵기). 그리는 차례(아래 → 위). 6.2.0 U19: 주인공이 챔피언 선(2.5)이 되게 최고·평균 2.0,
+    중앙값 1.5, 최저 1.0 점선(투명도 MIN_ALPHA). 밝은 바탕에서 대비가 3:1 아래인 평균·중앙값 색은 굵기로 구제한다(색은 그대로)."""
+    MIN_ALPHA = 120
+    LEGEND_LEAD = ("score_best", "score_mean")
+    """범례에서 챔피언 바로 뒤에 오는 선(그 뒤 나머지는 흐린 이름)."""
 
     def __init__(self, dash: Dashboard, tile_id: str) -> None:
         super().__init__(dash, tile_id)
@@ -917,7 +933,10 @@ class _TrendTile(_Tile):
         self.plot.addItem(self.band)
         self.lines: dict[str, pg.PlotCurveItem] = {}
         for key, _name, slot, width in self.LINES:
-            curve = _curve(_pen(t.series[slot], width))
+            if key == "score_min":
+                curve = _curve(_pen(_qcolor(t.series[slot], self.MIN_ALPHA), width, Qt.PenStyle.DashLine))
+            else:
+                curve = _curve(_pen(t.series[slot], width))
             self.plot.addItem(curve)
             self.lines[key] = curve
         self.champion = _curve(_pen(t.series[0], 2.5), stepMode="right")
@@ -1010,10 +1029,17 @@ class _TrendTile(_Tile):
     def entries(self) -> list[_Entry]:
         t, d = self.theme, self.dash
         out = [_Entry(t.series[0], GLYPH_LINE, S.DASH_TREND_CHAMPION, _value_text(lambda: d.col("champion_score")))]
+        lines = {key: (name, slot) for key, name, slot, _w in self.LINES}
+        for key in self.LEGEND_LEAD:  # (U19) 챔피언 → 최고 → 평균 → 나머지
+            name, slot = lines[key]
+            out.append(_Entry(t.series[slot], GLYPH_LINE, name, _value_text(lambda k=key: d.col(k))))
         if d.learner_switched:
             out.append(_Entry(t.series[6], GLYPH_DASH, S.DASH_TREND_LEARNER, _value_text(lambda: d.col("learner_best"))))
         for key, name, slot, _w in reversed(self.LINES):
-            out.append(_Entry(t.series[slot], GLYPH_LINE, name, _value_text(lambda k=key: d.col(k))))
+            if key not in self.LEGEND_LEAD:
+                out.append(_Entry(t.series[slot], GLYPH_DASH if key == "score_min" else GLYPH_LINE, name,
+                                  _value_text(lambda k=key: d.col(k))))
+        lead = 1 + len(self.LEGEND_LEAD)  # 챔피언과 LEGEND_LEAD 뒤는 흐린 이름
 
         def band(i: int) -> str:
             lo, hi = d.col("score_q25"), d.col("score_q75")
@@ -1029,6 +1055,8 @@ class _TrendTile(_Tile):
             out.append(_Entry(_blend(t.series[6], t.surface, 0.3), GLYPH_FILL, S.DASH_QUALIFY_LEGEND))
         if self.ranges:
             out.append(_Entry(t.muted, GLYPH_FILL, S.DASH_STAGNATION_LEGEND.format(n=self.dash.stagnation_generations)))
+        for e in out[lead:]:
+            e.dim = True
         return out
 
 
@@ -1569,6 +1597,7 @@ class Dashboard(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # (U20) 스크롤 영역도 Tab 사슬 밖
         self.scroll.setWidget(self._grid_host)
         root.addWidget(self.scroll, 1)
         # 스크롤·크기 바뀜·다시 그리기로 dirty 타일이 화면에 들어오면 펌프를 돌린다
