@@ -1543,6 +1543,7 @@ class Episode:
                 self._force_bodies.append((a.body, body))
             mv.slot = slot_of[a.body]
             self._moves.append(mv)
+        self._v4_parts = bool(self._moves or self._balances)
         self._acc = [[0.0, 0.0, 0.0] for _ in self._force_bodies]
         dead.sort()
         self._build_aero()  # 없는 물체의 공기역학은 그 물체가 self.bodies에 없어 건너뛴다(출력 채널 없음)
@@ -1875,18 +1876,23 @@ class Episode:
             acc = self._acc[v.slot]
             target = fwd * v.decay + u[v.ch_throttle] * v.accel * v.gain
             acc[0] += (target - fwd) * v.mass / self.dt
-        if self._moves:
-            self._apply_moves(u)
-        for bid, slot, k, c_, tmax, tgt in self._balances:
-            # 균형 보조(형식 4): 토크 = clamp(−k(각도 − 목표) − c·각속도, ±최대). 원형 eng/wtb의 패치 그대로(같은 연산·순서).
-            st_ = self._bstate(bid)
-            tq = -k * (st_[2] - tgt) - c_ * st_[5]
-            tq = tmax if tq > tmax else (-tmax if tq < -tmax else tq)
-            self._acc[slot][2] += tq
+        if self._v4_parts:  # 형식 4 부품이 있을 때만(옛 환경은 이 비교 하나만 더해진다)
+            self._apply_v4_parts(u)
         self._u_applied = applied
         sums = self._abs_sum
         for i, x in enumerate(applied):
             sums[i] += x if x >= 0.0 else -x
+
+    def _apply_v4_parts(self, u: list[float]) -> None:
+        """형식 4 부품: 밀기 다음 균형 보조(차량 구동기 바로 뒤, DE 4.2)."""
+        if self._moves:
+            self._apply_moves(u)
+        for bid, slot, k, c_, tmax, tgt in self._balances:
+            # 균형 보조: 토크 = clamp(−k(각도 − 목표) − c·각속도, ±최대). 원형 eng/wtb의 패치 그대로(같은 연산·순서).
+            st_ = self._bstate(bid)
+            tq = -k * (st_[2] - tgt) - c_ * st_[5]
+            tq = tmax if tq > tmax else (-tmax if tq < -tmax else tq)
+            self._acc[slot][2] += tq
 
     def _apply_moves(self, u: list[float]) -> None:
         """밀기(형식 4): 이번 스텝의 속도 변화를 힘으로 바꿔 _acc 칸(물체 좌표)에 더한다. heading의 도는 출력은 각속도를 바로 쓴다."""

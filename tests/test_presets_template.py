@@ -262,8 +262,9 @@ def test_expanded_text_has_no_slider_names_and_is_stable(tid: str) -> None:
         assert text == json.dumps(b, ensure_ascii=False, sort_keys=True)
         assert "t." not in re.sub(r'"[^"]*"\s*:', "", text).replace("tag.", "")  # 값에 t.* 이름이 남지 않음
         assert "$" not in text
+        literal = set(_numbers(dict(tpl.parts)))  # 틀에 숫자로 적힌 값은 그대로(π 같은)
         for x in _numbers({k: v for k, v in a.items() if k in T.SECTIONS}):
-            assert round(x, 6) == x, (tid, x)  # 소수 6자리
+            assert round(x, 6) == x or x in literal or -x in literal, (tid, x)  # 계산한 값은 소수 6자리
 
 
 def test_values_outside_the_range_are_clamped() -> None:

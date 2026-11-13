@@ -94,6 +94,10 @@ def test_fill_leaves_unknown_fields_and_plain_text() -> None:
     assert fill("{x}(으)로 {y}으로", {"x": "길", "y": "아래"}) == "길로 아래로"
     assert fill("{a}와(과) {b}은(는)", {"a": "벽", "b": "다리"}) == "벽과 다리는"
     assert fill("", {}) == ""
+    # 닫는 낫표를 사이에 둔 조사도 고른다(PRESET_ADJUST_BODY의 「{body}」(으)로)
+    assert fill("「{a}」(으)로 「{b}」을(를) 「{c}」이(가)", {"a": "원형 선수", "b": "골대", "c": "ball"}) == \
+        "「원형 선수」로 「골대」를 「ball」이(가)"
+    assert fill(S.PRESET_ADJUST_BODY, {"body": "두 발 막대 사람"}) == "세계를 바꿔 몸을 「두 발 막대 사람」으로 바꿨습니다."
 
 
 def test_same_input_same_output() -> None:

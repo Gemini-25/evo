@@ -6,7 +6,8 @@
 - josa(word, pair): pair는 「이/가」「을/를」「은/는」「와/과」처럼 「받침 있음/받침 없음」 꼴이거나 「(으)로」다.
   받침이 있으면 앞의 것, 없으면 뒤의 것. 「(으)로」는 받침이 없거나 ㄹ 받침이면 「로」, 그 밖의 받침이면 「으로」.
   끝 글자가 한글이 아니면(영문 id, 숫자) 두 꼴을 함께 적는다: 「이(가)」, 「(으)로」.
-- fill(sentence, values): 문장 틀의 「{이름}이(가)」「{이름}을(를)」「{이름}(으)로」「{이름}으로」를 채운 값에 맞춰 고르고 나머지
+- fill(sentence, values): 문장 틀의 「{이름}이(가)」「{이름}을(를)」「{이름}(으)로」「{이름}으로」(사이에 닫는 낫표 하나가 있어도:
+  「「{이름}」을(를)」)를 채운 값에 맞춰 고르고 나머지
   「{이름}」은 값 그대로 채운다. 숫자 값은 「g」 꼴(1.0 → 「1」)로 적는다.
 
 이 파일의 글자는 코드용 이스케이프만 쓴다(화면 글은 strings.py에만: tests/test_rules.py).
@@ -22,16 +23,18 @@ _HANGUL_FIRST = 0xAC00
 _HANGUL_LAST = 0xD7A3
 _RIEUL = 8
 """종성 번호 8 = ㄹ 받침."""
-_EU = "으"
+_EU = "\uc73c"
 """「으」"""
-_RO = "로"
+_RO = "\ub85c"
 """「로」"""
 _TRAILING = ")]}」』\"' 〉》"
 """끝 글자를 찾을 때 건너뛰는 닫는 기호(괄호, 낫표, 따옴표, 빈칸)."""
 
-_SYLLABLE = "[가-힣]"
-_PAIR_RE = re.compile(r"\{(\w+)\}(" + _SYLLABLE + r"\(" + _SYLLABLE + r"\)|\(" + _EU + r"\)" + _RO + "|" + _EU + _RO + ")")
-"""「{이름}」 바로 뒤의 조사 꼴: 「이(가)」 같은 꼴, 「(으)로」, 「으로」."""
+_SYLLABLE = "[\uac00-\ud7a3]"
+_CLOSE = "\u300d\u300f\"')\\]"
+_PAIR_RE = re.compile(r"\{(\w+)\}([" + _CLOSE + r"]?)(" + _SYLLABLE + r"\(" + _SYLLABLE + r"\)|\(" + _EU + r"\)" + _RO
+                      + "|" + _EU + _RO + ")")
+"""「{이름}」 바로 뒤(닫는 낫표·따옴표 하나를 사이에 둘 수 있음)의 조사 꼴: 「이(가)」 같은 꼴, 「(으)로」, 「으로」."""
 _FIELD_RE = re.compile(r"\{(\w+)\}")
 
 
@@ -105,11 +108,11 @@ def fill(sentence: str, values: Mapping[str, Any]) -> str:
     """문장 틀을 채운다. 빈칸 바로 뒤 조사는 채운 값의 받침에 맞춘다. 값이 없는 빈칸은 그대로 둔다."""
 
     def pair(m: re.Match[str]) -> str:
-        name, form = m.group(1), m.group(2)
+        name, close, form = m.group(1), m.group(2), m.group(3)
         if name not in values:
             return m.group(0)
         word = _text(values[name])
-        return word + particle(word, form)
+        return word + close + particle(word, form)
 
     out = _PAIR_RE.sub(pair, sentence)
     return _FIELD_RE.sub(lambda m: _text(values[m.group(1)]) if m.group(1) in values else m.group(0), out)

@@ -696,6 +696,11 @@ def _prop_with(r: Recipe, lib: Library, region: bool) -> Use | None:
     return None
 
 
+def _why(text: str) -> str:
+    """괄호 안에 넣는 까닭: 끝의 마침표를 뗀다."""
+    return text.rstrip(". ")
+
+
 def _adjust_rules(r: Recipe, lib: Library, notes: list[str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen_kinds: set[str] = set()
@@ -714,8 +719,8 @@ def _adjust_rules(r: Recipe, lib: Library, notes: list[str]) -> list[dict[str, A
             continue
         rk = R.RULES[kind]
         if rk.world != "any" and rk.world != r.world:
-            notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title,
-                                                         "why": S.TPL_WRONG_WORLD.format(world=S.TPL_WORLD_NAMES[rk.world])}))
+            notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": _why(
+                S.TPL_WRONG_WORLD.format(world=S.TPL_WORLD_NAMES[rk.world]))}))
             continue
         if kind == "out_ends" and "out_ends" in seen_kinds:
             continue
@@ -724,16 +729,16 @@ def _adjust_rules(r: Recipe, lib: Library, notes: list[str]) -> list[dict[str, A
         if "region" in rk.needs and not data.get("regions"):
             prop = _prop_with(r, lib, True)
             if prop is None:
-                notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": fill(
-                    S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["region"]})}))
+                notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": _why(fill(
+                    S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["region"]}))}))
                 continue
             r.props.append(prop)
             notes.append(fill(S.PRESET_ADJUST_PROP_ON, {"rule": title, "prop": lib.get(prop.template).name}))
             data, built = _scene_for(r, lib)
         fixed = _fix_rule(rule, kind, data, built, role.id)
         if fixed is None:
-            notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": fill(
-                S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["target"]})}))
+            notes.append(fill(S.PRESET_ADJUST_RULE_OFF, {"rule": title, "why": _why(fill(
+                S.RULES_NEEDS, {"what": S.RULE_NEEDS_WHAT["target"]}))}))
             continue
         out.append(fixed)
         seen_kinds.add(kind)

@@ -319,7 +319,7 @@ def add_rule(data: dict[str, Any], kind: str, **args: Any) -> RuleUse:
         refs.append(("blocks", b["id"]))
     if kind == "out_ends":
         event = "out_of_bounds"
-    row = {"kind": kind, "event": event, "blocks": [b["id"] for b in frag["blocks"]] or ([block] if block else [])}
+    row = {"kind": kind, "event": event, "blocks": [b["id"] for b in frag["blocks"]]}
     editor = data.setdefault("editor", {})
     editor.setdefault(RULES_KEY, []).append(row)
     return RuleUse(kind, a, tuple(refs), True, False, event, tuple(row["blocks"]), True)
@@ -329,9 +329,9 @@ def add_rule(data: dict[str, Any], kind: str, **args: Any) -> RuleUse:
 # 알아보기
 # ---------------------------------------------------------------------------
 
-_CONTACT = r"contact\(\s*([A-Za-z_가-힣][\w.가-힣]*)\s*,\s*([A-Za-z_가-힣][\w.가-힣]*)\s*\)"
-_INSIDE = r"inside\(\s*([A-Za-z_가-힣][\w.가-힣]*)\s*,\s*([A-Za-z_가-힣][\w.가-힣]*)\s*\)"
-_HEIGHT = r"([A-Za-z_가-힣][\w가-힣]*)\.y\s*<\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+_CONTACT = r"contact\(\s*([A-Za-z_\uac00-\ud7a3][\w.\uac00-\ud7a3]*)\s*,\s*([A-Za-z_\uac00-\ud7a3][\w.\uac00-\ud7a3]*)\s*\)"
+_INSIDE = r"inside\(\s*([A-Za-z_\uac00-\ud7a3][\w.\uac00-\ud7a3]*)\s*,\s*([A-Za-z_\uac00-\ud7a3][\w.\uac00-\ud7a3]*)\s*\)"
+_HEIGHT = r"([A-Za-z_\uac00-\ud7a3][\w\uac00-\ud7a3]*)\.y\s*<\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
 _EVENT_KEYS = frozenset({"id", "label", "when", "hold"})
 _END_KEYS = frozenset({"event", "outcome", "label"})
 _BLOCK_KEYS: dict[str, frozenset[str]] = {
@@ -474,8 +474,11 @@ def _from_block(scene: _Scene, b: Mapping[str, Any]) -> tuple[str, dict[str, Any
     return None
 
 
-def _from_event(scene: _Scene, e: Mapping[str, Any]) -> tuple[str, dict[str, Any], list[str]] | None:
-    """사건 하나(와 그 종료 줄, 사건 블록)의 규칙 모양: (종류, 규칙 말, 그 규칙의 블록 id)."""
+def _from_event(scene: _Scene, e: Mapping[str, Any], prefer: str | None = None) -> tuple[str, dict[str, Any], list[str]] | None:
+    """사건 하나(와 그 종료 줄, 사건 블록)의 규칙 모양: (종류, 규칙 말, 그 규칙의 블록 id).
+
+    접촉 하나뿐인 조건은 touch_ends다. editor.rules가 fall이라고 적었으면(prefer) fall(높이 없음)로 본다. 접촉 하나에 사건 블록이
+    붙은 것(언덕차의 crash와 −20 블록)은 적혀 있지 않으면 알아보지 않는다(D39)."""
     if not _event_ok(e) or not isinstance(e.get("when"), str):
         return None
     eid = e["id"]
@@ -494,6 +497,8 @@ def _from_event(scene: _Scene, e: Mapping[str, Any]) -> tuple[str, dict[str, Any
     w = float(eblocks[0].get("weight", 1.0)) if eblocks else 0.0
     ids = [b["id"] for b in eblocks]
     kind, vals = shape
+    if kind == "contact" and prefer == "fall":
+        kind, vals = "fall", ([vals[0]], vals[1], vals[0], 0.0)
     if kind == "contact" and not eblocks:
         return "touch_ends", {"part": vals[0], "what": vals[1], "outcome": outcome}, ids
     if kind == "inside" and w >= 0:
@@ -576,7 +581,7 @@ def _recorded(scene: _Scene, kind: str, event: Any, blocks: list[str], claimed: 
     if kind in EVENT_IDS:
         if not isinstance(event, str) or event not in scene.events or ("events", event) in claimed:
             return None
-        got = _from_event(scene, scene.events[event])
+        got = _from_event(scene, scene.events[event], kind)
         if got is None or got[0] != kind or sorted(got[2]) != sorted(blocks):
             return None
         _, args, bids = got

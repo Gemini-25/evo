@@ -211,16 +211,19 @@ def selftest_check() -> tuple[bool, str]:
     """자체 점검 「프리셋」: 틀 전부를 읽고, 내장 조리법 전부를 만들어 L1·L2를 보고, 달리기 한 세대를 돌린다.
 
     (통과, 글). 실패하면 그 틀·조리법의 이름이 든 글(SELFTEST_ERR_PRESET)."""
-    from evolab.presets.library import Library
-    from evolab.presets.recipe import RecipeError, build, builtin_names, load_builtin
-    from evolab.presets.template import TemplateError
-    from evolab.spec.io import dump_env, parse_env
     from evolab import paths
+    from evolab.presets.library import TEMPLATE_SUFFIX, Library
+    from evolab.presets.recipe import RecipeError, build, builtin_names, load_builtin
+    from evolab.presets.template import TemplateError, load_template
+    from evolab.spec.io import dump_env, parse_env
 
-    try:
-        lib = Library(paths.template_dirs()[:1])
-    except TemplateError as exc:
-        return False, S.SELFTEST_ERR_PRESET.format(name="templates", reason=exc)
+    folder = paths.template_dirs()[0]
+    for path in sorted(folder.glob("*" + TEMPLATE_SUFFIX)):  # 깨진 내장 틀은 그 이름으로 알린다
+        try:
+            load_template(path, source="builtin")
+        except TemplateError as exc:
+            return False, S.SELFTEST_ERR_PRESET.format(name=path.name, reason=exc)
+    lib = Library([folder])
     names = builtin_names()
     worst = 0.0
     texts: dict[str, str] = {}

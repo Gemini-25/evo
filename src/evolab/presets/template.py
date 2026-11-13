@@ -67,7 +67,7 @@ D27). 넣지 않은 부품을 가리키는 다른 부품은 틀 안에 없어야
 
 _SLOT_NAME = re.compile(r"^\$[a-z_][a-z0-9_]*$")
 _T_NAME = re.compile(r"\bt\.([A-Za-z_][A-Za-z0-9_]*)")
-_ID = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_가-힣]*$")
+_ID = re.compile(r"^[A-Za-z_\uac00-\ud7a3][A-Za-z0-9_\uac00-\ud7a3]*$")
 
 Point = tuple[float, float]
 Ref = tuple[str, str]
@@ -574,12 +574,16 @@ def _check_corners(tpl: Template) -> None:
             env = m.EnvFile.model_validate(data)
             from evolab.spec.compiled import EnvFileError, EnvSpec
 
+            from evolab.world.physics2d.episode import Episode, EpisodeBuildError, Trial
+
             try:
-                EnvSpec.build(env)
+                Episode(EnvSpec.build(env), None, Trial(0))
             except EnvFileError as exc:
                 first = next((i for i in exc.issues if i.severity == "error"), None)
                 raise TemplateError(S.TPL_ERR_EXPAND.format(which=S.TPL_EXPAND_WHICH[which],
                                                             reason=str(first) if first else exc)) from None
+            except EpisodeBuildError as exc:
+                raise TemplateError(S.TPL_ERR_EXPAND.format(which=S.TPL_EXPAND_WHICH[which], reason=exc)) from None
         except ValidationError as exc:
             raise TemplateError(S.TPL_ERR_EXPAND.format(which=S.TPL_EXPAND_WHICH[which],
                                                         reason=_first_error(exc))) from None
