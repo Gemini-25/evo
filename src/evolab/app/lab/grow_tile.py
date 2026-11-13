@@ -12,7 +12,10 @@
   GROW_TILE_FIXED_NO_HIDDEN.
 - 오른쪽(연결) 눈금은 늘 왼쪽(뉴런) 눈금 × (다 자란 연결 수 ÷ 틀 뉴런 합)이다(_sync_links_axis): 점선을 뉴런 좌표로 그리므로,
   타일을 끌거나 확대해 왼쪽 눈금이 바뀌면 오른쪽 눈금도 같이 바뀌어야 점선 높이와 눈금이 맞는다.
-- 갱신은 대시보드 펌프를 따른다(보일 때만). 갱신 한 번은 열 셋을 읽어 곡선 둘에 setData하는 것뿐이다.
+- 갱신은 대시보드 펌프를 따른다(보일 때만). 세대가 하나 올 때의 갱신은 열 셋을 읽어 곡선 둘에 setData하고 보는 세대 세로선을
+  옮기는 것뿐이다(측정 M12, 목표: 뇌 그림의 켜짐 판정과 합쳐 펌프마다 0.5ms 이하). 세대마다 하지 않는 것: 둘째 ViewBox의 자리
+  맞추기(_sync_views: 그래프 크기가 바뀔 때만, 처음에는 갱신마다 해서 갱신의 4분의 1이었다), 틀 크기 세기(이름표가 바뀔 때만),
+  이미 보이는 그래프로 바꾸기.
 
 학습 결과와 무관한 화면 전용 코드다.
 """
@@ -24,7 +27,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 
 from evolab.app import strings as S
 from evolab.app.lab import history as hs
@@ -99,6 +102,10 @@ class GrowTile(_WatchTile):
         """다 자란 연결 수(오른쪽 눈금 끝)."""
         self._links_range: tuple[float, float] | None = None
         """오른쪽 눈금에 마지막으로 놓은 세로 범위(_sync_links_axis)."""
+        self._views_rect: QRectF | None = None
+        """둘째 ViewBox를 마지막으로 맞춘 뉴런 그래프의 자리(_sync_views). 자리가 그대로면 갱신 때 다시 맞추지 않는다."""
+        self._totals: tuple[Any, tuple[int, int]] | None = None
+        """(뇌 구조, frame_totals): 이름표의 뇌 구조가 바뀔 때만 다시 센다."""
         # 끌기·확대·fix_y·보기 되돌리기 모두 이 신호를 낸다(위 값들이 생긴 뒤에 잇는다)
         self.plot.vb.sigYRangeChanged.connect(self._sync_links_axis)
 
@@ -110,8 +117,18 @@ class GrowTile(_WatchTile):
         pass
 
     def _sync_views(self) -> None:
-        self.links_view.setGeometry(self.plot.vb.sceneBoundingRect())
+        """둘째 ViewBox(오른쪽 눈금)를 뉴런 그래프와 같은 자리에 놓는다. 뉴런 그래프의 크기가 바뀔 때(sigResized) 부른다."""
+        rect = self.plot.vb.sceneBoundingRect()
+        self._views_rect = rect
+        self.links_view.setGeometry(rect)
         self.links_view.linkedViewChanged(self.plot.vb, self.links_view.XAxis)
+
+    def _sync_views_if_moved(self) -> None:
+        """갱신 때: 뉴런 그래프의 자리가 마지막으로 맞춘 자리와 다를 때만 _sync_views. 가로 범위는 setXLink가 따라가게 하고
+        크기는 sigResized가 알리므로 세대가 올 때는 할 일이 없다(자리 비교 한 번). 처음에는 갱신마다 맞췄는데 세대가 올 때
+        갱신의 4분의 1(약 0.09ms)이 여기였다(측정 M12)."""
+        if self.plot.vb.sceneBoundingRect() != self._views_rect:
+            self._sync_views()
 
     def links_per_neuron(self) -> float:
         """오른쪽(연결) 눈금 ÷ 왼쪽(뉴런) 눈금 = 다 자란 연결 수 ÷ 틀 뉴런 합. 점선은 연결 수를 이 값으로 나눠 뉴런 좌표에 그린다."""
@@ -152,7 +169,10 @@ class GrowTile(_WatchTile):
                 self._empty(text.format(neurons=neurons, links=links))
             return
         if meta is not None:
-            self.total, self.full_links = frame_totals(meta.layout.brain)
+            brain = meta.layout.brain
+            if self._totals is None or self._totals[0] is not brain:
+                self._totals = (brain, frame_totals(brain))
+            self.total, self.full_links = self._totals[1]
         else:  # 이름표가 아직 없다: 지금까지의 최댓값으로 눈금만
             self.total = int(np.nanmax(series.neurons))
             finite = series.links[np.isfinite(series.links)]
@@ -166,9 +186,10 @@ class GrowTile(_WatchTile):
         self.links_curve.setData(self.xs, series.links / self.links_per_neuron())
         self.keep_y(self.plot, 0.0, top)
         self._sync_links_axis()  # 세로 범위가 그대로여도 틀(눈금 비)이 바뀌었을 수 있다
-        self._sync_views()
+        self._sync_views_if_moved()
         self._place_focus()
-        self.stack.setCurrentWidget(self.view)
+        if self.stack.currentWidget() is not self.view:
+            self.stack.setCurrentWidget(self.view)
         self.set_notes([])
 
     def _empty(self, text: str) -> None:
@@ -180,12 +201,25 @@ class GrowTile(_WatchTile):
         self.focus_line.hide()
         self.show_message(text, [])
 
+    def focus_x(self, gen: int) -> float:
+        """세대 gen의 가로축 값(자료 범위 밖이면 NaN). dash.x_at_generations([gen], True)[0]과 같은 값을 배열 없이 구한다
+        (보는 세대 세로선은 세대가 올 때마다 옮긴다)."""
+        d = self.dash
+        gens = d.col("generation")
+        n = len(gens)
+        if n == 0 or not gens[0] <= gen <= gens[-1]:
+            return math.nan
+        if d.axis == "generation":
+            return float(gen)
+        i = min(int(np.searchsorted(gens, float(gen))), n - 1)
+        return float(d.x_values(True)[i])
+
     def _place_focus(self) -> None:
         gen = self.dash.view_generation()
         if gen is None:
             self.focus_line.hide()
             return
-        x = self.dash.x_at_generations(np.array([float(gen)]), True)[0]
+        x = self.focus_x(gen)
         if math.isfinite(x):
             self.focus_line.setPos(float(x))
             self.focus_line.show()
