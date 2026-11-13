@@ -1,0 +1,25 @@
+{
+  "format": "evolab-template",
+  "version": 1,
+  "id": "disc",
+  "kind": "body",
+  "world": "top",
+  "name_id": "disc",
+  "params": [
+    {"id": "size", "label_id": "size", "value": 1.0, "min": 0.75, "max": 1.25, "step": 0.05, "unit_id": "times", "main": true},
+    {"id": "power", "label_id": "power", "value": 1.0, "min": 0.6, "max": 1.5, "step": 0.05, "unit_id": "times", "main": true}
+  ],
+  "root": "disc",
+  "parts": {
+    "bodies": [
+      {"id": "disc", "label": "선수", "pos": [0.0, 0.0], "shapes": [{"kind": "circle", "r": "=t.size * 0.4"}], "material": {"density": 50.0, "friction": 0.3, "elasticity": 0.2}, "tags": ["player"]}
+    ],
+    "actuators": [
+      {"kind": "move", "id": "go", "label": "밀기", "body": "disc", "mode": "xy", "max_force": "=t.power * t.size * t.size * 400", "max_speed": "=t.power * 3.5", "keys_up": ["Up", "W"], "keys_down": ["Down", "S"], "keys_left": ["Left", "A"], "keys_right": ["Right", "D"]}
+    ],
+    "sensors": [
+      {"kind": "body_state", "id": "st", "label": "내 움직임", "body": "disc", "fields": ["vx", "vy"], "frame": "world", "scale": {"vx": 3.5, "vy": 3.5}}
+    ]
+  },
+  "slots": {}
+}

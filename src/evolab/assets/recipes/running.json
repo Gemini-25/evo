@@ -1,0 +1,20 @@
+{
+  "recipe": 1, "start": "running", "name": "달리기", "status": "ok",
+  "description": "두 발 막대 사람이 넘어지지 않고 15초 동안 오른쪽으로 멀리 갑니다. 몸통이 기울면 균형 보조가 세워 줍니다.",
+  "world": "side",
+  "arena": {"template": "track_side", "values": {}},
+  "roles": [{"id": "runner", "label": "", "body": {"template": "biped", "values": {}}}],
+  "props": [],
+  "rules": [
+    {"rule": "distance", "who": "runner", "part": "torso", "direction": "right", "per_m": 1.0},
+    {"rule": "fall", "who": "runner", "parts": ["torso", "thigh_l", "thigh_r"], "what": "$ground", "root": "torso",
+     "height": 0.8, "penalty": 1.0},
+    {"rule": "save_energy", "weight": 0.02},
+    {"rule": "out_ends", "outcome": "failure"},
+    {"rule": "time_limit", "seconds": 15.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "runner", "count": 1, "spawn": "start"}]},
+  "brain": {"inputs": "all", "hidden": [16], "activation": "tanh", "outputs": "all"},
+  "evaluation": {"trials": 3, "aggregate": "mean"},
+  "train": {"qualify_entrants": 3, "qualify_trials": 9600}
+}

@@ -1,0 +1,17 @@
+{
+  "recipe": 1, "start": "drill", "name": "공 넣기 연습", "status": "ok",
+  "description": "위에서 본 마당에서 원형 선수 혼자 공을 밀어 오른쪽 골에 넣습니다.",
+  "world": "top",
+  "arena": {"template": "yard_top", "values": {}},
+  "roles": [{"id": "player", "label": "", "body": {"template": "disc", "values": {}}}],
+  "props": [{"template": "ball", "values": {}, "spawn": "center"}, {"template": "goal", "values": {}, "spawn": "goal"}],
+  "rules": [
+    {"rule": "near", "thing": "ball", "where": "goal", "per_m": 1.0, "when": "min"},
+    {"rule": "reach", "part": "ball", "where": "goal", "outcome": "success", "bonus": 100.0},
+    {"rule": "time_limit", "seconds": 15.0}
+  ],
+  "players": {"mode": "solo", "seats": [{"role": "player", "count": 1, "spawn": "start"}]},
+  "world_values": {"damping": 0.5},
+  "brain": {"inputs": "all", "hidden": [16], "activation": "tanh", "outputs": "all"},
+  "evaluation": {"trials": 3, "aggregate": "mean"}
+}

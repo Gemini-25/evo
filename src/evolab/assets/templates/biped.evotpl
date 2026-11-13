@@ -1,0 +1,59 @@
+{
+  "format": "evolab-template",
+  "version": 1,
+  "id": "biped",
+  "kind": "body",
+  "world": "side",
+  "name_id": "biped",
+  "params": [
+    {"id": "size", "label_id": "size", "value": 1.0, "min": 0.85, "max": 1.15, "step": 0.05, "unit_id": "times", "main": true},
+    {"id": "power", "label_id": "power", "value": 1.0, "min": 0.8, "max": 1.25, "step": 0.05, "unit_id": "times", "main": true},
+    {"id": "balance", "label_id": "balance", "value": 1.0, "min": 0.0, "max": 1.0, "step": 1.0, "main": true}
+  ],
+  "root": "torso",
+  "parts": {
+    "bodies": [
+      {"id": "torso", "label": "몸통", "pos": [0.0, "=t.size * 0.35"], "shapes": [{"kind": "box", "w": "=t.size * 0.25", "h": "=t.size * 0.7"}], "material": {"density": 200.0, "friction": 0.5}, "tags": ["torso"]},
+      {"id": "thigh_l", "label": "왼 허벅지", "place_by": "hip_l", "shapes": [{"kind": "box", "w": "=t.size * 0.12", "h": "=t.size * 0.45"}], "material": {"density": 150.0, "friction": 0.6}},
+      {"id": "shin_l", "label": "왼 정강이", "place_by": "knee_l", "shapes": [{"kind": "box", "w": "=t.size * 0.1", "h": "=t.size * 0.45"}], "material": {"density": 100.0, "friction": 0.6}},
+      {"id": "foot_l", "label": "왼 발", "place_by": "ankle_l", "shapes": [{"kind": "box", "w": "=t.size * 0.26", "h": "=t.size * 0.08"}], "material": {"density": 100.0, "friction": 1.2}, "tags": ["foot"]},
+      {"id": "thigh_r", "label": "오른 허벅지", "place_by": "hip_r", "shapes": [{"kind": "box", "w": "=t.size * 0.12", "h": "=t.size * 0.45"}], "material": {"density": 150.0, "friction": 0.6}},
+      {"id": "shin_r", "label": "오른 정강이", "place_by": "knee_r", "shapes": [{"kind": "box", "w": "=t.size * 0.1", "h": "=t.size * 0.45"}], "material": {"density": 100.0, "friction": 0.6}},
+      {"id": "foot_r", "label": "오른 발", "place_by": "ankle_r", "shapes": [{"kind": "box", "w": "=t.size * 0.26", "h": "=t.size * 0.08"}], "material": {"density": 100.0, "friction": 1.2}, "tags": ["foot"]}
+    ],
+    "joints": [
+      {"id": "hip_l", "label": "왼 엉덩이", "kind": "pivot", "a": "torso", "b": "thigh_l", "anchor_a": [0.0, "=t.size * -0.35"], "anchor_b": [0.0, "=t.size * 0.225"], "limit": [-0.9, 1.2]},
+      {"id": "knee_l", "label": "왼 무릎", "kind": "pivot", "a": "thigh_l", "b": "shin_l", "anchor_a": [0.0, "=t.size * -0.225"], "anchor_b": [0.0, "=t.size * 0.225"], "limit": [-2.2, 0.0]},
+      {"id": "ankle_l", "label": "왼 발목", "kind": "pivot", "a": "shin_l", "b": "foot_l", "anchor_a": [0.0, "=t.size * -0.225"], "anchor_b": ["=t.size * -0.05", "=t.size * 0.04"], "limit": [-0.7, 0.7]},
+      {"id": "hip_r", "label": "오른 엉덩이", "kind": "pivot", "a": "torso", "b": "thigh_r", "anchor_a": [0.0, "=t.size * -0.35"], "anchor_b": [0.0, "=t.size * 0.225"], "limit": [-0.9, 1.2]},
+      {"id": "knee_r", "label": "오른 무릎", "kind": "pivot", "a": "thigh_r", "b": "shin_r", "anchor_a": [0.0, "=t.size * -0.225"], "anchor_b": [0.0, "=t.size * 0.225"], "limit": [-2.2, 0.0]},
+      {"id": "ankle_r", "label": "오른 발목", "kind": "pivot", "a": "shin_r", "b": "foot_r", "anchor_a": [0.0, "=t.size * -0.225"], "anchor_b": ["=t.size * -0.05", "=t.size * 0.04"], "limit": [-0.7, 0.7]}
+    ],
+    "actuators": [
+      {"kind": "motor", "id": "m_hip_l", "label": "왼 엉덩이 모터", "joint": "hip_l", "max_torque": "=t.power * t.size * t.size * t.size * 160", "max_speed": 6.0, "keys_pos": ["Q"], "keys_neg": ["A"]},
+      {"kind": "motor", "id": "m_knee_l", "label": "왼 무릎 모터", "joint": "knee_l", "max_torque": "=t.power * t.size * t.size * t.size * 130", "max_speed": 8.0, "keys_pos": ["W"], "keys_neg": ["S"]},
+      {"kind": "motor", "id": "m_ankle_l", "label": "왼 발목 모터", "joint": "ankle_l", "max_torque": "=t.power * t.size * t.size * t.size * 60", "max_speed": 6.0, "keys_pos": ["E"], "keys_neg": ["D"]},
+      {"kind": "motor", "id": "m_hip_r", "label": "오른 엉덩이 모터", "joint": "hip_r", "max_torque": "=t.power * t.size * t.size * t.size * 160", "max_speed": 6.0, "keys_pos": ["U"], "keys_neg": ["J"]},
+      {"kind": "motor", "id": "m_knee_r", "label": "오른 무릎 모터", "joint": "knee_r", "max_torque": "=t.power * t.size * t.size * t.size * 130", "max_speed": 8.0, "keys_pos": ["I"], "keys_neg": ["K"]},
+      {"kind": "motor", "id": "m_ankle_r", "label": "오른 발목 모터", "joint": "ankle_r", "max_torque": "=t.power * t.size * t.size * t.size * 60", "max_speed": 6.0, "keys_pos": ["O"], "keys_neg": ["L"]},
+      {"kind": "balance", "id": "bal", "label": "균형 보조", "body": "torso", "stiffness": "=t.size * t.size * t.size * 100", "damping": "=t.size * t.size * t.size * 12.5", "max_torque": "=t.size * t.size * t.size * 100", "if": "balance"}
+    ],
+    "sensors": [
+      {"kind": "body_state", "id": "st", "label": "몸통 상태", "body": "torso", "fields": ["y", "vx", "vy", "angle", "omega"], "scale": {"y": 1.5, "vx": 3.0, "vy": 3.0, "angle": 1.0, "omega": 5.0}},
+      {"kind": "joint_angle", "id": "a_hip_l", "label": "왼 엉덩이 각도", "joint": "hip_l", "scale": 1.2},
+      {"kind": "joint_angle", "id": "a_knee_l", "label": "왼 무릎 각도", "joint": "knee_l", "scale": 2.2},
+      {"kind": "joint_angle", "id": "a_ankle_l", "label": "왼 발목 각도", "joint": "ankle_l", "scale": 0.7},
+      {"kind": "contact", "id": "c_foot_l", "label": "왼 발 닿음", "body": "foot_l", "with": ["$ground"]},
+      {"kind": "joint_angle", "id": "a_hip_r", "label": "오른 엉덩이 각도", "joint": "hip_r", "scale": 1.2},
+      {"kind": "joint_angle", "id": "a_knee_r", "label": "오른 무릎 각도", "joint": "knee_r", "scale": 2.2},
+      {"kind": "joint_angle", "id": "a_ankle_r", "label": "오른 발목 각도", "joint": "ankle_r", "scale": 0.7},
+      {"kind": "contact", "id": "c_foot_r", "label": "오른 발 닿음", "body": "foot_r", "with": ["$ground"]}
+    ]
+  },
+  "slots": {"$ground": {"tags": ["ground", "terrain"], "label_id": "ground_flat"}},
+  "randoms": [
+    {"id": "tilt", "dist": "uniform", "low": -0.05, "high": 0.05},
+    {"id": "push", "dist": "uniform", "low": -0.3, "high": 0.3}
+  ],
+  "spawn": {"x": 0.0, "y": "=t.size * 1.05", "angle": "=r.tilt", "vx": "=r.push"}
+}

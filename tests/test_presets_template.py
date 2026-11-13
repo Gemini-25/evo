@@ -197,7 +197,9 @@ def _scene(tpl: T.Template, values: dict[str, float], mirror: bool = False) -> d
     if world == "side" and "ground" not in T.scene_tags(data):
         T.insert(data, T.expand(lib().get("ground_flat"), at=(0.0, 0.0)))
     filled, _ = T.resolve_slots(body, data)
-    T.insert(data, T.expand(body, values if tpl.kind == "body" else None, mirror=mirror if tpl.kind == "body" else False,
+    # 물건·경기장의 형식을 보려고 함께 넣는 몸은 형식 1로 둔다(PM의 biped는 균형 보조가 켜져 있으면 형식 4: D27)
+    host = {"balance": 0.0} if any(p.id == "balance" for p in body.params) else None
+    T.insert(data, T.expand(body, values if tpl.kind == "body" else host, mirror=mirror if tpl.kind == "body" else False,
                             slots=filled))
     data["scoring"] = {"blocks": [{"kind": "progress", "id": "s_go", "body": body.root, "weight": 1.0}]}
     return data

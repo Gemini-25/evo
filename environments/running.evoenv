@@ -1,0 +1,867 @@
+{
+  "version": 4,
+  "name": "달리기",
+  "description": "두 발 막대 사람이 넘어지지 않고 15초 동안 오른쪽으로 멀리 갑니다. 몸통이 기울면 균형 보조가 세워 줍니다.",
+  "world": {
+    "kind": "physics2d",
+    "gravity": [
+      0.0,
+      -9.81
+    ],
+    "wind": [
+      0.0,
+      0.0
+    ],
+    "dt": 0.016666666666666666,
+    "max_time": 15.0,
+    "bounds": [
+      -10.0,
+      -5.0,
+      150.0,
+      30.0
+    ],
+    "contact_debounce": 0.1,
+    "view": "side",
+    "damping": 1.0
+  },
+  "params": [],
+  "randomize": [
+    {
+      "id": "tilt",
+      "label": "",
+      "dist": "uniform",
+      "low": -0.05,
+      "high": 0.05,
+      "mean": null,
+      "std": null,
+      "values": null
+    },
+    {
+      "id": "push",
+      "label": "",
+      "dist": "uniform",
+      "low": -0.3,
+      "high": 0.3,
+      "mean": null,
+      "std": null,
+      "values": null
+    }
+  ],
+  "generators": [],
+  "agent": {
+    "spawn": {
+      "x": 0.0,
+      "y": 1.05,
+      "angle": "=r.tilt",
+      "vx": "=r.push",
+      "vy": 0.0,
+      "omega": 0.0
+    }
+  },
+  "bodies": [
+    {
+      "id": "ground",
+      "label": "땅",
+      "owner": "world",
+      "type": "static",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "chain",
+          "points": [
+            [
+              -10.0,
+              0.0
+            ],
+            [
+              150.0,
+              0.0
+            ]
+          ],
+          "closed": false,
+          "radius": 0.05
+        }
+      ],
+      "material": {
+        "density": 1.0,
+        "friction": 1.0,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "ground"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "torso",
+      "label": "몸통",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.35
+      ],
+      "angle": 0.0,
+      "place_by": null,
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.25,
+          "h": 0.7,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 200.0,
+        "friction": 0.5,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "torso"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "thigh_l",
+      "label": "왼 허벅지",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "hip_l",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.12,
+          "h": 0.45,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 150.0,
+        "friction": 0.6,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "shin_l",
+      "label": "왼 정강이",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "knee_l",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.1,
+          "h": 0.45,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 100.0,
+        "friction": 0.6,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "foot_l",
+      "label": "왼 발",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "ankle_l",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.26,
+          "h": 0.08,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 100.0,
+        "friction": 1.2,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "foot"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "thigh_r",
+      "label": "오른 허벅지",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "hip_r",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.12,
+          "h": 0.45,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 150.0,
+        "friction": 0.6,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "shin_r",
+      "label": "오른 정강이",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "knee_r",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.1,
+          "h": 0.45,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 100.0,
+        "friction": 0.6,
+        "elasticity": 0.0
+      },
+      "tags": [],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    },
+    {
+      "id": "foot_r",
+      "label": "오른 발",
+      "owner": "agent",
+      "type": "dynamic",
+      "pos": [
+        0.0,
+        0.0
+      ],
+      "angle": 0.0,
+      "place_by": "ankle_r",
+      "shapes": [
+        {
+          "kind": "box",
+          "w": 0.26,
+          "h": 0.08,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "angle": 0.0,
+          "density": null
+        }
+      ],
+      "material": {
+        "density": 100.0,
+        "friction": 1.2,
+        "elasticity": 0.0
+      },
+      "tags": [
+        "foot"
+      ],
+      "drag": 0.0,
+      "motion": null,
+      "exists": null
+    }
+  ],
+  "joints": [
+    {
+      "id": "hip_l",
+      "label": "왼 엉덩이",
+      "kind": "pivot",
+      "a": "torso",
+      "b": "thigh_l",
+      "anchor_a": [
+        0.0,
+        -0.35
+      ],
+      "anchor_b": [
+        0.0,
+        0.225
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -0.9,
+        1.2
+      ],
+      "collide": false
+    },
+    {
+      "id": "knee_l",
+      "label": "왼 무릎",
+      "kind": "pivot",
+      "a": "thigh_l",
+      "b": "shin_l",
+      "anchor_a": [
+        0.0,
+        -0.225
+      ],
+      "anchor_b": [
+        0.0,
+        0.225
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -2.2,
+        0.0
+      ],
+      "collide": false
+    },
+    {
+      "id": "ankle_l",
+      "label": "왼 발목",
+      "kind": "pivot",
+      "a": "shin_l",
+      "b": "foot_l",
+      "anchor_a": [
+        0.0,
+        -0.225
+      ],
+      "anchor_b": [
+        -0.05,
+        0.04
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -0.7,
+        0.7
+      ],
+      "collide": false
+    },
+    {
+      "id": "hip_r",
+      "label": "오른 엉덩이",
+      "kind": "pivot",
+      "a": "torso",
+      "b": "thigh_r",
+      "anchor_a": [
+        0.0,
+        -0.35
+      ],
+      "anchor_b": [
+        0.0,
+        0.225
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -0.9,
+        1.2
+      ],
+      "collide": false
+    },
+    {
+      "id": "knee_r",
+      "label": "오른 무릎",
+      "kind": "pivot",
+      "a": "thigh_r",
+      "b": "shin_r",
+      "anchor_a": [
+        0.0,
+        -0.225
+      ],
+      "anchor_b": [
+        0.0,
+        0.225
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -2.2,
+        0.0
+      ],
+      "collide": false
+    },
+    {
+      "id": "ankle_r",
+      "label": "오른 발목",
+      "kind": "pivot",
+      "a": "shin_r",
+      "b": "foot_r",
+      "anchor_a": [
+        0.0,
+        -0.225
+      ],
+      "anchor_b": [
+        -0.05,
+        0.04
+      ],
+      "rest_angle": 0.0,
+      "stiffness": 0.0,
+      "damping": 0.0,
+      "rest_length": null,
+      "limit": [
+        -0.7,
+        0.7
+      ],
+      "collide": false
+    }
+  ],
+  "actuators": [
+    {
+      "kind": "motor",
+      "id": "m_hip_l",
+      "label": "왼 엉덩이 모터",
+      "joint": "hip_l",
+      "max_torque": 160.0,
+      "max_speed": 6.0,
+      "keys_pos": [
+        "Q"
+      ],
+      "keys_neg": [
+        "A"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m_knee_l",
+      "label": "왼 무릎 모터",
+      "joint": "knee_l",
+      "max_torque": 130.0,
+      "max_speed": 8.0,
+      "keys_pos": [
+        "W"
+      ],
+      "keys_neg": [
+        "S"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m_ankle_l",
+      "label": "왼 발목 모터",
+      "joint": "ankle_l",
+      "max_torque": 60.0,
+      "max_speed": 6.0,
+      "keys_pos": [
+        "E"
+      ],
+      "keys_neg": [
+        "D"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m_hip_r",
+      "label": "오른 엉덩이 모터",
+      "joint": "hip_r",
+      "max_torque": 160.0,
+      "max_speed": 6.0,
+      "keys_pos": [
+        "U"
+      ],
+      "keys_neg": [
+        "J"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m_knee_r",
+      "label": "오른 무릎 모터",
+      "joint": "knee_r",
+      "max_torque": 130.0,
+      "max_speed": 8.0,
+      "keys_pos": [
+        "I"
+      ],
+      "keys_neg": [
+        "K"
+      ]
+    },
+    {
+      "kind": "motor",
+      "id": "m_ankle_r",
+      "label": "오른 발목 모터",
+      "joint": "ankle_r",
+      "max_torque": 60.0,
+      "max_speed": 6.0,
+      "keys_pos": [
+        "O"
+      ],
+      "keys_neg": [
+        "L"
+      ]
+    },
+    {
+      "kind": "balance",
+      "id": "bal",
+      "label": "균형 보조",
+      "body": "torso",
+      "stiffness": 100.0,
+      "damping": 12.5,
+      "max_torque": 100.0,
+      "target": 0.0
+    }
+  ],
+  "sensors": [
+    {
+      "kind": "body_state",
+      "id": "st",
+      "label": "몸통 상태",
+      "body": "torso",
+      "fields": [
+        "y",
+        "vx",
+        "vy",
+        "angle",
+        "omega"
+      ],
+      "frame": "world",
+      "scale": {
+        "y": 1.5,
+        "vx": 3.0,
+        "vy": 3.0,
+        "angle": 1.0,
+        "omega": 5.0
+      }
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_hip_l",
+      "label": "왼 엉덩이 각도",
+      "joint": "hip_l",
+      "scale": 1.2
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_knee_l",
+      "label": "왼 무릎 각도",
+      "joint": "knee_l",
+      "scale": 2.2
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_ankle_l",
+      "label": "왼 발목 각도",
+      "joint": "ankle_l",
+      "scale": 0.7
+    },
+    {
+      "kind": "contact",
+      "id": "c_foot_l",
+      "label": "왼 발 닿음",
+      "body": "foot_l",
+      "with": [
+        "tag.ground"
+      ]
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_hip_r",
+      "label": "오른 엉덩이 각도",
+      "joint": "hip_r",
+      "scale": 1.2
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_knee_r",
+      "label": "오른 무릎 각도",
+      "joint": "knee_r",
+      "scale": 2.2
+    },
+    {
+      "kind": "joint_angle",
+      "id": "a_ankle_r",
+      "label": "오른 발목 각도",
+      "joint": "ankle_r",
+      "scale": 0.7
+    },
+    {
+      "kind": "contact",
+      "id": "c_foot_r",
+      "label": "오른 발 닿음",
+      "body": "foot_r",
+      "with": [
+        "tag.ground"
+      ]
+    }
+  ],
+  "regions": [],
+  "checkpoints": [],
+  "events": [
+    {
+      "id": "fall",
+      "label": "넘어지면 끝",
+      "when": "contact(torso, tag.ground) or contact(thigh_l, tag.ground) or contact(thigh_r, tag.ground) or torso.y < 0.8",
+      "hold": 0.0
+    }
+  ],
+  "termination": [
+    {
+      "event": "fall",
+      "outcome": "failure",
+      "label": "넘어지면 끝"
+    },
+    {
+      "event": "out_of_bounds",
+      "outcome": "failure",
+      "label": "밖으로 나가면 끝"
+    },
+    {
+      "event": "timeout",
+      "outcome": "neutral",
+      "label": "시간 초과"
+    }
+  ],
+  "scoring": {
+    "blocks": [
+      {
+        "id": "s_dist",
+        "label": "간 거리만큼 점수",
+        "weight": 1.0,
+        "kind": "progress",
+        "body": "torso",
+        "direction": 0.0
+      },
+      {
+        "id": "s_fall",
+        "label": "넘어지면 끝",
+        "weight": -1.0,
+        "kind": "event",
+        "event": "fall",
+        "value": "occurred"
+      },
+      {
+        "id": "s_energy",
+        "label": "힘을 아끼면 가산점",
+        "weight": -0.02,
+        "kind": "energy",
+        "actuators": "all"
+      }
+    ],
+    "formula": null
+  },
+  "brain": {
+    "inputs": "all",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh",
+    "outputs": "all"
+  },
+  "evaluation": {
+    "trials": 3,
+    "aggregate": "mean",
+    "target_score": null
+  },
+  "editor": {
+    "view": [
+      -3.0,
+      -1.0,
+      9.0,
+      4.0
+    ],
+    "train": {
+      "qualify_entrants": 3,
+      "qualify_trials": 9600
+    },
+    "rules": [
+      {
+        "kind": "distance",
+        "event": null,
+        "blocks": [
+          "s_dist"
+        ]
+      },
+      {
+        "kind": "fall",
+        "event": "fall",
+        "blocks": [
+          "s_fall"
+        ]
+      },
+      {
+        "kind": "save_energy",
+        "event": null,
+        "blocks": [
+          "s_energy"
+        ]
+      },
+      {
+        "kind": "out_ends",
+        "event": "out_of_bounds",
+        "blocks": []
+      }
+    ],
+    "recipe": {
+      "recipe": 1,
+      "start": "running",
+      "name": "달리기",
+      "world": "side",
+      "arena": {
+        "template": "track_side",
+        "values": {}
+      },
+      "roles": [
+        {
+          "id": "runner",
+          "label": "",
+          "body": {
+            "template": "biped",
+            "values": {}
+          }
+        }
+      ],
+      "props": [],
+      "rules": [
+        {
+          "rule": "distance",
+          "who": "runner",
+          "part": "torso",
+          "direction": "right",
+          "per_m": 1.0
+        },
+        {
+          "rule": "fall",
+          "who": "runner",
+          "parts": [
+            "torso",
+            "thigh_l",
+            "thigh_r"
+          ],
+          "what": "$ground",
+          "root": "torso",
+          "height": 0.8,
+          "penalty": 1.0
+        },
+        {
+          "rule": "save_energy",
+          "weight": 0.02
+        },
+        {
+          "rule": "out_ends",
+          "outcome": "failure"
+        },
+        {
+          "rule": "time_limit",
+          "seconds": 15.0
+        }
+      ],
+      "players": {
+        "mode": "solo",
+        "seats": [
+          {
+            "role": "runner",
+            "count": 1,
+            "spawn": "start"
+          }
+        ]
+      },
+      "description": "두 발 막대 사람이 넘어지지 않고 15초 동안 오른쪽으로 멀리 갑니다. 몸통이 기울면 균형 보조가 세워 줍니다.",
+      "brain": {
+        "inputs": "all",
+        "hidden": [
+          16
+        ],
+        "activation": "tanh",
+        "outputs": "all"
+      },
+      "evaluation": {
+        "trials": 3,
+        "aggregate": "mean"
+      },
+      "train": {
+        "qualify_entrants": 3,
+        "qualify_trials": 9600
+      },
+      "built": "37ba0d7fa2dd8c0de5493bdbdf0ea7e8c3ac334f4b041368766a30a5d8d7cc7c",
+      "templates": {
+        "biped": "2f4dd1cf3211dae5f89ef77ccd5e60571ac1707095ba6e4b7bc76db2ed98f68f",
+        "track_side": "e05443daf61a29815c6a019b4d8d5311a446eea2b863ef18d1c26e732f549570"
+      }
+    }
+  }
+}
